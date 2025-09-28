@@ -8,6 +8,8 @@
 
 ### **[📖 中文文档](README_zh_CN.md)** - User guide
 
+---
+
 ## 🎯 Why Choose This JWT Library?
 
 - ⚡ **Minimal API** - Only 3 functions needed: `CreateToken`, `ValidateToken`, `RevokeToken`

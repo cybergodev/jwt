@@ -8,6 +8,8 @@
 
 ### **[📖 English Docs](README.md)** - User guide
 
+---
+
 ## 🎯 为什么选择这个JWT库？
 
 - ⚡ **极简API** - 只需3个函数：`CreateToken`、`ValidateToken`、`RevokeToken`
