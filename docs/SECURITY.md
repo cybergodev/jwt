@@ -17,16 +17,16 @@ The JWT library implements **production-ready security** with multi-layered prot
 
 ### 🎯 Comprehensive Attack Protection Matrix
 
-| Attack Type | Protection Level | Implementation | Validation |
-|-------------|------------------|----------------|------------|
-| **Algorithm Confusion** | ⭐⭐⭐⭐⭐ | Strict algorithm validation | ✅ Tested |
-| **Timing Attacks** | ⭐⭐⭐⭐⭐ | Constant-time operations + random delays | ✅ Tested |
-| **Injection Attacks** | ⭐⭐⭐⭐⭐ | Multi-layer input validation | ✅ Tested |
-| **DoS Attacks** | ⭐⭐⭐⭐⭐ | Rate limiting + resource controls | ✅ Tested |
-| **Replay Attacks** | ⭐⭐⭐⭐⭐ | Token blacklist + unique IDs | ✅ Tested |
-| **Brute Force** | ⭐⭐⭐⭐⭐ | Adaptive rate limiting | ✅ Tested |
-| **Memory Attacks** | ⭐⭐⭐⭐⭐ | 5-pass secure memory wiping | ✅ Tested |
-| **Side-Channel** | ⭐⭐⭐⭐⭐ | Constant-time cryptography | ✅ Tested |
+| Attack Type             | Protection Level | Implementation                           | Validation |
+|-------------------------|------------------|------------------------------------------|------------|
+| **Algorithm Confusion** | ⭐⭐⭐⭐⭐            | Strict algorithm validation              | ✅ Tested   |
+| **Timing Attacks**      | ⭐⭐⭐⭐⭐            | Constant-time operations + random delays | ✅ Tested   |
+| **Injection Attacks**   | ⭐⭐⭐⭐⭐            | Multi-layer input validation             | ✅ Tested   |
+| **DoS Attacks**         | ⭐⭐⭐⭐⭐            | Rate limiting + resource controls        | ✅ Tested   |
+| **Replay Attacks**      | ⭐⭐⭐⭐⭐            | Token blacklist + unique IDs             | ✅ Tested   |
+| **Brute Force**         | ⭐⭐⭐⭐⭐            | Adaptive rate limiting                   | ✅ Tested   |
+| **Memory Attacks**      | ⭐⭐⭐⭐⭐            | 5-pass secure memory wiping              | ✅ Tested   |
+| **Side-Channel**        | ⭐⭐⭐⭐⭐            | Constant-time cryptography               | ✅ Tested   |
 
 ### 🔬 Security Testing & Validation
 

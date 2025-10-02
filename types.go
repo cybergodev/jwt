@@ -105,7 +105,6 @@ var (
 			return &Claims{
 				Permissions: make([]string, 0, 8),
 				Scopes:      make([]string, 0, 8),
-				Extra:       make(map[string]any, 8),
 				RegisteredClaims: RegisteredClaims{
 					Audience: make([]string, 0, 2),
 				},

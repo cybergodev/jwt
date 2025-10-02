@@ -8,12 +8,12 @@ This comprehensive troubleshooting guide provides step-by-step diagnosis procedu
 
 ### Critical Issues (Production Down)
 
-| Issue | Quick Fix | Time to Resolution |
-|-------|-----------|-------------------|
-| **"invalid secret key"** | Check key length ≥32 bytes | 2 minutes |
-| **"token validation failed"** | Verify token format (3 parts) | 3 minutes |
-| **"rate limit exceeded"** | Increase rate limits temporarily | 1 minute |
-| **High memory usage** | Restart with processor.Close() | 5 minutes |
+| Issue                         | Quick Fix                        | Time to Resolution |
+|-------------------------------|----------------------------------|--------------------|
+| **"invalid secret key"**      | Check key length ≥32 bytes       | 2 minutes          |
+| **"token validation failed"** | Verify token format (3 parts)    | 3 minutes          |
+| **"rate limit exceeded"**     | Increase rate limits temporarily | 1 minute           |
+| **High memory usage**         | Restart with processor.Close()   | 5 minutes          |
 
 ### Emergency Diagnostic Commands
 

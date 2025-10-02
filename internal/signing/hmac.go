@@ -26,19 +26,16 @@ func (h *hmacSigningMethod) Verify(signingString string, signature string, key a
 	case string:
 		secureKey = security.NewSecureBytesFromSlice([]byte(k))
 		keyBytes = secureKey.Bytes()
-		// Note: Cannot safely zero string due to immutability - use []byte for sensitive data
 	default:
 		return fmt.Errorf("HMAC key must be []byte or string, got %T", key)
 	}
 
 	defer secureKey.Destroy()
 
-	//  Enforce minimum key length for cryptographic security
 	if len(keyBytes) < 32 {
 		return fmt.Errorf("HMAC key too short: minimum 32 bytes required for security, got %d", len(keyBytes))
 	}
 
-	//  Check for weak keys (all zeros, repeated patterns)
 	if security.IsWeakKey(keyBytes) {
 		return fmt.Errorf("weak HMAC key detected: key must have sufficient entropy")
 	}
@@ -58,9 +55,7 @@ func (h *hmacSigningMethod) Verify(signingString string, signature string, key a
 	expectedSigBytes := hasher.Sum(nil)
 	defer security.ZeroBytes(expectedSigBytes)
 
-	//  Constant-time comparison to prevent timing attacks
 	if !security.SecureCompare(sigBytes, expectedSigBytes) {
-		// Add secure random delay to prevent timing analysis
 		security.SecureRandomDelay()
 		return errors.New("signature verification failed")
 	}
@@ -79,19 +74,16 @@ func (h *hmacSigningMethod) Sign(signingString string, key any) (string, error) 
 	case string:
 		secureKey = security.NewSecureBytesFromSlice([]byte(k))
 		keyBytes = secureKey.Bytes()
-		// Note: Cannot safely zero string due to immutability
 	default:
 		return "", fmt.Errorf("HMAC key must be []byte or string, got %T", key)
 	}
 
 	defer secureKey.Destroy()
 
-	//  Enforce minimum key length for cryptographic security
 	if len(keyBytes) < 32 {
 		return "", fmt.Errorf("HMAC key too short: minimum 32 bytes required for security, got %d", len(keyBytes))
 	}
 
-	//  Check for weak keys (all zeros, repeated patterns)
 	if security.IsWeakKey(keyBytes) {
 		return "", fmt.Errorf("weak HMAC key detected: key must have sufficient entropy")
 	}

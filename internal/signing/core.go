@@ -16,7 +16,6 @@ type Method interface {
 	Hash() crypto.Hash
 }
 
-// SignedString creates a signed JWT token string with optimized performance
 func SignedString(header map[string]any, claims any, method Method, key any) (string, error) {
 	headerJSON, err := json.Marshal(header)
 	if err != nil {
@@ -54,7 +53,6 @@ func SignedString(header map[string]any, claims any, method Method, key any) (st
 	return string(tokenBuf), nil
 }
 
-// validateAlgorithmSecurity performs algorithm security validation
 func validateAlgorithmSecurity(alg string) error {
 	if alg == "" {
 		return fmt.Errorf("algorithm cannot be empty")
@@ -62,7 +60,6 @@ func validateAlgorithmSecurity(alg string) error {
 
 	normalizedAlg := strings.ToUpper(strings.TrimSpace(alg))
 
-	// Check against secure whitelist
 	secureAlgorithms := map[string]bool{
 		"HS256": true, "HS384": true, "HS512": true,
 	}
@@ -74,9 +71,7 @@ func validateAlgorithmSecurity(alg string) error {
 	return nil
 }
 
-// GetInternalSigningMethod returns the internal signing method for the given algorithm
 func GetInternalSigningMethod(alg string) (Method, error) {
-	// Enhanced security validation
 	if err := validateAlgorithmSecurity(alg); err != nil {
 		return nil, fmt.Errorf("algorithm security validation failed: %w", err)
 	}

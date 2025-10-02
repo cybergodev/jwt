@@ -14,22 +14,22 @@ type Config struct {
 	RefreshTokenTTL time.Duration  `yaml:"refresh_token_ttl" json:"refresh_token_ttl"`
 	Issuer          string         `yaml:"issuer" json:"issuer"`
 	SigningMethod   SigningMethod  `yaml:"signing_method" json:"signing_method"`
-	Timezone        *time.Location `yaml:"-" json:"-"` // Default timezone for token timestamps
-	EnableRateLimit bool           `yaml:"enable_rate_limit" json:"enable_rate_limit"` // Enable rate limiting (default: false)
-	RateLimit       *RateLimitConfig `yaml:"rate_limit,omitempty" json:"rate_limit,omitempty"` // Optional rate limiting configuration
+	Timezone        *time.Location   `yaml:"-" json:"-"`
+	EnableRateLimit bool             `yaml:"enable_rate_limit" json:"enable_rate_limit"`
+	RateLimit       *RateLimitConfig `yaml:"rate_limit,omitempty" json:"rate_limit,omitempty"`
 }
 
 // DefaultConfig returns a secure default configuration for production use
 func DefaultConfig() Config {
 	return Config{
-		SecretKey:       "", // Must be set by user
+		SecretKey:       "",
 		AccessTokenTTL:  15 * time.Minute,
 		RefreshTokenTTL: 7 * 24 * time.Hour,
 		Issuer:          "jwt-service",
 		SigningMethod:   SigningMethodHS256,
 		Timezone:        time.Local,
-		EnableRateLimit: false, // Rate limiting disabled by default
-		RateLimit:       nil,   // No rate limiting configuration by default
+		EnableRateLimit: false,
+		RateLimit:       nil,
 	}
 }
 
@@ -39,17 +39,14 @@ func (c *Config) Validate() error {
 		return ErrInvalidConfig
 	}
 
-	// Strict secret key validation
 	if len(c.SecretKey) < 32 {
 		return fmt.Errorf("secret key too short: minimum 32 bytes required, got %d", len(c.SecretKey))
 	}
 
-	// Check for weak keys
 	if security.IsWeakKey([]byte(c.SecretKey)) {
 		return fmt.Errorf("weak secret key detected: key must have sufficient entropy and complexity")
 	}
 
-	// Validate TTLs
 	if c.AccessTokenTTL <= 0 || c.RefreshTokenTTL <= 0 {
 		return fmt.Errorf("TTL must be positive")
 	}
@@ -58,12 +55,10 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("access token TTL must be less than refresh token TTL")
 	}
 
-	// Validate signing method
 	if c.SigningMethod == "" {
 		return ErrInvalidSigningMethod
 	}
 
-	// Validate supported signing methods
 	supportedMethods := map[SigningMethod]bool{
 		SigningMethodHS256: true,
 		SigningMethodHS384: true,

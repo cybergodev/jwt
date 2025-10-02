@@ -23,12 +23,12 @@ BenchmarkConcurrentValidate-8    85,000 ops/sec    12.8 μs/op    2,789 B/op    
 
 ### 🎯 Performance Targets
 
-| Operation | Target Throughput | Latency (P99) | Memory/Op | Production Ready |
-|-----------|------------------|---------------|-----------|------------------|
-| **Token Creation** | >80K ops/sec | <20μs | <4KB | ✅ |
-| **Token Validation** | >85K ops/sec | <15μs | <3KB | ✅ |
-| **Token Revocation** | >100K ops/sec | <10μs | <2KB | ✅ |
-| **Concurrent Operations** | >70K ops/sec | <25μs | <5KB | ✅ |
+| Operation                 | Target Throughput | Latency (P99) | Memory/Op | Production Ready |
+|---------------------------|-------------------|---------------|-----------|------------------|
+| **Token Creation**        | >80K ops/sec      | <20μs         | <4KB      | ✅                |
+| **Token Validation**      | >85K ops/sec      | <15μs         | <3KB      | ✅                |
+| **Token Revocation**      | >100K ops/sec     | <10μs         | <2KB      | ✅                |
+| **Concurrent Operations** | >70K ops/sec      | <25μs         | <5KB      | ✅                |
 
 ---
 
@@ -432,19 +432,19 @@ go test -bench=BenchmarkConcurrent -benchtime=60s -cpu=1,2,4,8
 
 ### Algorithm Performance
 
-| Algorithm | Speed | Security | Memory | Recommendation |
-|-----------|-------|----------|--------|----------------|
-| **HS256** | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐ | ⭐⭐⭐⭐⭐ | **Best for high-throughput** |
-| **HS384** | ⭐⭐⭐⭐ | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐ | Balanced performance/security |
-| **HS512** | ⭐⭐⭐ | ⭐⭐⭐⭐⭐ | ⭐⭐⭐ | Maximum security applications |
+| Algorithm | Speed | Security | Memory | Recommendation                |
+|-----------|-------|----------|--------|-------------------------------|
+| **HS256** | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐     | ⭐⭐⭐⭐⭐  | **Best for high-throughput**  |
+| **HS384** | ⭐⭐⭐⭐  | ⭐⭐⭐⭐⭐    | ⭐⭐⭐⭐   | Balanced performance/security |
+| **HS512** | ⭐⭐⭐   | ⭐⭐⭐⭐⭐    | ⭐⭐⭐    | Maximum security applications |
 
 ### Usage Pattern Performance
 
-| Pattern | Throughput | Latency | Memory | Best For |
-|---------|------------|---------|--------|----------|
-| **Processor Pool** | 85K ops/sec | 11μs | Low | High-concurrency APIs |
-| **Single Processor** | 80K ops/sec | 13μs | Medium | Standard applications |
-| **Convenience Functions** | 65K ops/sec | 15μs | High | Simple applications |
+| Pattern                   | Throughput  | Latency | Memory | Best For              |
+|---------------------------|-------------|---------|--------|-----------------------|
+| **Processor Pool**        | 85K ops/sec | 11μs    | Low    | High-concurrency APIs |
+| **Single Processor**      | 80K ops/sec | 13μs    | Medium | Standard applications |
+| **Convenience Functions** | 65K ops/sec | 15μs    | High   | Simple applications   |
 
 ---
 

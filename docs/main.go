@@ -9,44 +9,7 @@ import (
 
 func main() {
 
-	// Define user claims
-	// claims := jwt.Claims{
-	// 	UserID:      "user_12345",
-	// 	Username:    "john.doe",
-	// 	Role:        "admin",
-	// 	Permissions: []string{"read", "write", "delete"},
-	// }
-
 	secretKey := "Kx9#mP2$vL8@nQ5!wR7&tY3^uI6*oE4%aS1+dF0-g!"
-
-	// // Set token expiration time (default 15 minutes) - when token expires
-	// claims.ExpiresAt = jwt.NewNumericDate(time.Now().Add(60 * time.Minute))
-	//
-	// // Create token (processor automatically cached)
-	//
-	// token, err := jwt.CreateToken(secretKey, claims)
-	// if err != nil {
-	// 	log.Panicf("token creation failed: %v", err)
-	// }
-	//
-	// fmt.Printf("Generated token: %s\n", token)
-
-	// Custom configuration for production
-	// config := jwt.Config{
-	// 	AccessTokenTTL:  10 * time.Minute,       // Short-lived tokens
-	// 	RefreshTokenTTL: 24 * time.Hour,         // Daily refresh
-	// 	Issuer:          "myapp-production",     // App identifier
-	// 	SigningMethod:   jwt.SigningMethodHS512, // Stronger algorithm
-	// }
-	//
-	// processor, err := jwt.New(secretKey, config)
-	// if err != nil {
-	// 	log.Fatalf("Processor creation failed: %v", err)
-	// }
-	// defer processor.Close()
-	//
-	// token, err := processor.CreateToken(claims)
-	// fmt.Println(token)
 
 	// High-performance blacklist for production
 	blacklistConfig := jwt.BlacklistConfig{

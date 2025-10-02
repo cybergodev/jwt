@@ -105,9 +105,8 @@ func TestRevokeTokenConvenience(t *testing.T) {
 }
 
 func TestProcessorCaching(t *testing.T) {
-	// Clear cache before test
 	cacheMutex.Lock()
-	processorCache = make(map[string]*Processor)
+	processorCache = make(map[string]*cacheEntry)
 	cacheMutex.Unlock()
 
 	claims := Claims{
@@ -148,9 +147,8 @@ func TestProcessorCaching(t *testing.T) {
 }
 
 func TestProcessorCacheLimit(t *testing.T) {
-	// Clear cache before test
 	cacheMutex.Lock()
-	processorCache = make(map[string]*Processor)
+	processorCache = make(map[string]*cacheEntry)
 	cacheMutex.Unlock()
 
 	claims := Claims{
@@ -295,9 +293,8 @@ func TestConvenienceFunctionErrors(t *testing.T) {
 }
 
 func TestConvenienceFunctionCacheCleanup(t *testing.T) {
-	// Clear cache before test
 	cacheMutex.Lock()
-	processorCache = make(map[string]*Processor)
+	processorCache = make(map[string]*cacheEntry)
 	cacheMutex.Unlock()
 
 	claims := Claims{
@@ -320,10 +317,9 @@ func TestConvenienceFunctionCacheCleanup(t *testing.T) {
 		t.Errorf("Expected 1 cached processor, got %d", initialSize)
 	}
 
-	// Clear cache manually (simulating cleanup)
 	cacheMutex.Lock()
-	for key, processor := range processorCache {
-		processor.Close()
+	for key, entry := range processorCache {
+		entry.processor.Close()
 		delete(processorCache, key)
 	}
 	cacheMutex.Unlock()

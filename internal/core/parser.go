@@ -9,21 +9,13 @@ import (
 	"github.com/cybergodev/jwt/internal/signing"
 )
 
-// TokenError Import error types from parent package
-type TokenError = interface {
-	Error() string
-	Unwrap() error
-}
-
-// Error variables (will be resolved at runtime)
 var (
 	errEmptyToken         = fmt.Errorf("empty token")
 	errTokenTooLarge      = fmt.Errorf("token too large")
 	errInvalidTokenFormat = fmt.Errorf("invalid token format")
 )
 
-// NewTokenError creates a token error (simplified version for internal use)
-func NewTokenError(tokenType, message string, err error) error {
+func newTokenError(tokenType, message string, err error) error {
 	if err != nil {
 		return fmt.Errorf("token error (%s): %s: %w", tokenType, message, err)
 	}
@@ -67,18 +59,18 @@ func fastSplit3(s string, sep byte) (string, string, string, bool) {
 // ParseWithClaims parses a token string with claims
 func ParseWithClaims(tokenString string, claims any, keyFunc func(*Core) (any, error)) (*Core, error) {
 	if len(tokenString) == 0 {
-		return nil, NewTokenError("parse", "token cannot be empty", errEmptyToken)
+		return nil, newTokenError("parse", "token cannot be empty", errEmptyToken)
 	}
 
 	const maxTokenLength = 8192
 	if len(tokenString) > maxTokenLength {
-		return nil, NewTokenError("parse",
+		return nil, newTokenError("parse",
 			fmt.Sprintf("token too large: maximum %d characters allowed", maxTokenLength),
 			errTokenTooLarge)
 	}
 
 	if !isValidJWTFormat(tokenString) {
-		return nil, NewTokenError("parse", "invalid JWT format", errInvalidTokenFormat)
+		return nil, newTokenError("parse", "invalid JWT format", errInvalidTokenFormat)
 	}
 
 	part1, part2, part3, ok := fastSplit3(tokenString, '.')
@@ -115,12 +107,10 @@ func ParseWithClaims(tokenString string, claims any, keyFunc func(*Core) (any, e
 		return nil, fmt.Errorf("missing or invalid alg header")
 	}
 
-	//  Prevent algorithm confusion attacks
 	if alg == "" || alg == "none" {
 		return nil, fmt.Errorf("insecure algorithm: %s", alg)
 	}
 
-	//  Strict algorithm validation
 	if isInsecureAlgorithm(alg) {
 		return nil, fmt.Errorf("insecure algorithm detected: %s", alg)
 	}
@@ -148,9 +138,6 @@ func ParseWithClaims(tokenString string, claims any, keyFunc func(*Core) (any, e
 	return token, nil
 }
 
-// ParseUnverified parses a token without signature verification
-// WARNING: This function does not verify the signature. Use only for debugging or when
-// signature verification is performed separately.
 func ParseUnverified(tokenString string, claims any) (*Core, map[string]any, error) {
 	if len(tokenString) == 0 {
 		return nil, nil, fmt.Errorf("empty token")
@@ -181,7 +168,6 @@ func ParseUnverified(tokenString string, claims any) (*Core, map[string]any, err
 		return nil, nil, fmt.Errorf("failed to decode header: %w", err)
 	}
 
-	// Validate algorithm in header even for unverified parsing
 	if alg, ok := header["alg"].(string); ok {
 		if isInsecureAlgorithm(alg) {
 			return nil, nil, fmt.Errorf("insecure algorithm detected")
@@ -204,9 +190,7 @@ func ParseUnverified(tokenString string, claims any) (*Core, map[string]any, err
 	return token, header, nil
 }
 
-// isInsecureAlgorithm performs comprehensive insecure algorithm detection
 func isInsecureAlgorithm(alg string) bool {
-	// Normalize algorithm name for security check
 	normalizedAlg := strings.ToUpper(strings.TrimSpace(alg))
 
 	insecureAlgorithms := map[string]bool{
