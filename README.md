@@ -48,7 +48,7 @@ func main() {
         Permissions: []string{"read", "write"},
     }
 	
-    // Set token expiration time (default 15 minutes)
+    // Set token expiration time (2 hours in this example)
     claims.ExpiresAt = jwt.NewNumericDate(time.Now().Add(2 * time.Hour))
 
     // Create token - it's that simple!
@@ -140,13 +140,13 @@ processor, err := jwt.NewWithBlacklist(secretKey, blacklistConfig, config)
 
 ## 🌟 Core Features
 
-| Feature | Description | Advantage |
-|---------|-------------|-----------|
-| 🛡️ **Production-Ready Security** | Comprehensive security testing | Protects against all known JWT attacks |
-| ⚡ **High Performance** | Object pool + cache optimization | 2-3x faster than mainstream libraries |
-| 📦 **Zero Dependencies** | Only depends on Go standard library | No supply chain security risks |
-| 🔧 **Minimal API** | 3 core functions | Get started in 5 minutes |
-| 🚀 **Production Ready** | Security protection + rate limiting | Ready to use out of the box |
+| Feature                           | Description                         | Advantage                              |
+|-----------------------------------|-------------------------------------|----------------------------------------|
+| 🛡️ **Production-Ready Security** | Comprehensive security testing      | Protects against all known JWT attacks |
+| ⚡ **High Performance**            | Object pool + cache optimization    | 2-3x faster than mainstream libraries  |
+| 📦 **Zero Dependencies**          | Only depends on Go standard library | No supply chain security risks         |
+| 🔧 **Minimal API**                | 3 core functions                    | Get started in 5 minutes               |
+| 🚀 **Production Ready**           | Security protection + rate limiting | Ready to use out of the box            |
 
 ## 🎛️ Rate Limiting Options
 
@@ -280,14 +280,14 @@ func protectedHandler(w http.ResponseWriter, r *http.Request) {
 
 ## 📚 Detailed Documentation
 
-| Documentation | Content | Use Case |
-|---------------|---------|----------|
-| [API Reference](docs/API.md) | Complete API documentation | Development reference |
-| [Security Guide](docs/SECURITY.md) | Security features explained | Security audits |
-| [Performance Guide](docs/PERFORMANCE.md) | Performance optimization tips | High-concurrency scenarios |
-| [Integration Examples](docs/EXAMPLES.md) | Framework integration code | Project integration |
-| [Best Practices](docs/BEST_PRACTICES.md) | Production environment guide | Deployment |
-| [Troubleshooting](docs/TROUBLESHOOTING.md) | Common problem solutions | Issue diagnosis |
+| Documentation                              | Content                       | Use Case                   |
+|--------------------------------------------|-------------------------------|----------------------------|
+| [API Reference](docs/API.md)               | Complete API documentation    | Development reference      |
+| [Security Guide](docs/SECURITY.md)         | Security features explained   | Security audits            |
+| [Performance Guide](docs/PERFORMANCE.md)   | Performance optimization tips | High-concurrency scenarios |
+| [Integration Examples](docs/EXAMPLES.md)   | Framework integration code    | Project integration        |
+| [Best Practices](docs/BEST_PRACTICES.md)   | Production environment guide  | Deployment                 |
+| [Troubleshooting](docs/TROUBLESHOOTING.md) | Common problem solutions      | Issue diagnosis            |
 
 ---
 

@@ -63,16 +63,16 @@ func CreateToken(secretKey string, claims Claims) (string, error)
 ```
 
 #### Parameters
-| Parameter | Type | Description | Requirements |
-|-----------|------|-------------|--------------|
+| Parameter   | Type     | Description              | Requirements            |
+|-------------|----------|--------------------------|-------------------------|
 | `secretKey` | `string` | Cryptographic secret key | ≥32 bytes, high entropy |
-| `claims` | `Claims` | JWT payload data | Valid claims structure |
+| `claims`    | `Claims` | JWT payload data         | Valid claims structure  |
 
 #### Returns
-| Type | Description |
-|------|-------------|
-| `string` | Base64-encoded JWT token |
-| `error` | Error details or `nil` on success |
+| Type     | Description                       |
+|----------|-----------------------------------|
+| `string` | Base64-encoded JWT token          |
+| `error`  | Error details or `nil` on success |
 
 #### Example: Basic Token Creation
 ```go
@@ -106,7 +106,6 @@ func generateUserToken(userID, role string, permissions []string) (string, error
         Permissions: permissions,
     }
 
-    // Set token expiration time (default 15 minutes) - when token expires
     claims.ExpiresAt = jwt.NewNumericDate(time.Now().Add(60 * time.Minute))
 
     token, err := jwt.CreateToken(os.Getenv("JWT_SECRET"), claims)
@@ -128,17 +127,17 @@ func ValidateToken(secretKey, tokenString string) (*Claims, bool, error)
 ```
 
 #### Parameters
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `secretKey` | `string` | Same secret key used for token creation |
-| `tokenString` | `string` | JWT token to validate |
+| Parameter     | Type     | Description                             |
+|---------------|----------|-----------------------------------------|
+| `secretKey`   | `string` | Same secret key used for token creation |
+| `tokenString` | `string` | JWT token to validate                   |
 
 #### Returns
-| Type | Description |
-|------|-------------|
+| Type      | Description                                  |
+|-----------|----------------------------------------------|
 | `*Claims` | Parsed and validated claims (nil if invalid) |
-| `bool` | `true` if token is valid and not expired |
-| `error` | Validation error details or `nil` |
+| `bool`    | `true` if token is valid and not expired     |
+| `error`   | Validation error details or `nil`            |
 
 #### Example: Basic Token Validation
 ```go
@@ -485,7 +484,6 @@ func createUserSession(processor *jwt.Processor, userID, role string) (string, e
         Role:      role,
     }
 
-    // Set token expiration time (default 15 minutes) - when token expires
     claims.ExpiresAt = jwt.NewNumericDate(time.Now().Add(60 * time.Minute))
 
     return processor.CreateToken(claims)

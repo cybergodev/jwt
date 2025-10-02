@@ -357,7 +357,6 @@ config := jwt.RateLimitConfig{
 func testBlacklistFunctionality(processor *jwt.Processor) {
     // Create test token
     claims := jwt.Claims{UserID: "test"}
-    // Set token expiration time (default 15 minutes) - when token expires
     claims.ExpiresAt = jwt.NewNumericDate(time.Now().Add(60 * time.Minute))
     token, err := processor.CreateToken(claims)
     if err != nil {
@@ -408,7 +407,6 @@ func healthCheckHandler(processor *jwt.Processor) http.HandlerFunc {
             UserID:    "health-check",
         }
 
-        // Set token expiration time (default 15 minutes) - when token expires
         testClaims.ExpiresAt = jwt.NewNumericDate(time.Now().Add(5 * time.Minute))
 
         // Test token creation
