@@ -333,7 +333,6 @@ func loginHandler(c *gin.Context) {
         Permissions: user.Permissions,
     }
 
-    // Set token expiration time (default 15 minutes) - when token expires
     claims.ExpiresAt = jwt.NewNumericDate(time.Now().Add(20 * time.Minute))
 
     // Generate access token

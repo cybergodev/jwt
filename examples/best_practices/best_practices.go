@@ -185,23 +185,12 @@ func resourceManagementBestPractices() {
 
 	secretKey := "Kx9#mP2$vL8@nQ5!wR7&tY3^uI6*oE4%aS1+dF0-gH9~jK2#bN5$cM8@xZ7&vB4!"
 
-	// ✅ DO: Always close processors to free resources
 	fmt.Println("Demonstrating proper resource cleanup...")
 
 	processor, err := jwt.New(secretKey)
 	if err != nil {
 		log.Fatalf("Processor creation failed: %v", err)
 	}
-
-	// ✅ DO: Use defer for guaranteed cleanup
-	defer func() {
-		fmt.Printf("✅ Cleaning up processor resources...\n")
-		if err := processor.Close(); err != nil {
-			log.Printf("Processor close failed: %v", err)
-		} else {
-			fmt.Printf("✅ Processor closed successfully\n")
-		}
-	}()
 
 	// ✅ DO: Use context for timeout control
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -213,13 +202,11 @@ func resourceManagementBestPractices() {
 		Role:     "user",
 	}
 
-	// Create token with context
 	token, err := processor.CreateTokenWithContext(ctx, claims)
 	if err != nil {
 		log.Fatalf("Token creation failed: %v", err)
 	}
 
-	// Validate token with context
 	_, valid, err := processor.ValidateTokenWithContext(ctx, token)
 	if err != nil || !valid {
 		log.Fatalf("Token validation failed: %v", err)
@@ -232,6 +219,7 @@ func resourceManagementBestPractices() {
 	fmt.Printf("✅ Processor cache cleared\n")
 
 	// ✅ DO: Use graceful shutdown with context
+	fmt.Printf("✅ Cleaning up processor resources...\n")
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer shutdownCancel()
 

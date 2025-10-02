@@ -3,11 +3,17 @@ package jwt
 import (
 	"crypto/sha256"
 	"sync"
+	"time"
 )
 
-// processorCache caches processors for reuse
+type cacheEntry struct {
+	processor  *Processor
+	lastAccess time.Time
+	refCount   int32
+}
+
 var (
-	processorCache = make(map[string]*Processor)
+	processorCache = make(map[string]*cacheEntry)
 	cacheMutex     sync.RWMutex
 	maxCacheSize   = 100
 )
@@ -39,59 +45,72 @@ func RevokeToken(secretKey, tokenString string) error {
 	return processor.RevokeToken(tokenString)
 }
 
-// getOrCreateProcessor gets or creates a cached processor with optimized caching
-// This processor is created without rate limiting for convenience methods
 func getOrCreateProcessor(secretKey string) (*Processor, error) {
 	if len(secretKey) < 32 {
 		return nil, ErrInvalidSecretKey
 	}
 
-	// Create secure cache key using first 16 bytes of hash
 	hash := sha256.Sum256([]byte(secretKey))
-	cacheKey := string(hash[:16]) // More efficient than hex formatting
+	cacheKey := string(hash[:16])
 
-	// Fast path: read lock only
 	cacheMutex.RLock()
-	if processor, exists := processorCache[cacheKey]; exists {
+	if entry, exists := processorCache[cacheKey]; exists {
+		entry.lastAccess = time.Now()
+		processor := entry.processor
 		cacheMutex.RUnlock()
 		return processor, nil
 	}
 	cacheMutex.RUnlock()
 
-	// Slow path: write lock for creation
 	cacheMutex.Lock()
 	defer cacheMutex.Unlock()
 
-	// Double-check pattern
-	if processor, exists := processorCache[cacheKey]; exists {
-		return processor, nil
+	if entry, exists := processorCache[cacheKey]; exists {
+		entry.lastAccess = time.Now()
+		return entry.processor, nil
 	}
 
-	// Create new processor without rate limiting for convenience methods
-	// Use default config with rate limiting explicitly disabled
 	config := DefaultConfig()
-	config.EnableRateLimit = false // Ensure rate limiting is disabled
+	config.EnableRateLimit = false
 
 	processor, err := New(secretKey, config)
 	if err != nil {
 		return nil, err
 	}
 
-	// Simple cache eviction: remove oldest when at capacity
 	if len(processorCache) >= maxCacheSize {
-		evictOldestProcessor()
+		evictLRUProcessor()
 	}
 
-	processorCache[cacheKey] = processor
+	processorCache[cacheKey] = &cacheEntry{
+		processor:  processor,
+		lastAccess: time.Now(),
+		refCount:   0,
+	}
 	return processor, nil
 }
 
-// evictOldestProcessor removes the first processor from cache (FIFO)
-func evictOldestProcessor() {
-	for k, processor := range processorCache {
-		processor.Close()
-		delete(processorCache, k)
-		break // Only remove one
+func evictLRUProcessor() {
+	var oldestKey string
+	var oldestTime time.Time
+	first := true
+
+	for k, entry := range processorCache {
+		if entry.refCount > 0 {
+			continue
+		}
+		if first || entry.lastAccess.Before(oldestTime) {
+			oldestKey = k
+			oldestTime = entry.lastAccess
+			first = false
+		}
+	}
+
+	if oldestKey != "" {
+		if entry, exists := processorCache[oldestKey]; exists {
+			entry.processor.Close()
+			delete(processorCache, oldestKey)
+		}
 	}
 }
 
@@ -100,8 +119,8 @@ func ClearProcessorCache() {
 	cacheMutex.Lock()
 	defer cacheMutex.Unlock()
 
-	for _, processor := range processorCache {
-		processor.Close()
+	for _, entry := range processorCache {
+		entry.processor.Close()
 	}
 	clear(processorCache)
 }

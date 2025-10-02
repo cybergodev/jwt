@@ -6,17 +6,10 @@ import (
 
 // BlacklistConfig represents blacklist configuration
 type BlacklistConfig struct {
-	// CleanupInterval defines how often to run cleanup of expired tokens
-	CleanupInterval time.Duration `json:"cleanup_interval"`
-
-	// MaxSize defines the maximum number of tokens to keep in memory
-	MaxSize int `json:"max_size"`
-
-	// EnableAutoCleanup enables automatic cleanup of expired tokens
-	EnableAutoCleanup bool `json:"enable_auto_cleanup"`
-
-	// StoreType defines the storage backend type
-	StoreType string `json:"store_type"`
+	CleanupInterval   time.Duration `json:"cleanup_interval"`
+	MaxSize           int           `json:"max_size"`
+	EnableAutoCleanup bool          `json:"enable_auto_cleanup"`
+	StoreType         string        `json:"store_type"`
 }
 
 // DefaultBlacklistConfig returns a default blacklist configuration

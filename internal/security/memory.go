@@ -22,7 +22,6 @@ func NewSecureBytesFromSlice(data []byte) *SecureBytes {
 	}
 	copy(secure.data, data)
 
-	// Only set finalizer for larger allocations to reduce GC pressure
 	if len(data) > 256 {
 		runtime.SetFinalizer(secure, (*SecureBytes).destroy)
 	}
@@ -55,7 +54,6 @@ func (s *SecureBytes) Destroy() {
 	runtime.SetFinalizer(s, nil)
 }
 
-// destroy is the internal cleanup function (must be called with mutex held)
 func (s *SecureBytes) destroy() {
 	if s.data != nil {
 		ZeroBytes(s.data)
@@ -63,39 +61,24 @@ func (s *SecureBytes) destroy() {
 	}
 }
 
-// ZeroBytes securely zeros a byte slice with multiple passes
+// ZeroBytes securely zeros a byte slice
 func ZeroBytes(data []byte) {
 	if len(data) == 0 {
 		return
 	}
 
-	// Multiple-pass secure erasure
-	// Pass 1: Zero all bytes
 	for i := range data {
 		data[i] = 0
 	}
 
-	// Pass 2: Fill with random data
-	randomData := make([]byte, len(data))
-	rand.Read(randomData)
-	copy(data, randomData)
-
-	// Pass 3: Fill with 0xFF
 	for i := range data {
 		data[i] = 0xFF
 	}
 
-	// Pass 4: Fill with alternating pattern
-	for i := range data {
-		data[i] = byte(i % 256)
-	}
-
-	// Pass 5: Final zero pass
 	for i := range data {
 		data[i] = 0
 	}
 
-	// Ensure compiler doesn't optimize away the writes
 	runtime.KeepAlive(data)
 }
 
@@ -104,7 +87,6 @@ func SecureCompare(a, b []byte) bool {
 	lenA := len(a)
 	lenB := len(b)
 
-	// Fast path for equal lengths (most common case)
 	if lenA == lenB {
 		var result byte
 		for i := 0; i < lenA; i++ {
@@ -113,7 +95,6 @@ func SecureCompare(a, b []byte) bool {
 		return result == 0
 	}
 
-	// Slow path for different lengths - still constant time
 	maxLen := lenA
 	if lenB > maxLen {
 		maxLen = lenB
@@ -136,19 +117,14 @@ func SecureCompare(a, b []byte) bool {
 
 // RandomDelay adds random delay to prevent timing attacks
 func RandomDelay() {
-	// Add small random delay (1-50 microseconds) to prevent timing analysis
-	// Using math/rand here is acceptable as this is not for cryptographic purposes
 	delay := time.Duration(mathrand.Intn(50)+1) * time.Microsecond
 	time.Sleep(delay)
 }
 
 // SecureRandomDelay adds cryptographically secure random delay for critical operations
 func SecureRandomDelay() {
-	// Use crypto/rand for more secure delay generation
 	var delayBytes [1]byte
 	rand.Read(delayBytes[:])
-
-	// Convert to delay between 10-100 microseconds
 	delay := time.Duration(10+int(delayBytes[0])%90) * time.Microsecond
 	time.Sleep(delay)
 }

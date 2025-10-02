@@ -48,7 +48,7 @@ func main() {
         Permissions: []string{"read", "write"},
     }
 	
-    // 设置Token过期时间 (默认15分钟)
+    // 设置Token过期时间 (本例中设置为2小时)
     claims.ExpiresAt = jwt.NewNumericDate(time.Now().Add(2 * time.Hour))
 
     // 创建token - 就这么简单！

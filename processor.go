@@ -83,7 +83,6 @@ func NewWithBlacklist(secretKey string, blacklistConfig BlacklistConfig, config 
 
 	var rateLimiter *SecurityRateLimiter
 	if cfg.EnableRateLimit {
-		// Use rate limit configuration from config if available
 		if cfg.RateLimit != nil {
 			rateLimiter = NewSecurityRateLimiterWithConfig(*cfg.RateLimit)
 		} else {
@@ -110,11 +109,9 @@ func (p *Processor) CreateToken(claims Claims) (string, error) {
 	return p.CreateTokenWithContext(context.Background(), claims)
 }
 
-// CreateTokenWithContext creates a JWT token with context support
 func (p *Processor) CreateTokenWithContext(ctx context.Context, claims Claims) (string, error) {
-	//  Comprehensive claims validation to prevent attacks
-	if err := validateClaimsSecurely(&claims); err != nil {
-		return "", fmt.Errorf("claims security validation failed: %w", err)
+	if err := validateClaims(&claims); err != nil {
+		return "", fmt.Errorf("claims validation failed: %w", err)
 	}
 
 	select {
@@ -138,25 +135,13 @@ func (p *Processor) ValidateToken(tokenString string) (*Claims, bool, error) {
 	return p.ValidateTokenWithContext(context.Background(), tokenString)
 }
 
-// ValidateTokenWithContext validates a JWT token with context support
 func (p *Processor) ValidateTokenWithContext(ctx context.Context, tokenString string) (*Claims, bool, error) {
-	// Basic token structure validation
-	if strings.Count(tokenString, ".") != 2 {
-		return nil, false, ErrInvalidToken
-	}
-
-	// Comprehensive token validation to prevent attacks
-	if tokenString == "" {
-		return nil, false, ErrEmptyToken
-	}
-
-	// Check for malicious token patterns
-	if containsMaliciousPatterns(tokenString) {
-		return nil, false, fmt.Errorf("malicious token pattern detected")
-	}
-
 	if err := validateTokenSize(tokenString); err != nil {
-		return nil, false, fmt.Errorf("token security validation failed: %w", err)
+		return nil, false, err
+	}
+
+	if containsMaliciousPatterns(tokenString) {
+		return nil, false, ErrInvalidToken
 	}
 
 	select {
@@ -174,9 +159,7 @@ func (p *Processor) ValidateTokenWithContext(ctx context.Context, tokenString st
 
 	tokInfo, err := p.validateTokenInternal(tokenString)
 	if err != nil {
-		// Add random delay to prevent timing attacks on error paths
 		security.SecureRandomDelay()
-		// Return generic error to prevent information leakage
 		return nil, false, ErrInvalidToken
 	}
 	defer tokInfo.cleanup()
@@ -227,15 +210,11 @@ func (p *Processor) RefreshToken(refreshTokenString string) (string, error) {
 		return "", fmt.Errorf("refresh token is not valid")
 	}
 
-	// Create new access token with the same claims but fresh timestamps
 	newClaims := *tokenInfo.claims
-
-	// Clear time fields to get fresh ones
 	newClaims.IssuedAt = NumericDate{}
 	newClaims.ExpiresAt = NumericDate{}
-	newClaims.ID = "" // Generate new token ID
+	newClaims.ID = ""
 
-	// Create new access token using AccessTokenTTL
 	return p.createTokenWithClaims(newClaims)
 }
 
@@ -276,7 +255,6 @@ func (p *Processor) CloseWithContext(ctx context.Context) error {
 		p.secretKey = nil
 	}
 
-	// Close rate limiter
 	if p.rateLimiter != nil {
 		p.rateLimiter.Close()
 		p.rateLimiter = nil
@@ -289,7 +267,11 @@ func (p *Processor) CloseWithContext(ctx context.Context) error {
 
 // finalize is called by the garbage collector to ensure resources are cleaned up
 func (p *Processor) finalize() {
-	if !p.closed {
+	p.mu.Lock()
+	closed := p.closed
+	p.mu.Unlock()
+
+	if !closed {
 		p.Close()
 	}
 }
@@ -313,27 +295,19 @@ func (p *Processor) createTokenWithClaims(claims Claims) (string, error) {
 		return "", err
 	}
 
-	// Check rate limiting
 	if p.rateLimiter != nil && p.rateLimiter.IsRateLimited("token_creation", claims.UserID) {
 		return "", ErrRateLimitExceeded
 	}
 
-	if err := validateClaimsData(claims); err != nil {
-		return "", fmt.Errorf("invalid claims data: %w", err)
-	}
-
-	// Use pooled claims for better performance
 	claimsCopy := getClaims()
 	defer putClaims(claimsCopy)
 
-	// Copy claims efficiently - only copy necessary fields
 	claimsCopy.UserID = claims.UserID
 	claimsCopy.Username = claims.Username
 	claimsCopy.Role = claims.Role
 	claimsCopy.SessionID = claims.SessionID
 	claimsCopy.ClientID = claims.ClientID
 
-	// Copy slices efficiently
 	if len(claims.Permissions) > 0 {
 		claimsCopy.Permissions = claimsCopy.Permissions[:0]
 		claimsCopy.Permissions = append(claimsCopy.Permissions, claims.Permissions...)
@@ -347,14 +321,15 @@ func (p *Processor) createTokenWithClaims(claims Claims) (string, error) {
 		claimsCopy.Audience = append(claimsCopy.Audience, claims.Audience...)
 	}
 
-	// Copy map efficiently
 	if len(claims.Extra) > 0 {
+		if claimsCopy.Extra == nil {
+			claimsCopy.Extra = make(map[string]any, len(claims.Extra))
+		}
 		for k, v := range claims.Extra {
 			claimsCopy.Extra[k] = v
 		}
 	}
 
-	// Copy registered claims
 	claimsCopy.Issuer = claims.Issuer
 	claimsCopy.Subject = claims.Subject
 	claimsCopy.ExpiresAt = claims.ExpiresAt
@@ -390,7 +365,6 @@ func (p *Processor) createTokenWithClaims(claims Claims) (string, error) {
 	return tokenString, nil
 }
 
-// createRefreshTokenWithClaims creates a refresh token with longer TTL (internal use only)
 func (p *Processor) createRefreshTokenWithClaims(claims Claims) (string, error) {
 	if err := p.checkClosed(); err != nil {
 		return "", err
@@ -426,19 +400,18 @@ func (p *Processor) createRefreshTokenWithClaims(claims Claims) (string, error) 
 	return tokenString, nil
 }
 
-// validateTokenInternal validates a JWT token and returns token information (internal use only)
 func (p *Processor) validateTokenInternal(tokenString string) (*tokenInfo, error) {
 	claims := getClaims()
 
 	token, err := core.ParseWithClaims(tokenString, claims, func(token *core.Core) (any, error) {
 		alg, ok := token.Header["alg"].(string)
 		if !ok {
-			return nil, fmt.Errorf("missing algorithm in token header")
+			return nil, ErrInvalidToken
 		}
 
 		expectedAlg := string(p.signingMethod)
 		if alg != expectedAlg {
-			return nil, fmt.Errorf("algorithm mismatch: expected %s, got %s", expectedAlg, alg)
+			return nil, ErrInvalidToken
 		}
 
 		return p.secretKey.Bytes(), nil
@@ -446,13 +419,12 @@ func (p *Processor) validateTokenInternal(tokenString string) (*tokenInfo, error
 
 	if err != nil {
 		putClaims(claims)
-		return nil, fmt.Errorf("failed to parse token: %w", err)
+		return nil, ErrInvalidToken
 	}
 
 	now := time.Now()
 	valid := token.Valid
 
-	// Time comparisons with proper precision handling
 	if !claims.ExpiresAt.IsZero() && now.After(claims.ExpiresAt.Time) {
 		valid = false
 	}
@@ -476,38 +448,34 @@ func (p *Processor) validateTokenInternal(tokenString string) (*tokenInfo, error
 	return info, nil
 }
 
-// validateClaimsData validates claims data for security issues (internal use only)
-func validateClaimsData(claims Claims) error {
-	// Check for excessively long string fields to prevent DoS
-	const maxStringLength = 1024
-
-	if len(claims.UserID) > maxStringLength {
-		return fmt.Errorf("UserID too long: maximum %d characters", maxStringLength)
-	}
-	if len(claims.Username) > maxStringLength {
-		return fmt.Errorf("Username too long: maximum %d characters", maxStringLength)
-	}
-	if len(claims.Role) > maxStringLength {
-		return fmt.Errorf("Role too long: maximum %d characters", maxStringLength)
-	}
-	if len(claims.SessionID) > maxStringLength {
-		return fmt.Errorf("SessionID too long: maximum %d characters", maxStringLength)
-	}
-	if len(claims.ClientID) > maxStringLength {
-		return fmt.Errorf("ClientID too long: maximum %d characters", maxStringLength)
-	}
-	if len(claims.Issuer) > maxStringLength {
-		return fmt.Errorf("Issuer too long: maximum %d characters", maxStringLength)
-	}
-	if len(claims.Subject) > maxStringLength {
-		return fmt.Errorf("Subject too long: maximum %d characters", maxStringLength)
-	}
-	if len(claims.ID) > maxStringLength {
-		return fmt.Errorf("ID too long: maximum %d characters", maxStringLength)
+func validateClaims(claims *Claims) error {
+	if claims.UserID == "" && claims.Username == "" {
+		return ErrInvalidClaims
 	}
 
-	// Check array sizes to prevent DoS
+	const maxStringLength = 256
 	const maxArraySize = 100
+	const maxExtraSize = 50
+
+	stringFields := map[string]string{
+		"UserID":    claims.UserID,
+		"Username":  claims.Username,
+		"Role":      claims.Role,
+		"SessionID": claims.SessionID,
+		"ClientID":  claims.ClientID,
+		"Issuer":    claims.Issuer,
+		"Subject":   claims.Subject,
+		"ID":        claims.ID,
+	}
+
+	for fieldName, fieldValue := range stringFields {
+		if fieldValue != "" {
+			if err := validateField(fieldName, fieldValue, maxStringLength); err != nil {
+				return err
+			}
+		}
+	}
+
 	if len(claims.Permissions) > maxArraySize {
 		return fmt.Errorf("too many permissions: maximum %d allowed", maxArraySize)
 	}
@@ -518,90 +486,121 @@ func validateClaimsData(claims Claims) error {
 		return fmt.Errorf("too many audiences: maximum %d allowed", maxArraySize)
 	}
 
-	// Check individual array elements
 	for _, perm := range claims.Permissions {
-		if len(perm) > maxStringLength {
-			return fmt.Errorf("permission too long: maximum %d characters", maxStringLength)
+		if err := validateField("permission", perm, maxStringLength); err != nil {
+			return err
 		}
 	}
 	for _, scope := range claims.Scopes {
-		if len(scope) > maxStringLength {
-			return fmt.Errorf("scope too long: maximum %d characters", maxStringLength)
+		if err := validateField("scope", scope, maxStringLength); err != nil {
+			return err
 		}
 	}
 	for _, aud := range claims.Audience {
-		if len(aud) > maxStringLength {
-			return fmt.Errorf("audience too long: maximum %d characters", maxStringLength)
+		if err := validateField("audience", aud, maxStringLength); err != nil {
+			return err
 		}
 	}
 
-	// Check Extra map size and content
-	const maxExtraSize = 50
 	if len(claims.Extra) > maxExtraSize {
 		return fmt.Errorf("too many extra claims: maximum %d allowed", maxExtraSize)
 	}
 
 	for key, value := range claims.Extra {
-		if len(key) > maxStringLength {
-			return fmt.Errorf("extra claim key too long: maximum %d characters", maxStringLength)
+		if err := validateField("extra_key", key, maxStringLength); err != nil {
+			return fmt.Errorf("invalid extra field key: %w", err)
 		}
-		if str, ok := value.(string); ok && len(str) > maxStringLength {
-			return fmt.Errorf("extra claim value too long: maximum %d characters", maxStringLength)
+		switch v := value.(type) {
+		case string:
+			if err := validateField("extra_value", v, maxStringLength); err != nil {
+				return fmt.Errorf("invalid extra field value for key %s: %w", key, err)
+			}
+		case []string:
+			for _, item := range v {
+				if err := validateField("extra_array_item", item, maxStringLength); err != nil {
+					return fmt.Errorf("invalid extra field array for key %s: %w", key, err)
+				}
+			}
+		case map[string]any:
+			return fmt.Errorf("nested maps not allowed in extra fields")
 		}
 	}
 
 	return nil
 }
 
-// getSigningMethod returns the signing method for the given algorithm (internal use only)
+func validateField(fieldName, value string, maxLength int) error {
+	if len(value) > maxLength {
+		return fmt.Errorf("field %s too long: maximum %d characters", fieldName, maxLength)
+	}
+
+	for i, char := range value {
+		if char == 0 {
+			return fmt.Errorf("field %s contains null byte at position %d", fieldName, i)
+		}
+		if char < 32 && char != 9 && char != 10 && char != 13 {
+			return fmt.Errorf("field %s contains control character at position %d", fieldName, i)
+		}
+	}
+
+	suspiciousPatterns := []string{
+		"<script", "</script", "javascript:", "data:", "eval(", "alert(",
+		"onload=", "onerror=", "onclick=", "../", "..\\", "file://",
+		"document.", "window.", "vbscript:", "http://", "https://",
+	}
+
+	lowerValue := strings.ToLower(value)
+	for _, pattern := range suspiciousPatterns {
+		if strings.Contains(lowerValue, pattern) {
+			return fmt.Errorf("field %s contains suspicious pattern", fieldName)
+		}
+	}
+
+	return nil
+}
+
 func getSigningMethod(method SigningMethod) (signing.Method, error) {
 	return signing.GetInternalSigningMethod(string(method))
 }
 
-// deepCopyClaims creates an optimized deep copy of claims using object pool
 func deepCopyClaims(src *Claims) *Claims {
 	if src == nil {
 		return nil
 	}
 
-	// Use object pool for better performance
-	dst := getClaims()
+	dst := &Claims{
+		UserID:    src.UserID,
+		Username:  src.Username,
+		Role:      src.Role,
+		SessionID: src.SessionID,
+		ClientID:  src.ClientID,
+		RegisteredClaims: RegisteredClaims{
+			Issuer:    src.Issuer,
+			Subject:   src.Subject,
+			ExpiresAt: src.ExpiresAt,
+			NotBefore: src.NotBefore,
+			IssuedAt:  src.IssuedAt,
+			ID:        src.ID,
+		},
+	}
 
-	// Copy simple string fields
-	dst.UserID = src.UserID
-	dst.Username = src.Username
-	dst.Role = src.Role
-	dst.SessionID = src.SessionID
-	dst.ClientID = src.ClientID
-
-	// Copy registered claims
-	dst.Issuer = src.Issuer
-	dst.Subject = src.Subject
-	dst.ExpiresAt = src.ExpiresAt
-	dst.NotBefore = src.NotBefore
-	dst.IssuedAt = src.IssuedAt
-	dst.ID = src.ID
-
-	// Efficiently copy slices using append for better performance
 	if len(src.Permissions) > 0 {
-		dst.Permissions = append(dst.Permissions[:0], src.Permissions...)
+		dst.Permissions = make([]string, len(src.Permissions))
+		copy(dst.Permissions, src.Permissions)
 	}
 
 	if len(src.Scopes) > 0 {
-		dst.Scopes = append(dst.Scopes[:0], src.Scopes...)
+		dst.Scopes = make([]string, len(src.Scopes))
+		copy(dst.Scopes, src.Scopes)
 	}
 
 	if len(src.Audience) > 0 {
-		dst.Audience = append(dst.Audience[:0], src.Audience...)
+		dst.Audience = make([]string, len(src.Audience))
+		copy(dst.Audience, src.Audience)
 	}
 
-	// Copy map efficiently
 	if len(src.Extra) > 0 {
-		if dst.Extra == nil {
-			dst.Extra = make(map[string]any, len(src.Extra))
-		} else {
-			clear(dst.Extra)
-		}
+		dst.Extra = make(map[string]any, len(src.Extra))
 		for k, v := range src.Extra {
 			dst.Extra[k] = v
 		}
@@ -643,7 +642,6 @@ func (p *Processor) IsTokenRevoked(tokenString string) (bool, error) {
 		return false, err
 	}
 
-	// Parse token to get ID using pooled claims
 	claims := getClaims()
 	defer putClaims(claims)
 
@@ -659,160 +657,8 @@ func (p *Processor) IsTokenRevoked(tokenString string) (bool, error) {
 	return p.blacklistManager.IsBlacklisted(claims.ID)
 }
 
-// Comprehensive claims validation to prevent various attacks
-func validateClaimsSecurely(claims *Claims) error {
-	// Basic validation
-	if claims.UserID == "" && claims.Username == "" {
-		return ErrInvalidClaims
-	}
-
-	// Validate string fields for malicious content
-	if err := validateStringField("UserID", claims.UserID); err != nil {
-		return err
-	}
-	if err := validateStringField("Username", claims.Username); err != nil {
-		return err
-	}
-	if err := validateStringField("Role", claims.Role); err != nil {
-		return err
-	}
-	if err := validateStringField("Issuer", claims.Issuer); err != nil {
-		return err
-	}
-	if err := validateStringField("Subject", claims.Subject); err != nil {
-		return err
-	}
-	if err := validateStringField("SessionID", claims.SessionID); err != nil {
-		return err
-	}
-	if err := validateStringField("ClientID", claims.ClientID); err != nil {
-		return err
-	}
-
-	//  Validate string fields for injection attacks
-	stringFields := map[string]string{
-		"UserID":    claims.UserID,
-		"Username":  claims.Username,
-		"Role":      claims.Role,
-		"SessionID": claims.SessionID,
-		"ClientID":  claims.ClientID,
-		"Issuer":    claims.Issuer,
-		"Subject":   claims.Subject,
-		"ID":        claims.ID,
-	}
-
-	for fieldName, fieldValue := range stringFields {
-		if fieldValue != "" {
-			if err := validateStringFieldSecurely(fieldName, fieldValue); err != nil {
-				return err
-			}
-		}
-	}
-
-	//  Validate array fields
-	if err := validateStringArraySecurely("Permissions", claims.Permissions); err != nil {
-		return err
-	}
-	if err := validateStringArraySecurely("Scopes", claims.Scopes); err != nil {
-		return err
-	}
-	if err := validateStringArraySecurely("Audience", claims.Audience); err != nil {
-		return err
-	}
-
-	//  Validate Extra fields for potential attacks
-	if err := validateExtraFieldsSecurely(claims.Extra); err != nil {
-		return err
-	}
-
-	return nil
-}
-
-// Validate individual string fields
-func validateStringFieldSecurely(fieldName, value string) error {
-	const maxFieldLength = 256
-	if len(value) > maxFieldLength {
-		return fmt.Errorf("field %s too long: maximum %d characters allowed", fieldName, maxFieldLength)
-	}
-
-	// Check for null bytes and control characters
-	for i, char := range value {
-		if char == 0 {
-			return fmt.Errorf("field %s contains null byte at position %d", fieldName, i)
-		}
-		if char < 32 && char != 9 && char != 10 && char != 13 {
-			return fmt.Errorf("field %s contains control character at position %d", fieldName, i)
-		}
-	}
-
-	// Check for potential injection patterns
-	suspiciousPatterns := []string{
-		"<script", "</script", "javascript:", "data:", "eval(", "alert(",
-		"onload=", "onerror=", "onclick=", "../", "..\\", "file://",
-		"document.", "window.", "http://", "https://", "vbscript:",
-	}
-
-	lowerValue := strings.ToLower(value)
-	for _, pattern := range suspiciousPatterns {
-		if strings.Contains(lowerValue, pattern) {
-			return fmt.Errorf("field %s contains suspicious pattern: %s", fieldName, pattern)
-		}
-	}
-
-	return nil
-}
-
-// Validate string arrays
-func validateStringArraySecurely(fieldName string, values []string) error {
-	const maxArrayLength = 100
-	if len(values) > maxArrayLength {
-		return fmt.Errorf("field %s array too long: maximum %d items allowed", fieldName, maxArrayLength)
-	}
-
-	for i, value := range values {
-		if err := validateStringFieldSecurely(fmt.Sprintf("%s[%d]", fieldName, i), value); err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
-// Validate Extra fields map
-func validateExtraFieldsSecurely(extra map[string]any) error {
-	const maxExtraFields = 50
-	if len(extra) > maxExtraFields {
-		return fmt.Errorf("too many extra fields: maximum %d allowed", maxExtraFields)
-	}
-
-	for key, value := range extra {
-		// Validate key
-		if err := validateStringFieldSecurely("extra_key", key); err != nil {
-			return fmt.Errorf("invalid extra field key: %w", err)
-		}
-
-		// Validate value based on type
-		switch v := value.(type) {
-		case string:
-			if err := validateStringFieldSecurely("extra_value", v); err != nil {
-				return fmt.Errorf("invalid extra field value for key %s: %w", key, err)
-			}
-		case []string:
-			if err := validateStringArraySecurely("extra_array", v); err != nil {
-				return fmt.Errorf("invalid extra field array for key %s: %w", key, err)
-			}
-		case map[string]any:
-			// Prevent nested maps to avoid complexity attacks
-			return fmt.Errorf("nested maps not allowed in extra fields for security")
-		}
-	}
-
-	return nil
-}
-
-// validateTokenSize validates token size for security
 func validateTokenSize(tokenString string) error {
-	const maxSecureTokenSize = 8192 // 8KB max token size
+	const maxSecureTokenSize = 8192
 
 	if len(tokenString) == 0 {
 		return ErrEmptyToken
@@ -829,26 +675,21 @@ func validateTokenSize(tokenString string) error {
 	return nil
 }
 
-// containsMaliciousPatterns checks for malicious token patterns
 func containsMaliciousPatterns(token string) bool {
-	// Check for excessively long tokens (potential DoS)
-	if len(token) > 16384 { // 16KB limit
+	if len(token) > 16384 {
 		return true
 	}
 
-	// Check for null bytes (potential injection)
 	if strings.Contains(token, "\x00") {
 		return true
 	}
 
-	// Check for control characters that shouldn't be in JWT
 	for _, char := range token {
-		if char < 32 && char != 9 && char != 10 && char != 13 { // Allow tab, LF, CR
+		if char < 32 && char != 9 && char != 10 && char != 13 {
 			return true
 		}
 	}
 
-	// Check for suspicious patterns that might indicate tampering
 	suspiciousPatterns := []string{
 		"<script", "javascript:", "data:", "vbscript:",
 		"onload=", "onerror=", "eval(", "alert(",
@@ -863,87 +704,5 @@ func containsMaliciousPatterns(token string) bool {
 		}
 	}
 
-
-
-	// Check for repeated patterns that might indicate algorithmic attacks
-	if len(token) > 1000 {
-		// Optimized check for repeated substrings - only check a few samples
-		step := len(token) / 10 // Check 10 samples across the token
-		if step < 100 {
-			step = 100
-		}
-		for i := 0; i < len(token)-100; i += step {
-			end := i + 100
-			if end > len(token) {
-				break
-			}
-			substr := token[i:end]
-			// Use a more efficient counting method
-			if countSubstring(token, substr) > 3 {
-				return true
-			}
-		}
-	}
-
 	return false
-}
-
-// validateStringField validates individual string fields for security
-func validateStringField(fieldName, value string) error {
-	if value == "" {
-		return nil // Empty values are allowed
-	}
-
-	// Check maximum length to prevent DoS
-	const maxFieldLength = 1024
-	if len(value) > maxFieldLength {
-		return fmt.Errorf("field %s too long: maximum %d characters allowed", fieldName, maxFieldLength)
-	}
-
-	// Check for null bytes
-	if strings.Contains(value, "\x00") {
-		return fmt.Errorf("field %s contains null bytes", fieldName)
-	}
-
-	// Check for control characters (except common whitespace)
-	for i, char := range value {
-		if char < 32 && char != 9 && char != 10 && char != 13 { // Allow tab, LF, CR
-			return fmt.Errorf("field %s contains invalid control character at position %d", fieldName, i)
-		}
-	}
-
-	// Check for potentially dangerous patterns
-	dangerousPatterns := []string{
-		"<script", "javascript:", "data:", "vbscript:",
-		"onload=", "onerror=", "eval(", "alert(",
-		"document.", "window.", "location.",
-		"../", "..\\", "file://",
-	}
-
-	lowerValue := strings.ToLower(value)
-	for _, pattern := range dangerousPatterns {
-		if strings.Contains(lowerValue, pattern) {
-			return fmt.Errorf("field %s contains potentially dangerous pattern: %s", fieldName, pattern)
-		}
-	}
-
-	return nil
-}
-
-// countSubstring counts occurrences of substr in s with early termination
-func countSubstring(s, substr string) int {
-	count := 0
-	start := 0
-	for {
-		pos := strings.Index(s[start:], substr)
-		if pos == -1 {
-			break
-		}
-		count++
-		if count > 3 { // Early termination for performance
-			return count
-		}
-		start += pos + 1
-	}
-	return count
 }

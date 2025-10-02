@@ -10,10 +10,13 @@ import (
 type RateLimiter struct {
 	mu              sync.RWMutex
 	buckets         map[string]*bucket
-	maxRate         int           // requests per window
-	window          time.Duration // time window
-	cleanupInterval time.Duration // cleanup interval
+	maxRate         int
+	window          time.Duration
+	cleanupInterval time.Duration
+	maxBuckets      int
 	stopChan        chan struct{}
+	cleanupWg       sync.WaitGroup
+	closed          bool
 }
 
 // bucket represents a token bucket for rate limiting
@@ -29,11 +32,12 @@ func NewRateLimiter(maxRate int, window time.Duration) *RateLimiter {
 		buckets:         make(map[string]*bucket),
 		maxRate:         maxRate,
 		window:          window,
-		cleanupInterval: window * 2, // Cleanup old buckets every 2 windows
+		cleanupInterval: window * 2,
+		maxBuckets:      10000,
 		stopChan:        make(chan struct{}),
 	}
 
-	// Start cleanup goroutine
+	rl.cleanupWg.Add(1)
 	go rl.cleanupLoop()
 
 	return rl
@@ -52,8 +56,10 @@ func (rl *RateLimiter) AllowN(key string, n int) bool {
 
 	if !exists {
 		rl.mu.Lock()
-		// Double-check after acquiring write lock
 		if b, exists = rl.buckets[key]; !exists {
+			if len(rl.buckets) >= rl.maxBuckets {
+				rl.evictOldestBucket()
+			}
 			b = &bucket{
 				tokens:     rl.maxRate,
 				lastRefill: time.Now(),
@@ -69,12 +75,10 @@ func (rl *RateLimiter) AllowN(key string, n int) bool {
 	now := time.Now()
 	elapsed := now.Sub(b.lastRefill)
 
-	// Refill tokens based on elapsed time
 	if elapsed >= rl.window {
 		b.tokens = rl.maxRate
 		b.lastRefill = now
 	} else {
-		// Partial refill based on elapsed time
 		tokensToAdd := int(float64(rl.maxRate) * elapsed.Seconds() / rl.window.Seconds())
 		b.tokens = minInt(rl.maxRate, b.tokens+tokensToAdd)
 		if tokensToAdd > 0 {
@@ -82,7 +86,6 @@ func (rl *RateLimiter) AllowN(key string, n int) bool {
 		}
 	}
 
-	// Check if we have enough tokens
 	if b.tokens >= n {
 		b.tokens -= n
 		return true
@@ -111,9 +114,10 @@ func (rl *RateLimiter) Reset(key string) {
 // GetStats returns rate limiting statistics for a key
 func (rl *RateLimiter) GetStats(key string) (tokens int, lastRefill time.Time, exists bool) {
 	rl.mu.RLock()
-	defer rl.mu.RUnlock()
+	b, ok := rl.buckets[key]
+	rl.mu.RUnlock()
 
-	if b, ok := rl.buckets[key]; ok {
+	if ok {
 		b.mu.Lock()
 		tokens = b.tokens
 		lastRefill = b.lastRefill
@@ -126,7 +130,17 @@ func (rl *RateLimiter) GetStats(key string) (tokens int, lastRefill time.Time, e
 
 // Close stops the rate limiter and cleans up resources
 func (rl *RateLimiter) Close() {
+	rl.mu.Lock()
+	if rl.closed {
+		rl.mu.Unlock()
+		return
+	}
+	rl.closed = true
+	rl.mu.Unlock()
+
 	close(rl.stopChan)
+	rl.cleanupWg.Wait()
+
 	rl.mu.Lock()
 	rl.buckets = nil
 	rl.mu.Unlock()
@@ -134,6 +148,8 @@ func (rl *RateLimiter) Close() {
 
 // cleanupLoop periodically removes old buckets to prevent memory leaks
 func (rl *RateLimiter) cleanupLoop() {
+	defer rl.cleanupWg.Done()
+
 	ticker := time.NewTicker(rl.cleanupInterval)
 	defer ticker.Stop()
 
@@ -150,17 +166,47 @@ func (rl *RateLimiter) cleanupLoop() {
 // cleanupOldBuckets removes old buckets that haven't been used recently
 func (rl *RateLimiter) cleanupOldBuckets() {
 	rl.mu.Lock()
-	defer rl.mu.Unlock()
+	if rl.closed {
+		rl.mu.Unlock()
+		return
+	}
 
 	now := time.Now()
 	cutoff := now.Add(-rl.cleanupInterval)
+	keysToDelete := make([]string, 0)
 
 	for key, b := range rl.buckets {
 		b.mu.Lock()
 		if b.lastRefill.Before(cutoff) {
-			delete(rl.buckets, key)
+			keysToDelete = append(keysToDelete, key)
 		}
 		b.mu.Unlock()
+	}
+
+	for _, key := range keysToDelete {
+		delete(rl.buckets, key)
+	}
+	rl.mu.Unlock()
+}
+
+// evictOldestBucket removes the oldest bucket (must be called with write lock held)
+func (rl *RateLimiter) evictOldestBucket() {
+	var oldestKey string
+	var oldestTime time.Time
+	first := true
+
+	for key, b := range rl.buckets {
+		b.mu.Lock()
+		if first || b.lastRefill.Before(oldestTime) {
+			oldestKey = key
+			oldestTime = b.lastRefill
+			first = false
+		}
+		b.mu.Unlock()
+	}
+
+	if oldestKey != "" {
+		delete(rl.buckets, oldestKey)
 	}
 }
 

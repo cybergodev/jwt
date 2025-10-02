@@ -3,6 +3,7 @@ package blacklist
 import (
 	"errors"
 	"runtime"
+	"sort"
 	"sync"
 	"time"
 )
@@ -50,24 +51,24 @@ func (m *memoryStore) Add(tokenID string, expiresAt time.Time) error {
 
 	// Check if we're at capacity and need to make room
 	if len(m.tokens) >= m.maxSize {
-		// Remove the oldest expired tokens first
 		m.cleanupExpiredUnsafe(time.Now())
 
-		// If still at capacity, remove the oldest tokens regardless of expiration
 		if len(m.tokens) >= m.maxSize {
-			m.evictOldestUnsafe(m.maxSize / 10) // Remove 10% of tokens
+			m.evictOldestUnsafe(m.maxSize / 10)
 		}
 	}
 
-	// Add or update the token
+	// Check if token already exists to avoid duplicate queue entries
+	_, exists := m.tokens[tokenID]
 	m.tokens[tokenID] = expiresAt
 
-	// Add to expiration queue if it's a new token
-	// For simplicity, we'll add it even if it exists (small memory overhead)
-	m.expirationQueue = append(m.expirationQueue, tokenEntry{
-		tokenID:   tokenID,
-		expiresAt: expiresAt,
-	})
+	// Only add to queue if it's a new token
+	if !exists {
+		m.expirationQueue = append(m.expirationQueue, tokenEntry{
+			tokenID:   tokenID,
+			expiresAt: expiresAt,
+		})
+	}
 
 	return nil
 }
@@ -179,52 +180,44 @@ func (m *memoryStore) cleanupExpiredUnsafe(now time.Time) int {
 
 	m.expirationQueue = validEntries
 
-	// Force garbage collection if we cleaned up a significant number of tokens
-	if cleaned > 1000 {
-		runtime.GC()
-	}
+	// Let Go's GC handle memory cleanup automatically
+	// Forcing GC is an anti-pattern that degrades performance
+	_ = runtime.NumGoroutine()
 
 	return cleaned
 }
 
 // evictOldestUnsafe removes the oldest tokens to make room (must be called with write lock held)
 func (m *memoryStore) evictOldestUnsafe(count int) {
-	if len(m.expirationQueue) == 0 {
+	if len(m.tokens) == 0 {
 		return
 	}
 
-	// Use a more efficient sorting approach for better performance
-	// Simple insertion sort for small arrays, or use Go's sort package for larger ones
-	if len(m.expirationQueue) < 50 {
-		// Insertion sort for small arrays
-		for i := 1; i < len(m.expirationQueue); i++ {
-			key := m.expirationQueue[i]
-			j := i - 1
-			for j >= 0 && m.expirationQueue[j].expiresAt.After(key.expiresAt) {
-				m.expirationQueue[j+1] = m.expirationQueue[j]
-				j--
-			}
-			m.expirationQueue[j+1] = key
-		}
+	type tokenAge struct {
+		tokenID   string
+		expiresAt time.Time
 	}
 
-	// Remove the oldest tokens
+	validTokens := make([]tokenAge, 0, len(m.tokens))
+	for tokenID, expiresAt := range m.tokens {
+		validTokens = append(validTokens, tokenAge{tokenID, expiresAt})
+	}
+
+	sort.Slice(validTokens, func(i, j int) bool {
+		return validTokens[i].expiresAt.Before(validTokens[j].expiresAt)
+	})
+
 	evicted := 0
-	for i := 0; i < len(m.expirationQueue) && evicted < count; i++ {
-		tokenID := m.expirationQueue[i].tokenID
-		if _, exists := m.tokens[tokenID]; exists {
-			delete(m.tokens, tokenID)
-			evicted++
-		}
+	for i := 0; i < len(validTokens) && evicted < count; i++ {
+		delete(m.tokens, validTokens[i].tokenID)
+		evicted++
 	}
 
-	// Clean up the expiration queue
-	validEntries := make([]tokenEntry, 0, len(m.expirationQueue))
-	for _, entry := range m.expirationQueue {
-		if _, exists := m.tokens[entry.tokenID]; exists {
-			validEntries = append(validEntries, entry)
-		}
+	m.expirationQueue = make([]tokenEntry, 0, len(m.tokens))
+	for tokenID, expiresAt := range m.tokens {
+		m.expirationQueue = append(m.expirationQueue, tokenEntry{
+			tokenID:   tokenID,
+			expiresAt: expiresAt,
+		})
 	}
-
-	m.expirationQueue = validEntries
 }

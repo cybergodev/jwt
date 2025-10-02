@@ -63,16 +63,16 @@ func CreateToken(secretKey string, claims Claims) (string, error)
 ```
 
 #### Parameters
-| Parameter | Type | Description | Requirements |
-|-----------|------|-------------|--------------|
+| Parameter   | Type     | Description              | Requirements            |
+|-------------|----------|--------------------------|-------------------------|
 | `secretKey` | `string` | Cryptographic secret key | ≥32 bytes, high entropy |
-| `claims` | `Claims` | JWT payload data | Valid claims structure |
+| `claims`    | `Claims` | JWT payload data         | Valid claims structure  |
 
 #### Returns
-| Type | Description |
-|------|-------------|
-| `string` | Base64-encoded JWT token |
-| `error` | Error details or `nil` on success |
+| Type     | Description                       |
+|----------|-----------------------------------|
+| `string` | Base64-encoded JWT token          |
+| `error`  | Error details or `nil` on success |
 
 #### Example: Basic Token Creation
 ```go
@@ -106,7 +106,6 @@ func generateUserToken(userID, role string, permissions []string) (string, error
         Permissions: permissions,
     }
 
-    // Set token expiration time (default 15 minutes) - when token expires
     claims.ExpiresAt = jwt.NewNumericDate(time.Now().Add(60 * time.Minute))
 
     token, err := jwt.CreateToken(os.Getenv("JWT_SECRET"), claims)
@@ -128,17 +127,17 @@ func ValidateToken(secretKey, tokenString string) (*Claims, bool, error)
 ```
 
 #### Parameters
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `secretKey` | `string` | Same secret key used for token creation |
-| `tokenString` | `string` | JWT token to validate |
+| Parameter     | Type     | Description                             |
+|---------------|----------|-----------------------------------------|
+| `secretKey`   | `string` | Same secret key used for token creation |
+| `tokenString` | `string` | JWT token to validate                   |
 
 #### Returns
-| Type | Description |
-|------|-------------|
+| Type      | Description                                  |
+|-----------|----------------------------------------------|
 | `*Claims` | Parsed and validated claims (nil if invalid) |
-| `bool` | `true` if token is valid and not expired |
-| `error` | Validation error details or `nil` |
+| `bool`    | `true` if token is valid and not expired     |
+| `error`   | Validation error details or `nil`            |
 
 #### Example: Basic Token Validation
 ```go
@@ -193,14 +192,14 @@ func RevokeToken(secretKey, tokenString string) error
 ```
 
 #### Parameters
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `secretKey` | `string` | Secret key for token parsing |
-| `tokenString` | `string` | JWT token to revoke |
+| Parameter     | Type     | Description                  |
+|---------------|----------|------------------------------|
+| `secretKey`   | `string` | Secret key for token parsing |
+| `tokenString` | `string` | JWT token to revoke          |
 
 #### Returns
-| Type | Description |
-|------|-------------|
+| Type    | Description                          |
+|---------|--------------------------------------|
 | `error` | Revocation error or `nil` on success |
 
 #### Example: User Logout
@@ -263,16 +262,16 @@ func New(secretKey string, configs ...Config) (*Processor, error)
 ```
 
 #### Parameters
-| Parameter | Type | Description | Requirements |
-|-----------|------|-------------|--------------|
-| `secretKey` | `string` | Cryptographic secret key | ≥32 bytes, high entropy |
-| `configs` | `...Config` | Optional configuration overrides | Valid Config struct |
+| Parameter   | Type        | Description                      | Requirements            |
+|-------------|-------------|----------------------------------|-------------------------|
+| `secretKey` | `string`    | Cryptographic secret key         | ≥32 bytes, high entropy |
+| `configs`   | `...Config` | Optional configuration overrides | Valid Config struct     |
 
 #### Returns
-| Type | Description |
-|------|-------------|
+| Type         | Description                       |
+|--------------|-----------------------------------|
 | `*Processor` | Configured JWT processor instance |
-| `error` | Configuration or validation error |
+| `error`      | Configuration or validation error |
 
 #### Example: Basic Processor
 ```go
@@ -315,17 +314,17 @@ func NewWithBlacklist(secretKey string, blacklistConfig BlacklistConfig, configs
 ```
 
 #### Parameters
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `secretKey` | `string` | Cryptographic secret key |
+| Parameter         | Type              | Description                 |
+|-------------------|-------------------|-----------------------------|
+| `secretKey`       | `string`          | Cryptographic secret key    |
 | `blacklistConfig` | `BlacklistConfig` | Blacklist behavior settings |
-| `configs` | `...Config` | Optional JWT configuration |
+| `configs`         | `...Config`       | Optional JWT configuration  |
 
 #### Returns
-| Type | Description |
-|------|-------------|
+| Type         | Description                      |
+|--------------|----------------------------------|
 | `*Processor` | Processor with blacklist support |
-| `error` | Configuration error |
+| `error`      | Configuration error              |
 
 #### Example: Production Blacklist Setup
 ```go
@@ -466,15 +465,15 @@ func (p *Processor) CreateToken(claims Claims) (string, error)
 ```
 
 #### Parameters
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `claims` | `Claims` | JWT payload data |
+| Parameter | Type     | Description      |
+|-----------|----------|------------------|
+| `claims`  | `Claims` | JWT payload data |
 
 #### Returns
-| Type | Description |
-|------|-------------|
+| Type     | Description      |
+|----------|------------------|
 | `string` | Signed JWT token |
-| `error` | Creation error |
+| `error`  | Creation error   |
 
 #### Example: High-Performance Token Creation
 ```go
@@ -485,7 +484,6 @@ func createUserSession(processor *jwt.Processor, userID, role string) (string, e
         Role:      role,
     }
 
-    // Set token expiration time (default 15 minutes) - when token expires
     claims.ExpiresAt = jwt.NewNumericDate(time.Now().Add(60 * time.Minute))
 
     return processor.CreateToken(claims)
@@ -501,16 +499,16 @@ func (p *Processor) CreateTokenWithContext(ctx context.Context, claims Claims) (
 ```
 
 #### Parameters
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `ctx` | `context.Context` | Request context for cancellation |
-| `claims` | `Claims` | JWT payload data |
+| Parameter | Type              | Description                      |
+|-----------|-------------------|----------------------------------|
+| `ctx`     | `context.Context` | Request context for cancellation |
+| `claims`  | `Claims`          | JWT payload data                 |
 
 #### Returns
-| Type | Description |
-|------|-------------|
-| `string` | Signed JWT token |
-| `error` | Creation or context error |
+| Type     | Description               |
+|----------|---------------------------|
+| `string` | Signed JWT token          |
+| `error`  | Creation or context error |
 
 #### Example: Web Handler with Timeout
 ```go
@@ -553,16 +551,16 @@ func (p *Processor) ValidateToken(tokenString string) (*Claims, bool, error)
 ```
 
 #### Parameters
-| Parameter | Type | Description |
-|-----------|------|-------------|
+| Parameter     | Type     | Description           |
+|---------------|----------|-----------------------|
 | `tokenString` | `string` | JWT token to validate |
 
 #### Returns
-| Type | Description |
-|------|-------------|
-| `*Claims` | Parsed claims (nil if invalid) |
-| `bool` | `true` if token is valid and not expired |
-| `error` | Validation error details |
+| Type      | Description                              |
+|-----------|------------------------------------------|
+| `*Claims` | Parsed claims (nil if invalid)           |
+| `bool`    | `true` if token is valid and not expired |
+| `error`   | Validation error details                 |
 
 #### Example: API Authentication
 ```go
@@ -589,17 +587,17 @@ func (p *Processor) ValidateTokenWithContext(ctx context.Context, tokenString st
 ```
 
 #### Parameters
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `ctx` | `context.Context` | Request context |
-| `tokenString` | `string` | JWT token to validate |
+| Parameter     | Type              | Description           |
+|---------------|-------------------|-----------------------|
+| `ctx`         | `context.Context` | Request context       |
+| `tokenString` | `string`          | JWT token to validate |
 
 #### Returns
-| Type | Description |
-|------|-------------|
+| Type      | Description                    |
+|-----------|--------------------------------|
 | `*Claims` | Parsed claims (nil if invalid) |
-| `bool` | `true` if token is valid |
-| `error` | Validation or context error |
+| `bool`    | `true` if token is valid       |
+| `error`   | Validation or context error    |
 
 ### Processor.CreateRefreshToken
 
@@ -610,15 +608,15 @@ func (p *Processor) CreateRefreshToken(claims Claims) (string, error)
 ```
 
 #### Parameters
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `claims` | `Claims` | JWT payload for refresh token |
+| Parameter | Type     | Description                   |
+|-----------|----------|-------------------------------|
+| `claims`  | `Claims` | JWT payload for refresh token |
 
 #### Returns
-| Type | Description |
-|------|-------------|
+| Type     | Description              |
+|----------|--------------------------|
 | `string` | Long-lived refresh token |
-| `error` | Creation error |
+| `error`  | Creation error           |
 
 #### Example: Login with Refresh Token
 ```go
@@ -653,15 +651,15 @@ func (p *Processor) RefreshToken(refreshTokenString string) (string, error)
 ```
 
 #### Parameters
-| Parameter | Type | Description |
-|-----------|------|-------------|
+| Parameter            | Type     | Description         |
+|----------------------|----------|---------------------|
 | `refreshTokenString` | `string` | Valid refresh token |
 
 #### Returns
-| Type | Description |
-|------|-------------|
-| `string` | New access token with fresh expiration |
-| `error` | Refresh error (invalid/expired refresh token) |
+| Type     | Description                                   |
+|----------|-----------------------------------------------|
+| `string` | New access token with fresh expiration        |
+| `error`  | Refresh error (invalid/expired refresh token) |
 
 #### Example: Token Refresh Endpoint
 ```go
@@ -704,13 +702,13 @@ func (p *Processor) RevokeToken(tokenString string) error
 ```
 
 #### Parameters
-| Parameter | Type | Description |
-|-----------|------|-------------|
+| Parameter     | Type     | Description         |
+|---------------|----------|---------------------|
 | `tokenString` | `string` | JWT token to revoke |
 
 #### Returns
-| Type | Description |
-|------|-------------|
+| Type    | Description                        |
+|---------|------------------------------------|
 | `error` | Revocation error or nil on success |
 
 ### Processor.Close
@@ -722,8 +720,8 @@ func (p *Processor) Close() error
 ```
 
 #### Returns
-| Type | Description |
-|------|-------------|
+| Type    | Description                     |
+|---------|---------------------------------|
 | `error` | Cleanup error or nil on success |
 
 #### Example: Graceful Shutdown
@@ -781,16 +779,16 @@ type Config struct {
 
 #### Configuration Fields
 
-| Field | Type | Description | Default | Requirements |
-|-------|------|-------------|---------|--------------|
-| `SecretKey` | `string` | Cryptographic secret key | `""` | ≥32 bytes, high entropy |
-| `AccessTokenTTL` | `time.Duration` | Access token lifetime | `15m` | > 0, < RefreshTokenTTL |
-| `RefreshTokenTTL` | `time.Duration` | Refresh token lifetime | `168h` (7 days) | > AccessTokenTTL |
-| `Issuer` | `string` | Token issuer identifier | `"jwt-service"` | Non-empty string |
-| `SigningMethod` | `SigningMethod` | HMAC algorithm | `HS256` | HS256/HS384/HS512 |
-| `Timezone` | `*time.Location` | Timestamp timezone | `time.Local` | Valid timezone |
-| `EnableRateLimit` | `bool` | Enable rate limiting | `false` | Boolean flag |
-| `RateLimit` | `*RateLimitConfig` | Rate limiting configuration | `nil` | Valid when enabled |
+| Field             | Type               | Description                 | Default         | Requirements            |
+|-------------------|--------------------|-----------------------------|-----------------|-------------------------|
+| `SecretKey`       | `string`           | Cryptographic secret key    | `""`            | ≥32 bytes, high entropy |
+| `AccessTokenTTL`  | `time.Duration`    | Access token lifetime       | `15m`           | > 0, < RefreshTokenTTL  |
+| `RefreshTokenTTL` | `time.Duration`    | Refresh token lifetime      | `168h` (7 days) | > AccessTokenTTL        |
+| `Issuer`          | `string`           | Token issuer identifier     | `"jwt-service"` | Non-empty string        |
+| `SigningMethod`   | `SigningMethod`    | HMAC algorithm              | `HS256`         | HS256/HS384/HS512       |
+| `Timezone`        | `*time.Location`   | Timestamp timezone          | `time.Local`    | Valid timezone          |
+| `EnableRateLimit` | `bool`             | Enable rate limiting        | `false`         | Boolean flag            |
+| `RateLimit`       | `*RateLimitConfig` | Rate limiting configuration | `nil`           | Valid when enabled      |
 
 ### DefaultConfig
 
@@ -801,8 +799,8 @@ func DefaultConfig() Config
 ```
 
 #### Returns
-| Type | Description |
-|------|-------------|
+| Type     | Description                            |
+|----------|----------------------------------------|
 | `Config` | Production-ready default configuration |
 
 #### Example: Production Configuration
@@ -832,8 +830,8 @@ func (c *Config) Validate() error
 ```
 
 #### Returns
-| Type | Description |
-|------|-------------|
+| Type    | Description                              |
+|---------|------------------------------------------|
 | `error` | Validation error details or nil if valid |
 
 #### Validation Rules
@@ -857,12 +855,12 @@ type BlacklistConfig struct {
 
 #### Configuration Fields
 
-| Field | Type | Description | Default | Recommendations |
-|-------|------|-------------|---------|-----------------|
-| `MaxSize` | `int` | Maximum revoked tokens to store | `10000` | Scale based on user base |
-| `CleanupInterval` | `time.Duration` | Expired entry cleanup frequency | `5m` | Balance memory vs CPU |
-| `EnableAutoCleanup` | `bool` | Automatic cleanup of expired entries | `true` | Always enable for production |
-| `StoreType` | `string` | Storage backend type | `"memory"` | "memory" for single instance |
+| Field               | Type            | Description                          | Default    | Recommendations              |
+|---------------------|-----------------|--------------------------------------|------------|------------------------------|
+| `MaxSize`           | `int`           | Maximum revoked tokens to store      | `10000`    | Scale based on user base     |
+| `CleanupInterval`   | `time.Duration` | Expired entry cleanup frequency      | `5m`       | Balance memory vs CPU        |
+| `EnableAutoCleanup` | `bool`          | Automatic cleanup of expired entries | `true`     | Always enable for production |
+| `StoreType`         | `string`        | Storage backend type                 | `"memory"` | "memory" for single instance |
 
 ### DefaultBlacklistConfig
 
@@ -900,14 +898,14 @@ type RateLimitConfig struct {
 
 #### Configuration Fields
 
-| Field | Type | Description | Default | Recommendations |
-|-------|------|-------------|---------|-----------------|
-| `Enabled` | `bool` | Enable rate limiting | `true` | Always enable for production |
-| `TokenCreationRate` | `int` | Tokens per minute limit | `100` | Adjust based on user load |
-| `ValidationRate` | `int` | Validations per minute | `1000` | High limit for API calls |
-| `LoginAttemptRate` | `int` | Login attempts per minute | `5` | Prevent brute force attacks |
-| `PasswordResetRate` | `int` | Password resets per hour | `3` | Prevent abuse |
-| `CleanupInterval` | `time.Duration` | Cleanup frequency | `5m` | Balance memory vs CPU |
+| Field               | Type            | Description               | Default | Recommendations              |
+|---------------------|-----------------|---------------------------|---------|------------------------------|
+| `Enabled`           | `bool`          | Enable rate limiting      | `true`  | Always enable for production |
+| `TokenCreationRate` | `int`           | Tokens per minute limit   | `100`   | Adjust based on user load    |
+| `ValidationRate`    | `int`           | Validations per minute    | `1000`  | High limit for API calls     |
+| `LoginAttemptRate`  | `int`           | Login attempts per minute | `5`     | Prevent brute force attacks  |
+| `PasswordResetRate` | `int`           | Password resets per hour  | `3`     | Prevent abuse                |
+| `CleanupInterval`   | `time.Duration` | Cleanup frequency         | `5m`    | Balance memory vs CPU        |
 
 #### Example: Production Rate Limiting
 ```go
@@ -948,16 +946,16 @@ type Claims struct {
 
 #### Field Descriptions
 
-| Field | Type | Description | Example |
-|-------|------|-------------|---------|
-| `UserID` | `string` | Unique user identifier | `"user_12345"` |
-| `Username` | `string` | User display name | `"john.doe"` |
-| `Role` | `string` | User role/permission level | `"admin"`, `"user"` |
-| `Permissions` | `[]string` | Specific permissions | `["read", "write"]` |
-| `Scopes` | `[]string` | OAuth-style scopes | `["api:read", "profile"]` |
-| `Extra` | `map[string]any` | Custom fields | `{"dept": "engineering"}` |
-| `SessionID` | `string` | Session identifier | `"sess_abc123"` |
-| `ClientID` | `string` | Client application ID | `"web_client"` |
+| Field         | Type             | Description                | Example                   |
+|---------------|------------------|----------------------------|---------------------------|
+| `UserID`      | `string`         | Unique user identifier     | `"user_12345"`            |
+| `Username`    | `string`         | User display name          | `"john.doe"`              |
+| `Role`        | `string`         | User role/permission level | `"admin"`, `"user"`       |
+| `Permissions` | `[]string`       | Specific permissions       | `["read", "write"]`       |
+| `Scopes`      | `[]string`       | OAuth-style scopes         | `["api:read", "profile"]` |
+| `Extra`       | `map[string]any` | Custom fields              | `{"dept": "engineering"}` |
+| `SessionID`   | `string`         | Session identifier         | `"sess_abc123"`           |
+| `ClientID`    | `string`         | Client application ID      | `"web_client"`            |
 
 ### RegisteredClaims
 
@@ -977,15 +975,15 @@ type RegisteredClaims struct {
 
 #### Field Descriptions
 
-| Field | Type | Description | Usage |
-|-------|------|-------------|-------|
-| `Issuer` | `string` | Token issuer | Application identifier |
-| `Subject` | `string` | Token subject | User or resource ID |
-| `Audience` | `[]string` | Intended audience | Target services |
-| `ExpiresAt` | `NumericDate` | Expiration time | Security control |
-| `NotBefore` | `NumericDate` | Not valid before | Future activation |
-| `IssuedAt` | `NumericDate` | Issue time | Audit trail |
-| `ID` | `string` | Unique token ID | Revocation support |
+| Field       | Type          | Description       | Usage                  |
+|-------------|---------------|-------------------|------------------------|
+| `Issuer`    | `string`      | Token issuer      | Application identifier |
+| `Subject`   | `string`      | Token subject     | User or resource ID    |
+| `Audience`  | `[]string`    | Intended audience | Target services        |
+| `ExpiresAt` | `NumericDate` | Expiration time   | Security control       |
+| `NotBefore` | `NumericDate` | Not valid before  | Future activation      |
+| `IssuedAt`  | `NumericDate` | Issue time        | Audit trail            |
+| `ID`        | `string`      | Unique token ID   | Revocation support     |
 
 ### SigningMethod
 
@@ -1003,11 +1001,11 @@ const (
 
 #### Algorithm Comparison
 
-| Algorithm | Security | Performance | Key Size | Recommendation |
-|-----------|----------|-------------|----------|----------------|
-| **HS256** | High | Fastest | 256-bit | **Production default** |
-| **HS384** | Higher | Fast | 384-bit | Balanced security/performance |
-| **HS512** | Highest | Good | 512-bit | Maximum security applications |
+| Algorithm | Security | Performance | Key Size | Recommendation                |
+|-----------|----------|-------------|----------|-------------------------------|
+| **HS256** | High     | Fastest     | 256-bit  | **Production default**        |
+| **HS384** | Higher   | Fast        | 384-bit  | Balanced security/performance |
+| **HS512** | Highest  | Good        | 512-bit  | Maximum security applications |
 
 ### NumericDate
 
@@ -1028,13 +1026,13 @@ func NewNumericDate(t time.Time) NumericDate
 ```
 
 #### Parameters
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `t` | `time.Time` | Time value to convert |
+| Parameter | Type        | Description           |
+|-----------|-------------|-----------------------|
+| `t`       | `time.Time` | Time value to convert |
 
 #### Returns
-| Type | Description |
-|------|-------------|
+| Type          | Description              |
+|---------------|--------------------------|
 | `NumericDate` | JWT-compatible timestamp |
 
 #### Example Usage
@@ -1086,12 +1084,12 @@ var (
 
 #### Error Categories
 
-| Category | Errors | Description | HTTP Status |
-|----------|--------|-------------|-------------|
-| **Configuration** | `ErrInvalidConfig`, `ErrInvalidSecretKey` | Setup and configuration issues | 500 |
-| **Token** | `ErrInvalidToken`, `ErrEmptyToken` | Token format and validation | 401 |
-| **Claims** | `ErrInvalidClaims` | Claims validation failures | 400 |
-| **System** | `ErrRateLimitExceeded` | System resource limits | 429 |
+| Category          | Errors                                    | Description                    | HTTP Status |
+|-------------------|-------------------------------------------|--------------------------------|-------------|
+| **Configuration** | `ErrInvalidConfig`, `ErrInvalidSecretKey` | Setup and configuration issues | 500         |
+| **Token**         | `ErrInvalidToken`, `ErrEmptyToken`        | Token format and validation    | 401         |
+| **Claims**        | `ErrInvalidClaims`                        | Claims validation failures     | 400         |
+| **System**        | `ErrRateLimitExceeded`                    | System resource limits         | 429         |
 
 ### ValidationError
 
@@ -1107,9 +1105,9 @@ type ValidationError struct {
 
 #### Methods
 
-| Method | Description | Returns |
-|--------|-------------|---------|
-| `Error() string` | Returns formatted error message | Error string |
+| Method           | Description                               | Returns       |
+|------------------|-------------------------------------------|---------------|
+| `Error() string` | Returns formatted error message           | Error string  |
 | `Unwrap() error` | Returns underlying error for error chains | Wrapped error |
 
 ### Error Handling Patterns
@@ -1153,12 +1151,12 @@ if err != nil {
 
 ### 🚀 Performance Recommendations
 
-| Scenario | Recommended API | Reason |
-|----------|----------------|---------|
-| **High-throughput applications** | Processor API | Eliminates processor creation overhead |
-| **Simple applications** | Quick Functions | Automatic caching and optimization |
-| **Microservices** | Processor per service | Isolated configuration and resources |
-| **Web applications** | Context-aware methods | Request timeout and cancellation support |
+| Scenario                         | Recommended API       | Reason                                   |
+|----------------------------------|-----------------------|------------------------------------------|
+| **High-throughput applications** | Processor API         | Eliminates processor creation overhead   |
+| **Simple applications**          | Quick Functions       | Automatic caching and optimization       |
+| **Microservices**                | Processor per service | Isolated configuration and resources     |
+| **Web applications**             | Context-aware methods | Request timeout and cancellation support |
 
 ### 🔒 Security Best Practices
 
