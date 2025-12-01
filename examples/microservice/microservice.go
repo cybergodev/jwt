@@ -128,7 +128,7 @@ func (ms *MicroService) waitForShutdown() {
 	}
 
 	// Close JWT processor
-	if err := ms.processor.CloseWithContext(ctx); err != nil {
+	if err := ms.processor.Close(); err != nil {
 		log.Printf("JWT processor shutdown failed: %v", err)
 	}
 

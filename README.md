@@ -164,19 +164,11 @@ err = jwt.RevokeToken(secretKey, token)
 ### Processor Mode (Configurable Rate Limiting)
 Ideal for public APIs and production environments:
 ```go
-// Configure rate limits
-rateLimitConfig := jwt.RateLimitConfig{
-    Enabled:           true,
-    TokenCreationRate: 100,  // 100 tokens per minute per user
-    ValidationRate:    1000, // 1000 validations per minute per user
-    LoginAttemptRate:  5,    // 5 login attempts per minute per IP
-    PasswordResetRate: 3,    // 3 password resets per hour per user
-}
-
 // Create config with rate limiting enabled
 config := jwt.DefaultConfig()
 config.EnableRateLimit = true
-config.RateLimit = &rateLimitConfig
+config.RateLimitRate = 100           // 100 tokens per minute per user
+config.RateLimitWindow = time.Minute // Rate limit window
 
 // Create processor with rate limiting
 processor, err := jwt.New(secretKey, config)
@@ -195,7 +187,8 @@ Maximum security for production APIs:
 // Configure both rate limiting and blacklist
 config := jwt.DefaultConfig()
 config.EnableRateLimit = true
-config.RateLimit = &rateLimitConfig
+config.RateLimitRate = 100
+config.RateLimitWindow = time.Minute
 
 processor, err := jwt.NewWithBlacklist(secretKey, blacklistConfig, config)
 defer processor.Close()

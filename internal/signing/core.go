@@ -5,14 +5,21 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"strings"
 )
 
-// Method represents a signing method for JWT tokens
+// Method represents a signing method for JWT tokens.
+// Implementations must be thread-safe for concurrent use.
 type Method interface {
+	// Alg returns the algorithm name (e.g., "HS256")
 	Alg() string
+
+	// Sign creates a signature for the given signing string
 	Sign(signingString string, key any) (string, error)
+
+	// Verify verifies a signature against the signing string
 	Verify(signingString string, signature string, key any) error
+
+	// Hash returns the crypto.Hash used by this method
 	Hash() crypto.Hash
 }
 
@@ -53,29 +60,7 @@ func SignedString(header map[string]any, claims any, method Method, key any) (st
 	return string(tokenBuf), nil
 }
 
-func validateAlgorithmSecurity(alg string) error {
-	if alg == "" {
-		return fmt.Errorf("algorithm cannot be empty")
-	}
-
-	normalizedAlg := strings.ToUpper(strings.TrimSpace(alg))
-
-	secureAlgorithms := map[string]bool{
-		"HS256": true, "HS384": true, "HS512": true,
-	}
-
-	if !secureAlgorithms[normalizedAlg] {
-		return fmt.Errorf("algorithm %s is not secure", alg)
-	}
-
-	return nil
-}
-
 func GetInternalSigningMethod(alg string) (Method, error) {
-	if err := validateAlgorithmSecurity(alg); err != nil {
-		return nil, fmt.Errorf("algorithm security validation failed: %w", err)
-	}
-
 	switch alg {
 	case "HS256":
 		return GetHMACMethod("HS256"), nil

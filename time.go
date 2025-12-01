@@ -2,43 +2,18 @@ package jwt
 
 import (
 	"fmt"
-	"strings"
-	"sync/atomic"
 	"time"
 )
 
-var (
-	// defaultTimezone holds the default timezone for JWT timestamps
-	// Using atomic.Pointer for lock-free reads in the common case
-	defaultTimezone atomic.Pointer[time.Location]
-)
-
-func init() {
-	// Initialize with local timezone
-	defaultTimezone.Store(time.Local)
-}
-
-// SetTimezone sets the default timezone for JWT timestamps
-func SetTimezone(tz *time.Location) {
-	if tz == nil {
-		tz = time.Local
-	}
-	defaultTimezone.Store(tz)
-}
-
-// GetTimezone returns the current default timezone
-func GetTimezone() *time.Location {
-	return defaultTimezone.Load()
-}
-
-// NumericDate represents a JSON numeric date value as specified in RFC 7519
+// NumericDate represents a JSON numeric date value as specified in RFC 7519.
+// It stores time as Unix timestamp (seconds since epoch) for JWT compatibility.
 type NumericDate struct {
 	time.Time
 }
 
-// NewNumericDate creates a new NumericDate from time.Time using default timezone
+// NewNumericDate creates a new NumericDate from time.Time
 func NewNumericDate(t time.Time) NumericDate {
-	return NumericDate{Time: t.In(GetTimezone())}
+	return NumericDate{Time: t}
 }
 
 // MarshalJSON implements json.Marshaler interface
@@ -47,35 +22,34 @@ func (date *NumericDate) MarshalJSON() ([]byte, error) {
 		return []byte("null"), nil
 	}
 
-	return []byte(fmt.Sprintf("%d", date.Unix())), nil
+	return fmt.Appendf(nil, "%d", date.Unix()), nil
 }
 
 // UnmarshalJSON implements json.Unmarshaler interface
 func (date *NumericDate) UnmarshalJSON(b []byte) error {
-	s := strings.Trim(string(b), `"`)
-
-	if s == "null" || s == "" {
+	if len(b) == 0 || string(b) == "null" {
 		date.Time = time.Time{}
 		return nil
 	}
 
-	// Try parsing as Unix timestamp (simple implementation)
+	s := string(b)
+	if s[0] == '"' && s[len(s)-1] == '"' {
+		s = s[1 : len(s)-1]
+	}
+
+	if s == "" {
+		date.Time = time.Time{}
+		return nil
+	}
+
 	var unix int64
 	if _, err := fmt.Sscanf(s, "%d", &unix); err == nil {
-		// Unix timestamps are always in UTC, then convert to default timezone for display
-		utcTime := time.Unix(unix, 0).UTC()
-		tz := GetTimezone()
-		date.Time = utcTime.In(tz)
+		if unix < 0 || unix > 253402300799 {
+			return fmt.Errorf("invalid unix timestamp: %d", unix)
+		}
+		date.Time = time.Unix(unix, 0).UTC()
 		return nil
 	}
 
-	// Try parsing as RFC3339 string
-	if t, err := time.Parse(time.RFC3339, s); err == nil {
-		// RFC3339 includes timezone info, convert to default timezone for consistency
-		tz := GetTimezone()
-		date.Time = t.In(tz)
-		return nil
-	}
-
-	return fmt.Errorf("invalid time format: %s", s)
+	return fmt.Errorf("invalid time format: expected unix timestamp, got %s", s)
 }

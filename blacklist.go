@@ -4,20 +4,23 @@ import (
 	"time"
 )
 
-// BlacklistConfig represents blacklist configuration
+// BlacklistConfig represents blacklist configuration for token revocation management
 type BlacklistConfig struct {
-	CleanupInterval   time.Duration `json:"cleanup_interval"`
-	MaxSize           int           `json:"max_size"`
-	EnableAutoCleanup bool          `json:"enable_auto_cleanup"`
-	StoreType         string        `json:"store_type"`
+	// CleanupInterval specifies how often expired tokens are removed from the blacklist
+	CleanupInterval time.Duration
+
+	// MaxSize defines the maximum number of tokens that can be stored in the blacklist
+	MaxSize int
+
+	// EnableAutoCleanup enables automatic cleanup of expired tokens
+	EnableAutoCleanup bool
 }
 
-// DefaultBlacklistConfig returns a default blacklist configuration
+// DefaultBlacklistConfig returns a secure default blacklist configuration for production use
 func DefaultBlacklistConfig() BlacklistConfig {
 	return BlacklistConfig{
 		CleanupInterval:   5 * time.Minute,
 		MaxSize:           100000,
 		EnableAutoCleanup: true,
-		StoreType:         "memory",
 	}
 }

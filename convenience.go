@@ -1,126 +1,192 @@
 package jwt
 
 import (
-	"crypto/sha256"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
 type cacheEntry struct {
 	processor  *Processor
-	lastAccess time.Time
-	refCount   int32
+	lastAccess atomic.Int64
+	refCount   atomic.Int32
 }
 
-var (
-	processorCache = make(map[string]*cacheEntry)
-	cacheMutex     sync.RWMutex
-	maxCacheSize   = 100
-)
+type processorCache struct {
+	entries     map[string]*cacheEntry
+	mu          sync.RWMutex
+	lastCleanup atomic.Int64
+}
 
-// CreateToken creates a JWT token using a cached processor
+var cache = &processorCache{
+	entries: make(map[string]*cacheEntry, 16),
+}
+
+// CreateToken creates a JWT token using a cached processor.
+// This is a convenience function for simple use cases without rate limiting.
+// For production environments with rate limiting, use the Processor API.
+// The secret key must be at least 32 bytes long.
 func CreateToken(secretKey string, claims Claims) (string, error) {
-	processor, err := getOrCreateProcessor(secretKey)
+	if len(secretKey) < 32 {
+		return "", ErrInvalidSecretKey
+	}
+
+	processor, release, err := getProcessor(secretKey)
 	if err != nil {
 		return "", err
 	}
+	defer release()
+
 	return processor.CreateToken(claims)
 }
 
-// ValidateToken validates a JWT token using a cached processor
-func ValidateToken(secretKey, tokenString string) (*Claims, bool, error) {
-	processor, err := getOrCreateProcessor(secretKey)
-	if err != nil {
-		return nil, false, err
+// ValidateToken validates a JWT token using a cached processor.
+// This is a convenience function for simple use cases without rate limiting.
+// For production environments with rate limiting, use the Processor API.
+// The secret key must be at least 32 bytes long.
+func ValidateToken(secretKey, tokenString string) (Claims, bool, error) {
+	if len(secretKey) < 32 {
+		return Claims{}, false, ErrInvalidSecretKey
 	}
+
+	processor, release, err := getProcessor(secretKey)
+	if err != nil {
+		return Claims{}, false, err
+	}
+	defer release()
+
 	return processor.ValidateToken(tokenString)
 }
 
-// RevokeToken revokes a JWT token using a cached processor
+// RevokeToken revokes a JWT token using a cached processor.
+// This is a convenience function for simple use cases without rate limiting.
+// For production environments with rate limiting, use the Processor API.
+// The secret key must be at least 32 bytes long.
 func RevokeToken(secretKey, tokenString string) error {
-	processor, err := getOrCreateProcessor(secretKey)
+	if len(secretKey) < 32 {
+		return ErrInvalidSecretKey
+	}
+
+	processor, release, err := getProcessor(secretKey)
 	if err != nil {
 		return err
 	}
+	defer release()
+
 	return processor.RevokeToken(tokenString)
 }
 
-func getOrCreateProcessor(secretKey string) (*Processor, error) {
-	if len(secretKey) < 32 {
-		return nil, ErrInvalidSecretKey
+func getProcessor(secretKey string) (*Processor, func(), error) {
+	now := time.Now().Unix()
+
+	cache.mu.RLock()
+	entry, exists := cache.entries[secretKey]
+	cache.mu.RUnlock()
+
+	if exists {
+		entry.lastAccess.Store(now)
+		entry.refCount.Add(1)
+		return entry.processor, func() { entry.refCount.Add(-1) }, nil
 	}
 
-	hash := sha256.Sum256([]byte(secretKey))
-	cacheKey := string(hash[:16])
-
-	cacheMutex.RLock()
-	if entry, exists := processorCache[cacheKey]; exists {
-		entry.lastAccess = time.Now()
-		processor := entry.processor
-		cacheMutex.RUnlock()
-		return processor, nil
-	}
-	cacheMutex.RUnlock()
-
-	cacheMutex.Lock()
-	defer cacheMutex.Unlock()
-
-	if entry, exists := processorCache[cacheKey]; exists {
-		entry.lastAccess = time.Now()
-		return entry.processor, nil
-	}
-
-	config := DefaultConfig()
-	config.EnableRateLimit = false
-
-	processor, err := New(secretKey, config)
+	processor, err := New(secretKey)
 	if err != nil {
-		return nil, err
+		return nil, func() {}, err
 	}
 
-	if len(processorCache) >= maxCacheSize {
-		evictLRUProcessor()
+	cache.mu.Lock()
+	defer cache.mu.Unlock()
+
+	if entry, exists := cache.entries[secretKey]; exists {
+		processor.Close()
+		entry.lastAccess.Store(now)
+		entry.refCount.Add(1)
+		return entry.processor, func() { entry.refCount.Add(-1) }, nil
 	}
 
-	processorCache[cacheKey] = &cacheEntry{
-		processor:  processor,
-		lastAccess: time.Now(),
-		refCount:   0,
+	const maxCacheSize = 100
+	if len(cache.entries) >= maxCacheSize {
+		evictOldestUnsafe()
 	}
-	return processor, nil
+
+	entry = &cacheEntry{processor: processor}
+	entry.lastAccess.Store(now)
+	entry.refCount.Store(1)
+	cache.entries[secretKey] = entry
+
+	cleanupCacheIfNeeded(now)
+
+	return processor, func() { entry.refCount.Add(-1) }, nil
 }
 
-func evictLRUProcessor() {
-	var oldestKey string
-	var oldestTime time.Time
-	first := true
+func evictOldestUnsafe() {
+	if len(cache.entries) == 0 {
+		return
+	}
 
-	for k, entry := range processorCache {
-		if entry.refCount > 0 {
+	oldestKey := ""
+	oldestTime := int64(1<<63 - 1)
+
+	for k, entry := range cache.entries {
+		if entry.refCount.Load() > 0 {
 			continue
 		}
-		if first || entry.lastAccess.Before(oldestTime) {
+		lastAccess := entry.lastAccess.Load()
+		if lastAccess < oldestTime {
 			oldestKey = k
-			oldestTime = entry.lastAccess
-			first = false
+			oldestTime = lastAccess
 		}
 	}
 
 	if oldestKey != "" {
-		if entry, exists := processorCache[oldestKey]; exists {
-			entry.processor.Close()
-			delete(processorCache, oldestKey)
+		if entry, exists := cache.entries[oldestKey]; exists {
+			if entry.processor != nil {
+				entry.processor.Close()
+			}
+			delete(cache.entries, oldestKey)
 		}
 	}
 }
 
-// ClearProcessorCache clears the processor cache
-func ClearProcessorCache() {
-	cacheMutex.Lock()
-	defer cacheMutex.Unlock()
+const (
+	cacheCleanupInterval = 300  // 5 minutes in seconds
+	cacheMaxIdleTime     = 3600 // 1 hour in seconds
+)
 
-	for _, entry := range processorCache {
-		entry.processor.Close()
+func cleanupCacheIfNeeded(now int64) {
+	lastCleanup := cache.lastCleanup.Load()
+	if now-lastCleanup < cacheCleanupInterval {
+		return
 	}
-	clear(processorCache)
+
+	if !cache.lastCleanup.CompareAndSwap(lastCleanup, now) {
+		return
+	}
+
+	for key, entry := range cache.entries {
+		if entry.refCount.Load() > 0 {
+			continue
+		}
+		if now-entry.lastAccess.Load() > cacheMaxIdleTime {
+			if entry.processor != nil {
+				entry.processor.Close()
+			}
+			delete(cache.entries, key)
+		}
+	}
+}
+
+// ClearCache clears all cached processors and releases their resources.
+// This is primarily useful for testing and graceful shutdown scenarios.
+// After calling ClearCache, subsequent calls to convenience functions will create new processors.
+func ClearCache() {
+	cache.mu.Lock()
+	defer cache.mu.Unlock()
+
+	for key, entry := range cache.entries {
+		if entry.processor != nil {
+			entry.processor.Close()
+		}
+		delete(cache.entries, key)
+	}
 }

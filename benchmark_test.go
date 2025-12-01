@@ -113,17 +113,16 @@ func BenchmarkConvenienceCreateToken(b *testing.B) {
 		Role:     "admin",
 	}
 
-	// Warm up cache and disable rate limiter
 	_, err := CreateToken(testSecretKey, claims)
 	if err != nil {
 		b.Fatalf("Failed to warm up cache: %v", err)
 	}
 
-	// Get cached processor and disable rate limiter
-	processor, err := getOrCreateProcessor(testSecretKey)
+	processor, release, err := getProcessor(testSecretKey)
 	if err != nil {
 		b.Fatalf("Failed to get processor: %v", err)
 	}
+	defer release()
 	processor.rateLimiter = nil
 
 	b.ResetTimer()
@@ -144,17 +143,16 @@ func BenchmarkConvenienceValidateToken(b *testing.B) {
 		Role:     "admin",
 	}
 
-	// Create token and disable rate limiter
 	token, err := CreateToken(testSecretKey, claims)
 	if err != nil {
 		b.Fatalf("Failed to create token: %v", err)
 	}
 
-	// Get cached processor and disable rate limiter
-	processor, err := getOrCreateProcessor(testSecretKey)
+	processor, release, err := getProcessor(testSecretKey)
 	if err != nil {
 		b.Fatalf("Failed to get processor: %v", err)
 	}
+	defer release()
 	processor.rateLimiter = nil
 
 	b.ResetTimer()

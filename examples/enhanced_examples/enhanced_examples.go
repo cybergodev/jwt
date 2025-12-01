@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"log"
 	"time"
@@ -36,10 +35,6 @@ func enhancedBasicExample() {
 
 	secretKey := "Kx9#mP2$vL8@nQ5!wR7&tY3^uI6*oE4%aS1+dF0-gH9~jK2#bN5$cM8@xZ7&vB4!"
 
-	// Create context with timeout
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
 	// Create processor with custom configuration
 	config := jwt.Config{
 		SecretKey:       secretKey,
@@ -55,7 +50,7 @@ func enhancedBasicExample() {
 		log.Fatalf("Processor creation failed: %v", err)
 	}
 	defer func() {
-		if err := processor.CloseWithContext(ctx); err != nil {
+		if err := processor.Close(); err != nil {
 			log.Printf("Processor close failed: %v", err)
 		}
 	}()
@@ -76,16 +71,16 @@ func enhancedBasicExample() {
 		},
 	}
 
-	// Create token with context
-	token, err := processor.CreateTokenWithContext(ctx, claims)
+	// Create token
+	token, err := processor.CreateToken(claims)
 	if err != nil {
 		log.Fatalf("Token creation failed: %v", err)
 	}
 	fmt.Printf("✅ Token created successfully\n")
 	fmt.Printf("Token length: %d characters\n", len(token))
 
-	// Validate token with context
-	parsedClaims, valid, err := processor.ValidateTokenWithContext(ctx, token)
+	// Validate token
+	parsedClaims, valid, err := processor.ValidateToken(token)
 	if err != nil {
 		log.Fatalf("Token validation failed: %v", err)
 	}
@@ -140,22 +135,11 @@ func productionConfigExample() {
 
 	secretKey := "Kx9#mP2$vL8@nQ5!wR7&tY3^uI6*oE4%aS1+dF0-gH9~jK2#bN5$cM8@xZ7&vB4!"
 
-	// Production-grade rate limiting configuration
-	rateLimitConfig := jwt.RateLimitConfig{
-		Enabled:           true,
-		TokenCreationRate: 50,  // Conservative for production
-		ValidationRate:    500, // Higher for read operations
-		LoginAttemptRate:  3,   // Strict login protection
-		PasswordResetRate: 1,   // Very strict password reset
-		CleanupInterval:   2 * time.Minute,
-	}
-
 	// Production blacklist configuration
 	blacklistConfig := jwt.BlacklistConfig{
 		MaxSize:           50000, // Large capacity for production
 		CleanupInterval:   3 * time.Minute,
 		EnableAutoCleanup: true,
-		StoreType:         "memory", // Use Redis in real production
 	}
 
 	// Production JWT configuration
@@ -166,7 +150,8 @@ func productionConfigExample() {
 		Issuer:          "production-api-v1",
 		SigningMethod:   jwt.SigningMethodHS512, // Stronger algorithm
 		EnableRateLimit: true,
-		RateLimit:       &rateLimitConfig,
+		RateLimitRate:   50,
+		RateLimitWindow: time.Minute,
 	}
 
 	processor, err := jwt.NewWithBlacklist(secretKey, blacklistConfig, config)
@@ -308,9 +293,7 @@ func performanceExample() {
 	processorDuration := time.Since(start)
 	fmt.Printf("✅ Processor pattern: 20 create+validate operations in %v\n", processorDuration)
 
-	// Clear cache to demonstrate cleanup
-	jwt.ClearProcessorCache()
-	fmt.Printf("✅ Processor cache cleared\n")
+	fmt.Printf("✅ All operations completed successfully\n")
 
 	fmt.Printf("Performance comparison:\n")
 	fmt.Printf("  - Convenience functions: %v\n", convenienceDuration)
