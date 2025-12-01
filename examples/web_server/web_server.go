@@ -59,17 +59,9 @@ func init() {
 	}
 
 	// Web servers need rate limiting protection
-	rateLimitConfig := jwt.RateLimitConfig{
-		Enabled:           true,
-		TokenCreationRate: 100,  // 100 tokens per minute
-		ValidationRate:    1000, // 1000 validations per minute
-		LoginAttemptRate:  5,    // 5 login attempts per minute
-		PasswordResetRate: 3,    // 3 password resets per hour
-		CleanupInterval:   5 * time.Minute,
-	}
-
 	config.EnableRateLimit = true
-	config.RateLimit = &rateLimitConfig
+	config.RateLimitRate = 100
+	config.RateLimitWindow = time.Minute
 
 	var err error
 	processor, err = jwt.NewWithBlacklist(

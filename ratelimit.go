@@ -1,88 +1,103 @@
 package jwt
 
 import (
-	"context"
 	"sync"
 	"time"
 )
 
-// RateLimiter provides rate limiting for JWT operations to prevent abuse
+// RateLimiter provides rate limiting for JWT operations to prevent abuse.
+// It uses a token bucket algorithm with per-key rate limiting.
+// The rate limiter is thread-safe and can be used concurrently.
 type RateLimiter struct {
-	mu              sync.RWMutex
-	buckets         map[string]*bucket
-	maxRate         int
-	window          time.Duration
-	cleanupInterval time.Duration
-	maxBuckets      int
-	stopChan        chan struct{}
-	cleanupWg       sync.WaitGroup
-	closed          bool
+	mu         sync.Mutex
+	buckets    map[string]*bucket
+	maxRate    int
+	window     time.Duration
+	maxBuckets int
+	closed     bool
 }
 
 // bucket represents a token bucket for rate limiting
 type bucket struct {
 	tokens     int
-	lastRefill time.Time
-	mu         sync.Mutex
+	lastRefill int64
 }
 
-// NewRateLimiter creates a new rate limiter
+// NewRateLimiter creates a new rate limiter with the specified rate and window.
+// maxRate is the maximum number of requests allowed per window.
+// window is the time window for rate limiting (e.g., time.Minute).
+// If maxRate or window is invalid, sensible defaults are used.
 func NewRateLimiter(maxRate int, window time.Duration) *RateLimiter {
-	rl := &RateLimiter{
-		buckets:         make(map[string]*bucket),
-		maxRate:         maxRate,
-		window:          window,
-		cleanupInterval: window * 2,
-		maxBuckets:      10000,
-		stopChan:        make(chan struct{}),
+	if maxRate <= 0 {
+		maxRate = 100
+	}
+	if window <= 0 {
+		window = time.Minute
 	}
 
-	rl.cleanupWg.Add(1)
-	go rl.cleanupLoop()
-
-	return rl
+	return &RateLimiter{
+		buckets:    make(map[string]*bucket),
+		maxRate:    maxRate,
+		window:     window,
+		maxBuckets: 10000,
+	}
 }
 
-// Allow checks if a request is allowed for the given key (e.g., IP address, user ID)
+// Allow checks if a single request is allowed for the given key.
+// Returns true if the request is allowed, false if rate limit is exceeded.
+// An empty key always returns false.
 func (rl *RateLimiter) Allow(key string) bool {
 	return rl.AllowN(key, 1)
 }
 
-// AllowN checks if N requests are allowed for the given key
+// AllowN checks if n requests are allowed for the given key.
+// Returns true if all n requests are allowed, false if rate limit would be exceeded.
+// An empty key always returns false. n <= 0 always returns true.
 func (rl *RateLimiter) AllowN(key string, n int) bool {
-	rl.mu.RLock()
-	b, exists := rl.buckets[key]
-	rl.mu.RUnlock()
-
-	if !exists {
-		rl.mu.Lock()
-		if b, exists = rl.buckets[key]; !exists {
-			if len(rl.buckets) >= rl.maxBuckets {
-				rl.evictOldestBucket()
-			}
-			b = &bucket{
-				tokens:     rl.maxRate,
-				lastRefill: time.Now(),
-			}
-			rl.buckets[key] = b
-		}
-		rl.mu.Unlock()
+	if n <= 0 {
+		return true
+	}
+	if key == "" {
+		return false
 	}
 
-	b.mu.Lock()
-	defer b.mu.Unlock()
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
 
-	now := time.Now()
-	elapsed := now.Sub(b.lastRefill)
+	if rl.closed {
+		return false
+	}
 
-	if elapsed >= rl.window {
+	nowNano := time.Now().UnixNano()
+	b, exists := rl.buckets[key]
+
+	if !exists {
+		if n > rl.maxRate {
+			return false
+		}
+		if len(rl.buckets) >= rl.maxBuckets {
+			rl.evictOldestUnsafe()
+		}
+		rl.buckets[key] = &bucket{
+			tokens:     rl.maxRate - n,
+			lastRefill: nowNano,
+		}
+		return true
+	}
+
+	elapsed := nowNano - b.lastRefill
+
+	if elapsed >= int64(rl.window) {
 		b.tokens = rl.maxRate
-		b.lastRefill = now
-	} else {
-		tokensToAdd := int(float64(rl.maxRate) * elapsed.Seconds() / rl.window.Seconds())
-		b.tokens = minInt(rl.maxRate, b.tokens+tokensToAdd)
+		b.lastRefill = nowNano
+	} else if elapsed > 0 {
+		tokensToAdd := int(float64(rl.maxRate) * float64(elapsed) / float64(rl.window))
 		if tokensToAdd > 0 {
-			b.lastRefill = now
+			b.tokens += tokensToAdd
+			if b.tokens > rl.maxRate {
+				b.tokens = rl.maxRate
+			}
+			b.lastRefill = nowNano
 		}
 	}
 
@@ -94,216 +109,50 @@ func (rl *RateLimiter) AllowN(key string, n int) bool {
 	return false
 }
 
-// AllowWithContext checks if a request is allowed with context support
-func (rl *RateLimiter) AllowWithContext(ctx context.Context, key string) bool {
-	select {
-	case <-ctx.Done():
-		return false
-	default:
-		return rl.Allow(key)
-	}
-}
-
-// Reset resets the rate limit for a specific key
+// Reset removes the rate limit bucket for the given key, effectively resetting its rate limit.
+// This is useful for clearing rate limits after successful authentication or for testing.
 func (rl *RateLimiter) Reset(key string) {
+	if key == "" {
+		return
+	}
+
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
 	delete(rl.buckets, key)
 }
 
-// GetStats returns rate limiting statistics for a key
-func (rl *RateLimiter) GetStats(key string) (tokens int, lastRefill time.Time, exists bool) {
-	rl.mu.RLock()
-	b, ok := rl.buckets[key]
-	rl.mu.RUnlock()
-
-	if ok {
-		b.mu.Lock()
-		tokens = b.tokens
-		lastRefill = b.lastRefill
-		b.mu.Unlock()
-		exists = true
-	}
-
-	return
-}
-
-// Close stops the rate limiter and cleans up resources
+// Close closes the rate limiter and releases all resources.
+// After calling Close, all subsequent Allow/AllowN calls will return false.
+// It is safe to call Close multiple times.
 func (rl *RateLimiter) Close() {
 	rl.mu.Lock()
+	defer rl.mu.Unlock()
+
 	if rl.closed {
-		rl.mu.Unlock()
 		return
 	}
+
 	rl.closed = true
-	rl.mu.Unlock()
-
-	close(rl.stopChan)
-	rl.cleanupWg.Wait()
-
-	rl.mu.Lock()
+	clear(rl.buckets)
 	rl.buckets = nil
-	rl.mu.Unlock()
 }
 
-// cleanupLoop periodically removes old buckets to prevent memory leaks
-func (rl *RateLimiter) cleanupLoop() {
-	defer rl.cleanupWg.Done()
-
-	ticker := time.NewTicker(rl.cleanupInterval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ticker.C:
-			rl.cleanupOldBuckets()
-		case <-rl.stopChan:
-			return
-		}
-	}
-}
-
-// cleanupOldBuckets removes old buckets that haven't been used recently
-func (rl *RateLimiter) cleanupOldBuckets() {
-	rl.mu.Lock()
-	if rl.closed {
-		rl.mu.Unlock()
+func (rl *RateLimiter) evictOldestUnsafe() {
+	if len(rl.buckets) == 0 {
 		return
 	}
 
-	now := time.Now()
-	cutoff := now.Add(-rl.cleanupInterval)
-	keysToDelete := make([]string, 0)
+	oldestKey := ""
+	oldestTime := int64(1<<63 - 1)
 
 	for key, b := range rl.buckets {
-		b.mu.Lock()
-		if b.lastRefill.Before(cutoff) {
-			keysToDelete = append(keysToDelete, key)
-		}
-		b.mu.Unlock()
-	}
-
-	for _, key := range keysToDelete {
-		delete(rl.buckets, key)
-	}
-	rl.mu.Unlock()
-}
-
-// evictOldestBucket removes the oldest bucket (must be called with write lock held)
-func (rl *RateLimiter) evictOldestBucket() {
-	var oldestKey string
-	var oldestTime time.Time
-	first := true
-
-	for key, b := range rl.buckets {
-		b.mu.Lock()
-		if first || b.lastRefill.Before(oldestTime) {
+		if b.lastRefill < oldestTime {
 			oldestKey = key
 			oldestTime = b.lastRefill
-			first = false
 		}
-		b.mu.Unlock()
 	}
 
 	if oldestKey != "" {
 		delete(rl.buckets, oldestKey)
-	}
-}
-
-// minInt returns the minimum of two integers
-func minInt(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
-// SecurityRateLimiter provides pre-configured rate limiters for different security scenarios
-type SecurityRateLimiter struct {
-	TokenCreation   *RateLimiter
-	TokenValidation *RateLimiter
-	LoginAttempts   *RateLimiter
-	PasswordReset   *RateLimiter
-}
-
-// NewSecurityRateLimiter creates a new security rate limiter with sensible defaults
-func NewSecurityRateLimiter() *SecurityRateLimiter {
-	return &SecurityRateLimiter{
-		TokenCreation:   NewRateLimiter(100, time.Minute),  // 100 tokens per minute
-		TokenValidation: NewRateLimiter(1000, time.Minute), // 1000 validations per minute
-		LoginAttempts:   NewRateLimiter(5, time.Minute),    // 5 login attempts per minute
-		PasswordReset:   NewRateLimiter(3, time.Hour),      // 3 password resets per hour
-	}
-}
-
-// Close closes all rate limiters
-func (srl *SecurityRateLimiter) Close() {
-	if srl.TokenCreation != nil {
-		srl.TokenCreation.Close()
-	}
-	if srl.TokenValidation != nil {
-		srl.TokenValidation.Close()
-	}
-	if srl.LoginAttempts != nil {
-		srl.LoginAttempts.Close()
-	}
-	if srl.PasswordReset != nil {
-		srl.PasswordReset.Close()
-	}
-}
-
-// RateLimitConfig provides configuration for rate limiting
-type RateLimitConfig struct {
-	Enabled           bool
-	TokenCreationRate int           // requests per minute
-	ValidationRate    int           // requests per minute
-	LoginAttemptRate  int           // attempts per minute
-	PasswordResetRate int           // resets per hour
-	CleanupInterval   time.Duration // cleanup interval
-}
-
-// DefaultRateLimitConfig returns default rate limiting configuration
-func DefaultRateLimitConfig() RateLimitConfig {
-	return RateLimitConfig{
-		Enabled:           true,
-		TokenCreationRate: 1000,
-		ValidationRate:    10000,
-		LoginAttemptRate:  10,
-		PasswordResetRate: 5,
-		CleanupInterval:   5 * time.Minute,
-	}
-}
-
-// NewSecurityRateLimiterWithConfig creates a security rate limiter with custom configuration
-func NewSecurityRateLimiterWithConfig(config RateLimitConfig) *SecurityRateLimiter {
-	if !config.Enabled {
-		return &SecurityRateLimiter{} // Return empty limiters (no limiting)
-	}
-
-	return &SecurityRateLimiter{
-		TokenCreation:   NewRateLimiter(config.TokenCreationRate, time.Minute),
-		TokenValidation: NewRateLimiter(config.ValidationRate, time.Minute),
-		LoginAttempts:   NewRateLimiter(config.LoginAttemptRate, time.Minute),
-		PasswordReset:   NewRateLimiter(config.PasswordResetRate, time.Hour),
-	}
-}
-
-// IsRateLimited checks if an operation is rate limited
-func (srl *SecurityRateLimiter) IsRateLimited(operation, key string) bool {
-	if srl == nil {
-		return false // No rate limiting if not configured
-	}
-
-	switch operation {
-	case "token_creation":
-		return srl.TokenCreation != nil && !srl.TokenCreation.Allow(key)
-	case "token_validation":
-		return srl.TokenValidation != nil && !srl.TokenValidation.Allow(key)
-	case "login_attempt":
-		return srl.LoginAttempts != nil && !srl.LoginAttempts.Allow(key)
-	case "password_reset":
-		return srl.PasswordReset != nil && !srl.PasswordReset.Allow(key)
-	default:
-		return false
 	}
 }

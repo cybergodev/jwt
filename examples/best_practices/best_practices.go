@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"log"
 	"os"
@@ -105,22 +104,11 @@ func configurationBestPractices() {
 
 	secretKey := "Kx9#mP2$vL8@nQ5!wR7&tY3^uI6*oE4%aS1+dF0-gH9~jK2#bN5$cM8@xZ7&vB4!"
 
-	// ✅ DO: Configure appropriate rate limits for your use case
-	rateLimitConfig := jwt.RateLimitConfig{
-		Enabled:           true,
-		TokenCreationRate: 100,  // Adjust based on your traffic
-		ValidationRate:    1000, // Higher for read operations
-		LoginAttemptRate:  5,    // Prevent brute force attacks
-		PasswordResetRate: 3,    // Prevent abuse
-		CleanupInterval:   5 * time.Minute,
-	}
-
 	// ✅ DO: Configure blacklist for token revocation
 	blacklistConfig := jwt.BlacklistConfig{
 		MaxSize:           10000, // Adjust based on your user base
 		CleanupInterval:   5 * time.Minute,
-		EnableAutoCleanup: true,     // Always enable for production
-		StoreType:         "memory", // Use Redis for distributed systems
+		EnableAutoCleanup: true, // Always enable for production
 	}
 
 	// ✅ DO: Use environment-specific configurations
@@ -133,7 +121,8 @@ func configurationBestPractices() {
 			Issuer:          "production-api",
 			SigningMethod:   jwt.SigningMethodHS512, // Strongest algorithm
 			EnableRateLimit: true,
-			RateLimit:       &rateLimitConfig,
+			RateLimitRate:   100,
+			RateLimitWindow: time.Minute,
 		}
 	} else {
 		config = jwt.Config{
@@ -192,38 +181,28 @@ func resourceManagementBestPractices() {
 		log.Fatalf("Processor creation failed: %v", err)
 	}
 
-	// ✅ DO: Use context for timeout control
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
 	claims := jwt.Claims{
 		UserID:   "resource_test_user",
 		Username: "resource_user",
 		Role:     "user",
 	}
 
-	token, err := processor.CreateTokenWithContext(ctx, claims)
+	token, err := processor.CreateToken(claims)
 	if err != nil {
 		log.Fatalf("Token creation failed: %v", err)
 	}
 
-	_, valid, err := processor.ValidateTokenWithContext(ctx, token)
+	_, valid, err := processor.ValidateToken(token)
 	if err != nil || !valid {
 		log.Fatalf("Token validation failed: %v", err)
 	}
 
-	fmt.Printf("✅ Context-aware operations completed\n")
+	fmt.Printf("✅ Token operations completed\n")
 
-	// ✅ DO: Clear caches when appropriate
-	jwt.ClearProcessorCache()
-	fmt.Printf("✅ Processor cache cleared\n")
-
-	// ✅ DO: Use graceful shutdown with context
+	// ✅ DO: Use graceful shutdown
 	fmt.Printf("✅ Cleaning up processor resources...\n")
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer shutdownCancel()
 
-	if err := processor.CloseWithContext(shutdownCtx); err != nil {
+	if err := processor.Close(); err != nil {
 		log.Printf("Graceful shutdown failed: %v", err)
 	} else {
 		fmt.Printf("✅ Graceful shutdown completed\n")
@@ -243,20 +222,10 @@ func productionBestPractices() {
 	}
 
 	// ✅ DO: Use production-grade configuration
-	rateLimitConfig := jwt.RateLimitConfig{
-		Enabled:           true,
-		TokenCreationRate: 50,  // Conservative for production
-		ValidationRate:    500, // Higher for API calls
-		LoginAttemptRate:  3,   // Strict login protection
-		PasswordResetRate: 1,   // Very strict password reset
-		CleanupInterval:   2 * time.Minute,
-	}
-
 	blacklistConfig := jwt.BlacklistConfig{
 		MaxSize:           100000, // Large capacity for production
 		CleanupInterval:   5 * time.Minute,
 		EnableAutoCleanup: true,
-		StoreType:         "memory", // Use Redis in distributed systems
 	}
 
 	config := jwt.Config{
@@ -266,7 +235,8 @@ func productionBestPractices() {
 		Issuer:          "production-api-v1",
 		SigningMethod:   jwt.SigningMethodHS512, // Strongest available
 		EnableRateLimit: true,
-		RateLimit:       &rateLimitConfig,
+		RateLimitRate:   50,
+		RateLimitWindow: time.Minute,
 	}
 
 	processor, err := jwt.NewWithBlacklist(secretKey, blacklistConfig, config)

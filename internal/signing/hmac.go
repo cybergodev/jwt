@@ -3,41 +3,23 @@ package signing
 import (
 	"crypto"
 	"crypto/hmac"
+	_ "crypto/sha256"
+	_ "crypto/sha512"
 	"encoding/base64"
 	"errors"
 	"fmt"
-
-	"github.com/cybergodev/jwt/internal/security"
 )
 
+// hmacSigningMethod implements HMAC-based JWT signing
 type hmacSigningMethod struct {
-	Name     string
-	HashFunc crypto.Hash
+	Name     string      // Algorithm name (e.g., "HS256")
+	HashFunc crypto.Hash // Hash function to use
 }
 
 func (h *hmacSigningMethod) Verify(signingString string, signature string, key any) error {
-	var secureKey *security.SecureBytes
-	var keyBytes []byte
-
-	switch k := key.(type) {
-	case []byte:
-		secureKey = security.NewSecureBytesFromSlice(k)
-		keyBytes = secureKey.Bytes()
-	case string:
-		secureKey = security.NewSecureBytesFromSlice([]byte(k))
-		keyBytes = secureKey.Bytes()
-	default:
-		return fmt.Errorf("HMAC key must be []byte or string, got %T", key)
-	}
-
-	defer secureKey.Destroy()
-
-	if len(keyBytes) < 32 {
-		return fmt.Errorf("HMAC key too short: minimum 32 bytes required for security, got %d", len(keyBytes))
-	}
-
-	if security.IsWeakKey(keyBytes) {
-		return fmt.Errorf("weak HMAC key detected: key must have sufficient entropy")
+	keyBytes, ok := key.([]byte)
+	if !ok {
+		return fmt.Errorf("HMAC key must be []byte, got %T", key)
 	}
 
 	if !h.HashFunc.Available() {
@@ -48,15 +30,12 @@ func (h *hmacSigningMethod) Verify(signingString string, signature string, key a
 	if err != nil {
 		return fmt.Errorf("failed to decode signature: %w", err)
 	}
-	defer security.ZeroBytes(sigBytes)
 
 	hasher := hmac.New(h.HashFunc.New, keyBytes)
 	hasher.Write([]byte(signingString))
 	expectedSigBytes := hasher.Sum(nil)
-	defer security.ZeroBytes(expectedSigBytes)
 
-	if !security.SecureCompare(sigBytes, expectedSigBytes) {
-		security.SecureRandomDelay()
+	if !hmac.Equal(sigBytes, expectedSigBytes) {
 		return errors.New("signature verification failed")
 	}
 
@@ -64,28 +43,9 @@ func (h *hmacSigningMethod) Verify(signingString string, signature string, key a
 }
 
 func (h *hmacSigningMethod) Sign(signingString string, key any) (string, error) {
-	var secureKey *security.SecureBytes
-	var keyBytes []byte
-
-	switch k := key.(type) {
-	case []byte:
-		secureKey = security.NewSecureBytesFromSlice(k)
-		keyBytes = secureKey.Bytes()
-	case string:
-		secureKey = security.NewSecureBytesFromSlice([]byte(k))
-		keyBytes = secureKey.Bytes()
-	default:
-		return "", fmt.Errorf("HMAC key must be []byte or string, got %T", key)
-	}
-
-	defer secureKey.Destroy()
-
-	if len(keyBytes) < 32 {
-		return "", fmt.Errorf("HMAC key too short: minimum 32 bytes required for security, got %d", len(keyBytes))
-	}
-
-	if security.IsWeakKey(keyBytes) {
-		return "", fmt.Errorf("weak HMAC key detected: key must have sufficient entropy")
+	keyBytes, ok := key.([]byte)
+	if !ok {
+		return "", fmt.Errorf("HMAC key must be []byte, got %T", key)
 	}
 
 	if !h.HashFunc.Available() {
@@ -95,7 +55,6 @@ func (h *hmacSigningMethod) Sign(signingString string, key any) (string, error) 
 	hasher := hmac.New(h.HashFunc.New, keyBytes)
 	hasher.Write([]byte(signingString))
 	signature := hasher.Sum(nil)
-	defer security.ZeroBytes(signature)
 
 	return base64.RawURLEncoding.EncodeToString(signature), nil
 }

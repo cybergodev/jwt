@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"log"
 	"time"
@@ -168,15 +167,7 @@ func timezoneExample() {
 
 	secretKey := "Kx9#mP2$vL8@nQ5!wR7&tY3^uI6*oE4%aS1+dF0-gH9~jK2#bN5$cM8@xZ7&vB4!"
 
-	// 1. Get current timezone
-	currentTZ := jwt.GetTimezone()
-	fmt.Printf("Current timezone: %s\n", currentTZ)
-
-	// 2. Set UTC timezone
-	jwt.SetTimezone(time.UTC)
-	fmt.Printf("✅ Timezone set to UTC\n")
-
-	// 3. Create Token (using UTC timezone)
+	// 1. Create Token (timestamps are in UTC by default)
 	claims := jwt.Claims{
 		UserID:   "user789",
 		Username: "timezone_user",
@@ -195,13 +186,9 @@ func timezoneExample() {
 
 	if valid {
 		fmt.Printf("✅ Token validation successful\n")
-		fmt.Printf("Issued at (UTC): %s\n", parsedClaims.IssuedAt.Time.Format("2006-01-02 15:04:05 MST"))
-		fmt.Printf("Expires at (UTC): %s\n", parsedClaims.ExpiresAt.Time.Format("2006-01-02 15:04:05 MST"))
+		fmt.Printf("Issued at: %s\n", parsedClaims.IssuedAt.Time.Format("2006-01-02 15:04:05 MST"))
+		fmt.Printf("Expires at: %s\n", parsedClaims.ExpiresAt.Time.Format("2006-01-02 15:04:05 MST"))
 	}
-
-	// 5. Restore original timezone
-	jwt.SetTimezone(currentTZ)
-	fmt.Printf("✅ Timezone restored to: %s\n", currentTZ)
 }
 
 // Advanced configuration example
@@ -225,21 +212,12 @@ func advancedConfigExample() {
 		CleanupInterval:   2 * time.Minute,
 		MaxSize:           50000,
 		EnableAutoCleanup: true,
-		StoreType:         "memory",
 	}
 
 	// Advanced example enables rate limiting
-	rateLimitConfig := jwt.RateLimitConfig{
-		Enabled:           true,
-		TokenCreationRate: 50, // Conservative limits
-		ValidationRate:    500,
-		LoginAttemptRate:  3,
-		PasswordResetRate: 1,
-		CleanupInterval:   2 * time.Minute,
-	}
-
 	config.EnableRateLimit = true
-	config.RateLimit = &rateLimitConfig
+	config.RateLimitRate = 50
+	config.RateLimitWindow = time.Minute
 
 	// 3. Create processor
 	processor, err := jwt.NewWithBlacklist(secretKey, blacklistConfig, config)
@@ -287,17 +265,12 @@ func advancedConfigExample() {
 	}
 
 	// 6. Graceful shutdown
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	err = processor.CloseWithContext(ctx)
+	err = processor.Close()
 	if err != nil {
 		log.Printf("Processor shutdown failed: %v", err)
 	} else {
 		fmt.Printf("✅ Processor gracefully closed\n")
 	}
 
-	// 7. Clear cache
-	jwt.ClearProcessorCache()
-	fmt.Printf("✅ Processor cache cleared\n")
+	fmt.Printf("✅ All operations completed successfully\n")
 }

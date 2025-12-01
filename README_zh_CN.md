@@ -164,19 +164,11 @@ err = jwt.RevokeToken(secretKey, token)
 ### 处理器模式（可配置速率限制）
 适合公共API和生产环境：
 ```go
-// 配置速率限制
-rateLimitConfig := jwt.RateLimitConfig{
-    Enabled:           true,
-    TokenCreationRate: 100,  // 每分钟每用户100个token
-    ValidationRate:    1000, // 每分钟每用户1000次验证
-    LoginAttemptRate:  5,    // 每分钟每IP 5次登录尝试
-    PasswordResetRate: 3,    // 每小时每用户3次密码重置
-}
-
 // 创建启用速率限制的配置
 config := jwt.DefaultConfig()
 config.EnableRateLimit = true
-config.RateLimit = &rateLimitConfig
+config.RateLimitRate = 100           // 每分钟每用户100个token
+config.RateLimitWindow = time.Minute // 速率限制窗口
 
 // 创建带速率限制的处理器
 processor, err := jwt.New(secretKey, config)
@@ -195,7 +187,8 @@ if err == jwt.ErrRateLimitExceeded {
 // 同时配置速率限制和黑名单
 config := jwt.DefaultConfig()
 config.EnableRateLimit = true
-config.RateLimit = &rateLimitConfig
+config.RateLimitRate = 100
+config.RateLimitWindow = time.Minute
 
 processor, err := jwt.NewWithBlacklist(secretKey, blacklistConfig, config)
 defer processor.Close()

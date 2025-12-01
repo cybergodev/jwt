@@ -73,19 +73,11 @@ func demonstrateConvenienceMethods(secretKey string) {
 
 func demonstrateProcessorWithRateLimit(secretKey string) {
 	// Configure strict rate limiting
-	rateLimitConfig := jwt.RateLimitConfig{
-		Enabled:           true,
-		TokenCreationRate: 10, // Only 10 tokens per minute
-		ValidationRate:    20, // Only 20 validations per minute
-		LoginAttemptRate:  3,  // Only 3 login attempts per minute
-		PasswordResetRate: 1,  // Only 1 password reset per hour
-		CleanupInterval:   1 * time.Minute,
-	}
-
 	// Create config with rate limiting enabled
 	config := jwt.DefaultConfig()
 	config.EnableRateLimit = true
-	config.RateLimit = &rateLimitConfig
+	config.RateLimitRate = 10
+	config.RateLimitWindow = time.Minute
 
 	processor, err := jwt.New(secretKey, config)
 	if err != nil {
@@ -159,18 +151,10 @@ func demonstrateProcessorWithoutRateLimit(secretKey string) {
 
 func demonstrateCustomRateLimit(secretKey string) {
 	// Custom configuration for different use cases
-	rateLimitConfig := jwt.RateLimitConfig{
-		Enabled:           true,
-		TokenCreationRate: 30,  // 30 tokens per minute - moderate limit
-		ValidationRate:    200, // 200 validations per minute - higher for read operations
-		LoginAttemptRate:  5,   // 5 login attempts per minute - reasonable for users
-		PasswordResetRate: 2,   // 2 password resets per hour - security focused
-		CleanupInterval:   30 * time.Second,
-	}
-
 	config := jwt.DefaultConfig()
 	config.EnableRateLimit = true
-	config.RateLimit = &rateLimitConfig
+	config.RateLimitRate = 30
+	config.RateLimitWindow = time.Minute
 
 	processor, err := jwt.New(secretKey, config)
 	if err != nil {
@@ -205,25 +189,16 @@ func demonstrateCustomRateLimit(secretKey string) {
 
 func demonstrateProductionSetup(secretKey string) {
 	// Production-ready configuration
-	rateLimitConfig := jwt.RateLimitConfig{
-		Enabled:           true,
-		TokenCreationRate: 100,  // 100 tokens per minute per user
-		ValidationRate:    1000, // 1000 validations per minute per user
-		LoginAttemptRate:  5,    // 5 login attempts per minute per IP
-		PasswordResetRate: 3,    // 3 password resets per hour per user
-		CleanupInterval:   5 * time.Minute,
-	}
-
 	blacklistConfig := jwt.BlacklistConfig{
 		MaxSize:           10000, // 10K revoked tokens
 		CleanupInterval:   5 * time.Minute,
 		EnableAutoCleanup: true,
-		StoreType:         "memory",
 	}
 
 	config := jwt.DefaultConfig()
 	config.EnableRateLimit = true
-	config.RateLimit = &rateLimitConfig
+	config.RateLimitRate = 100
+	config.RateLimitWindow = time.Minute
 
 	processor, err := jwt.NewWithBlacklist(secretKey, blacklistConfig, config)
 	if err != nil {

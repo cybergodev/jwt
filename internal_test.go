@@ -16,34 +16,6 @@ import (
 
 // 🧪 COMPREHENSIVE INTERNAL TESTS: Internal Components Testing
 
-func TestSecureBytes(t *testing.T) {
-	// Test SecureBytes creation and cleanup
-	data := []byte("test-secret-key-data-12345678901234567890")
-	secureBytes := security.NewSecureBytesFromSlice(data)
-
-	if secureBytes == nil {
-		t.Fatal("SecureBytes should not be nil")
-	}
-
-	// Test that bytes are accessible
-	retrievedBytes := secureBytes.Bytes()
-	if len(retrievedBytes) != len(data) {
-		t.Errorf("Expected %d bytes, got %d", len(data), len(retrievedBytes))
-	}
-
-	for i, b := range data {
-		if retrievedBytes[i] != b {
-			t.Errorf("Byte mismatch at index %d: expected %d, got %d", i, b, retrievedBytes[i])
-		}
-	}
-
-	// Test cleanup
-	secureBytes.Destroy()
-
-	// After cleanup, bytes should be zeroed (though we can't easily test this
-	// without exposing internal state)
-}
-
 func TestWeakKeyDetection(t *testing.T) {
 	weakKeys := [][]byte{
 		[]byte("password123456789012345678901234"), // Common pattern
@@ -70,44 +42,6 @@ func TestWeakKeyDetection(t *testing.T) {
 				t.Errorf("Key should not be detected as weak: %s", string(key))
 			}
 		})
-	}
-}
-
-func TestSecureCompare(t *testing.T) {
-	// Test equal byte slices
-	a := []byte("test-data-12345")
-	b := []byte("test-data-12345")
-
-	if !security.SecureCompare(a, b) {
-		t.Error("Equal byte slices should compare as equal")
-	}
-
-	// Test different byte slices
-	c := []byte("test-data-54321")
-	if security.SecureCompare(a, c) {
-		t.Error("Different byte slices should compare as not equal")
-	}
-
-	// Test different lengths
-	d := []byte("test-data-12345-extra")
-	if security.SecureCompare(a, d) {
-		t.Error("Different length byte slices should compare as not equal")
-	}
-
-	// Test empty slices
-	empty1 := []byte{}
-	empty2 := []byte{}
-	if !security.SecureCompare(empty1, empty2) {
-		t.Error("Empty byte slices should compare as equal")
-	}
-
-	// Test nil slices
-	if !security.SecureCompare(nil, nil) {
-		t.Error("Nil byte slices should compare as equal")
-	}
-
-	if !security.SecureCompare(nil, empty1) {
-		t.Error("Nil and empty slices should compare as equal")
 	}
 }
 
@@ -207,10 +141,11 @@ func TestSigningMethods(t *testing.T) {
 }
 
 func TestBlacklistMemoryStore(t *testing.T) {
-	store := blacklist.NewMemoryStore(1000)
+	store := blacklist.NewMemoryStore(1000, 5*time.Minute, false)
 	if store == nil {
 		t.Fatal("Memory store should not be nil")
 	}
+	defer store.Close()
 
 	tokenID := "test-token-id-123"
 	expiresAt := time.Now().Add(1 * time.Hour)
@@ -239,30 +174,6 @@ func TestBlacklistMemoryStore(t *testing.T) {
 		t.Error("Non-existent token should not exist in store")
 	}
 
-	// Test removing token
-	err = store.Remove(tokenID)
-	if err != nil {
-		t.Fatalf("Failed to remove token from store: %v", err)
-	}
-
-	// Token should no longer exist
-	exists, err = store.Contains(tokenID)
-	if err != nil {
-		t.Fatalf("Failed to check removed token: %v", err)
-	}
-	if exists {
-		t.Error("Removed token should not exist in store")
-	}
-
-	// Test store size
-	size, err := store.Size()
-	if err != nil {
-		t.Fatalf("Failed to get store size: %v", err)
-	}
-	if size != 0 {
-		t.Errorf("Expected store size 0, got %d", size)
-	}
-
 	// Add multiple tokens
 	for i := 0; i < 5; i++ {
 		err = store.Add(fmt.Sprintf("token-%d", i), expiresAt)
@@ -271,27 +182,10 @@ func TestBlacklistMemoryStore(t *testing.T) {
 		}
 	}
 
-	size, err = store.Size()
-	if err != nil {
-		t.Fatalf("Failed to get store size: %v", err)
-	}
-	if size != 5 {
-		t.Errorf("Expected store size 5, got %d", size)
-	}
-
 	// Test cleanup
 	_, err = store.Cleanup()
 	if err != nil {
 		t.Fatalf("Failed to cleanup store: %v", err)
-	}
-
-	// Size should remain the same since tokens haven't expired
-	size, err = store.Size()
-	if err != nil {
-		t.Fatalf("Failed to get store size after cleanup: %v", err)
-	}
-	if size != 5 {
-		t.Errorf("Expected store size 5 after cleanup, got %d", size)
 	}
 
 	// Add expired token and cleanup
@@ -358,21 +252,6 @@ func TestCoreDecodeSegment(t *testing.T) {
 	err = core.DecodeSegment(longSegment, &decoded)
 	if err == nil {
 		t.Error("Should fail to decode extremely long segment")
-	}
-}
-
-func TestRandomDelay(t *testing.T) {
-	// Test that RandomDelay doesn't panic and takes some time
-	start := time.Now()
-	security.RandomDelay()
-	duration := time.Since(start)
-
-	// Should take at least some time (but not too much for tests)
-	if duration < 1*time.Microsecond {
-		t.Error("RandomDelay should take some time")
-	}
-	if duration > 100*time.Millisecond {
-		t.Error("RandomDelay should not take too long")
 	}
 }
 
