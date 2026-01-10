@@ -1,4 +1,4 @@
-package blacklist
+package internal
 
 import (
 	"errors"
@@ -8,14 +8,11 @@ import (
 
 var errStoreClosed = errors.New("blacklist store is closed")
 
-// memoryStore implements the Store interface using in-memory storage.
-// It is thread-safe and supports automatic cleanup of expired tokens.
 type memoryStore struct {
-	tokens  map[string]time.Time
-	mu      sync.RWMutex
-	maxSize int
-	closed  bool
-
+	tokens        map[string]time.Time
+	mu            sync.RWMutex
+	maxSize       int
+	closed        bool
 	cleanupTicker *time.Ticker
 	stopCleanup   chan struct{}
 	cleanupWg     sync.WaitGroup
@@ -88,13 +85,15 @@ func (m *memoryStore) Close() error {
 		return nil
 	}
 	m.closed = true
-	m.mu.Unlock()
 
 	if m.cleanupTicker != nil {
 		m.cleanupTicker.Stop()
 		close(m.stopCleanup)
+	}
+	m.mu.Unlock()
+
+	if m.cleanupTicker != nil {
 		m.cleanupWg.Wait()
-		m.cleanupTicker = nil
 	}
 
 	m.mu.Lock()
@@ -130,27 +129,27 @@ func (m *memoryStore) evictOldestUnsafe(count int) {
 		count = tokensLen
 	}
 
-	evicted := 0
-	oldestTime := time.Now().Add(100 * 365 * 24 * time.Hour)
-	var oldestID string
+	type tokenEntry struct {
+		id  string
+		exp time.Time
+	}
 
-	for evicted < count {
-		oldestTime = time.Now().Add(100 * 365 * 24 * time.Hour)
-		oldestID = ""
+	entries := make([]tokenEntry, 0, tokensLen)
+	for id, exp := range m.tokens {
+		entries = append(entries, tokenEntry{id, exp})
+	}
 
-		for id, exp := range m.tokens {
-			if exp.Before(oldestTime) {
-				oldestTime = exp
-				oldestID = id
+	for i := 0; i < count && i < len(entries); i++ {
+		minIdx := i
+		for j := i + 1; j < len(entries); j++ {
+			if entries[j].exp.Before(entries[minIdx].exp) {
+				minIdx = j
 			}
 		}
-
-		if oldestID != "" {
-			delete(m.tokens, oldestID)
-			evicted++
-		} else {
-			break
+		if minIdx != i {
+			entries[i], entries[minIdx] = entries[minIdx], entries[i]
 		}
+		delete(m.tokens, entries[i].id)
 	}
 }
 

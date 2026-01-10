@@ -8,10 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cybergodev/jwt/internal/blacklist"
-	"github.com/cybergodev/jwt/internal/core"
-	"github.com/cybergodev/jwt/internal/security"
-	"github.com/cybergodev/jwt/internal/signing"
+	"github.com/cybergodev/jwt/internal"
 )
 
 // 🧪 COMPREHENSIVE INTERNAL TESTS: Internal Components Testing
@@ -25,7 +22,7 @@ func TestWeakKeyDetection(t *testing.T) {
 
 	for i, key := range weakKeys {
 		t.Run(fmt.Sprintf("WeakKey_%d", i), func(t *testing.T) {
-			if !security.IsWeakKey(key) {
+			if !internal.IsWeakKey(key) {
 				t.Errorf("Key should be detected as weak: %s", string(key))
 			}
 		})
@@ -38,7 +35,7 @@ func TestWeakKeyDetection(t *testing.T) {
 
 	for i, key := range strongKeys {
 		t.Run(fmt.Sprintf("StrongKey_%d", i), func(t *testing.T) {
-			if security.IsWeakKey(key) {
+			if internal.IsWeakKey(key) {
 				t.Errorf("Key should not be detected as weak: %s", string(key))
 			}
 		})
@@ -65,7 +62,7 @@ func TestCoreTokenParsing(t *testing.T) {
 
 	// Test parsing with core package
 	parsedClaims := &Claims{}
-	coreToken, err := core.ParseWithClaims(token, parsedClaims, func(token *core.Core) (any, error) {
+	coreToken, err := internal.ParseWithClaims(token, parsedClaims, func(token *internal.Core) (any, error) {
 		return []byte(testSecretKey), nil
 	})
 
@@ -87,10 +84,10 @@ func TestCoreTokenParsing(t *testing.T) {
 }
 
 func TestSigningMethods(t *testing.T) {
-	methods := map[string]signing.Method{
-		"HS256": signing.GetHMACMethod("HS256"),
-		"HS384": signing.GetHMACMethod("HS384"),
-		"HS512": signing.GetHMACMethod("HS512"),
+	methods := map[string]internal.Method{
+		"HS256": internal.GetHMACMethod("HS256"),
+		"HS384": internal.GetHMACMethod("HS384"),
+		"HS512": internal.GetHMACMethod("HS512"),
 	}
 
 	testData := "test-signing-string"
@@ -141,7 +138,7 @@ func TestSigningMethods(t *testing.T) {
 }
 
 func TestBlacklistMemoryStore(t *testing.T) {
-	store := blacklist.NewMemoryStore(1000, 5*time.Minute, false)
+	store := internal.NewMemoryStore(1000, 5*time.Minute, false)
 	if store == nil {
 		t.Fatal("Memory store should not be nil")
 	}
@@ -226,7 +223,7 @@ func TestCoreDecodeSegment(t *testing.T) {
 	encoded := base64.RawURLEncoding.EncodeToString(jsonData)
 
 	var decoded map[string]any
-	err = core.DecodeSegment(encoded, &decoded)
+	err = internal.DecodeSegment(encoded, &decoded)
 	if err != nil {
 		t.Fatalf("Failed to decode valid segment: %v", err)
 	}
@@ -236,20 +233,20 @@ func TestCoreDecodeSegment(t *testing.T) {
 	}
 
 	// Test invalid base64url
-	err = core.DecodeSegment("invalid-base64!", &decoded)
+	err = internal.DecodeSegment("invalid-base64!", &decoded)
 	if err == nil {
 		t.Error("Should fail to decode invalid base64url")
 	}
 
 	// Test empty segment
-	err = core.DecodeSegment("", &decoded)
+	err = internal.DecodeSegment("", &decoded)
 	if err == nil {
 		t.Error("Should fail to decode empty segment")
 	}
 
 	// Test extremely long segment
 	longSegment := strings.Repeat("a", 10000)
-	err = core.DecodeSegment(longSegment, &decoded)
+	err = internal.DecodeSegment(longSegment, &decoded)
 	if err == nil {
 		t.Error("Should fail to decode extremely long segment")
 	}

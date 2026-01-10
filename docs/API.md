@@ -1,8 +1,6 @@
-# JWT Library - Complete API Reference
+# JWT Library - API Reference
 
-> **High-Performance JWT Library** - Production-ready, secure JWT implementation with comprehensive API coverage
-
-This document provides the complete API reference for the JWT library, including detailed function signatures, parameters, return values, practical examples, and production best practices.
+This document provides the complete API reference for the JWT library, including function signatures, parameters, return values, and practical examples.
 
 ## 🚀 Quick Start
 
@@ -50,13 +48,11 @@ claims, valid, err := jwt.ValidateToken(secretKey, token)
 
 ## 🎯 Quick Functions
 
-> **Perfect for simple use cases** - These functions provide instant JWT operations with automatic processor caching and optimal performance.
->
-> **⚡ No Rate Limiting** - Quick functions are designed for convenience and do not apply rate limiting, making them ideal for internal services and trusted environments.
+Simple convenience functions with automatic processor caching. No rate limiting is applied, making them suitable for internal services and trusted environments.
 
 ### CreateToken
 
-Creates a JWT token using an optimized cached processor. Ideal for applications that need simple token creation without complex configuration.
+Creates a JWT token using an internal cached processor.
 
 ```go
 func CreateToken(secretKey string, claims Claims) (string, error)
@@ -74,53 +70,25 @@ func CreateToken(secretKey string, claims Claims) (string, error)
 | `string` | Base64-encoded JWT token          |
 | `error`  | Error details or `nil` on success |
 
-#### Example: Basic Token Creation
+#### Example
 ```go
-// Define user claims
 claims := jwt.Claims{
     UserID:   "user_12345",
     Username: "john.doe",
     Role:     "admin",
-    Permissions: []string{"read", "write", "delete"},
 }
-
-// Set token expiration time (default 15 minutes) - when token expires
 claims.ExpiresAt = jwt.NewNumericDate(time.Now().Add(60 * time.Minute))
 
-// Create token (processor automatically cached)
-secretKey := "Kx9#mP2$vL8@nQ5!wR7&tY3^uI6*oE4%aS1+dF0-g!"
+secretKey := "your-secret-key-at-least-32-bytes-long!"
 token, err := jwt.CreateToken(secretKey, claims)
 if err != nil {
-    log.Panicf("token creation failed: %v", err)
-}
-
-fmt.Printf("Generated token: %s\n", token)
-```
-
-#### Example: Production Usage with Error Handling
-```go
-func generateUserToken(userID, role string, permissions []string) (string, error) {
-    claims := jwt.Claims{
-        UserID:      userID,
-        Role:        role,
-        Permissions: permissions,
-    }
-
-    claims.ExpiresAt = jwt.NewNumericDate(time.Now().Add(60 * time.Minute))
-
-    token, err := jwt.CreateToken(os.Getenv("JWT_SECRET"), claims)
-    if err != nil {
-        log.Printf("Token generation failed for user %s: %v", userID, err)
-        return "", fmt.Errorf("authentication token generation failed")
-    }
-
-    return token, nil
+    return fmt.Errorf("token creation failed: %w", err)
 }
 ```
 
 ### ValidateToken
 
-Validates a JWT token with comprehensive security checks including signature verification, expiration, and blacklist validation.
+Validates a JWT token including signature verification, expiration, and blacklist checks.
 
 ```go
 func ValidateToken(secretKey, tokenString string) (*Claims, bool, error)
@@ -139,53 +107,19 @@ func ValidateToken(secretKey, tokenString string) (*Claims, bool, error)
 | `bool`    | `true` if token is valid and not expired     |
 | `error`   | Validation error details or `nil`            |
 
-#### Example: Basic Token Validation
+#### Example
 ```go
 claims, valid, err := jwt.ValidateToken(secretKey, tokenString)
-if err != nil {
-    log.Printf("Token validation error: %v", err)
-    return http.StatusUnauthorized, "Invalid token"
+if err != nil || !valid {
+    return fmt.Errorf("invalid token")
 }
 
-if !valid {
-    log.Println("Token is expired or invalid")
-    return http.StatusUnauthorized, "Token expired"
-}
-
-// Token is valid - use claims
-fmt.Printf("Authenticated user: %s (Role: %s)\n", claims.Username, claims.Role)
-```
-
-#### Example: Middleware Implementation
-```go
-func JWTMiddleware(next http.HandlerFunc) http.HandlerFunc {
-    return func(w http.ResponseWriter, r *http.Request) {
-        // Extract token from Authorization header
-        authHeader := r.Header.Get("Authorization")
-        if !strings.HasPrefix(authHeader, "Bearer ") {
-            http.Error(w, "Missing or invalid authorization header", http.StatusUnauthorized)
-            return
-        }
-
-        token := strings.TrimPrefix(authHeader, "Bearer ")
-
-        // Validate token
-        claims, valid, err := jwt.ValidateToken(os.Getenv("JWT_SECRET"), token)
-        if err != nil || !valid {
-            http.Error(w, "Invalid or expired token", http.StatusUnauthorized)
-            return
-        }
-
-        // Add claims to request context
-        ctx := context.WithValue(r.Context(), "user_claims", claims)
-        next.ServeHTTP(w, r.WithContext(ctx))
-    }
-}
+fmt.Printf("User: %s, Role: %s\n", claims.Username, claims.Role)
 ```
 
 ### RevokeToken
 
-Immediately revokes a JWT token by adding it to the blacklist, preventing future use even if not expired.
+Revokes a JWT token by adding it to the blacklist.
 
 ```go
 func RevokeToken(secretKey, tokenString string) error
@@ -202,46 +136,11 @@ func RevokeToken(secretKey, tokenString string) error
 |---------|--------------------------------------|
 | `error` | Revocation error or `nil` on success |
 
-#### Example: User Logout
+#### Example
 ```go
-func logoutHandler(w http.ResponseWriter, r *http.Request) {
-    token := extractTokenFromRequest(r)
-    if token == "" {
-        http.Error(w, "No token provided", http.StatusBadRequest)
-        return
-    }
-
-    // Revoke the token
-    if err := jwt.RevokeToken(os.Getenv("JWT_SECRET"), token); err != nil {
-        log.Printf("Token revocation failed: %v", err)
-        http.Error(w, "Logout failed", http.StatusInternalServerError)
-        return
-    }
-
-    w.WriteHeader(http.StatusOK)
-    json.NewEncoder(w).Encode(map[string]string{"message": "Successfully logged out"})
-}
-```
-
-#### Example: Security Incident Response
-```go
-func emergencyRevokeUserTokens(userID string) error {
-    // In a real implementation, you'd track user tokens
-    // This is a simplified example
-    tokens := getUserActiveTokens(userID) // Your implementation
-
-    var errors []error
-    for _, token := range tokens {
-        if err := jwt.RevokeToken(os.Getenv("JWT_SECRET"), token); err != nil {
-            errors = append(errors, fmt.Errorf("failed to revoke token: %w", err))
-        }
-    }
-
-    if len(errors) > 0 {
-        return fmt.Errorf("some tokens could not be revoked: %v", errors)
-    }
-
-    return nil
+err := jwt.RevokeToken(secretKey, token)
+if err != nil {
+    return fmt.Errorf("revocation failed: %w", err)
 }
 ```
 
@@ -249,13 +148,11 @@ func emergencyRevokeUserTokens(userID string) error {
 
 ## 🏭 Processor API
 
-> **Advanced control and configuration** - The Processor API provides fine-grained control over JWT operations with custom configurations, blacklist management, and performance optimization.
->
-> **🛡️ Configurable Rate Limiting** - Processor mode supports optional rate limiting to protect against abuse and ensure system stability in production environments.
+The Processor API provides fine-grained control over JWT operations with custom configurations, blacklist management, and optional rate limiting.
 
 ### New
 
-Creates a new JWT processor with default configuration. Use this for most applications that need basic JWT functionality.
+Creates a new JWT processor with default configuration.
 
 ```go
 func New(secretKey string, configs ...Config) (*Processor, error)
@@ -351,584 +248,239 @@ defer processor.Close()
 
 ### Rate Limiting Configuration
 
-The processor supports configurable rate limiting through the Config structure. Rate limiting is disabled by default and can be enabled as needed.
+Rate limiting can be enabled through the Config structure. It is disabled by default.
 
 #### Config Structure
 ```go
 type Config struct {
-    SecretKey       string
-    AccessTokenTTL  time.Duration
-    RefreshTokenTTL time.Duration
-    Issuer          string
-    SigningMethod   SigningMethod
-    Timezone        *time.Location
-    EnableRateLimit bool             // Enable rate limiting (default: false)
-    RateLimit       *RateLimitConfig // Optional rate limiting configuration
+    SecretKey        string
+    AccessTokenTTL   time.Duration
+    RefreshTokenTTL  time.Duration
+    Issuer           string
+    SigningMethod    SigningMethod
+    EnableRateLimit  bool          // Enable rate limiting (default: false)
+    RateLimitRate    int           // Requests per window (default: 100)
+    RateLimitWindow  time.Duration // Time window (default: 1 minute)
 }
 ```
 
-#### Example: Processor with Rate Limiting
+#### Example: Enable Rate Limiting
 ```go
-// Configure rate limits for production API
-rateLimitConfig := jwt.RateLimitConfig{
-    Enabled:           true,
-    TokenCreationRate: 100,   // 100 tokens per minute per user
-    ValidationRate:    1000,  // 1000 validations per minute per user
-    LoginAttemptRate:  5,     // 5 login attempts per minute per IP
-    PasswordResetRate: 3,     // 3 password resets per hour per user
-    CleanupInterval:   5 * time.Minute,
-}
-
-// Create config with rate limiting enabled
 config := jwt.DefaultConfig()
 config.EnableRateLimit = true
-config.RateLimit = &rateLimitConfig
+config.RateLimitRate = 100           // 100 requests per window
+config.RateLimitWindow = time.Minute // Per minute
 
 processor, err := jwt.New(secretKey, config)
 if err != nil {
-    log.Fatalf("Rate limited processor creation failed: %v", err)
+    return err
 }
 defer processor.Close()
 
-// This will be rate limited
-token, err := processor.CreateToken(claims)
-if err == jwt.ErrRateLimitExceeded {
-    // Handle rate limit exceeded
-    return errors.New("too many requests, please try again later")
-}
-```
-
-#### Example: Processor without Rate Limiting
-```go
-// For internal microservices communication
-config := jwt.DefaultConfig()
-config.EnableRateLimit = false // Explicitly disable (default behavior)
-
-processor, err := jwt.New(secretKey, config)
-if err != nil {
-    log.Fatalf("Processor creation failed: %v", err)
-}
-defer processor.Close()
-
-// No rate limiting applied
-for i := 0; i < 1000; i++ {
-    token, err := processor.CreateToken(claims)
-    // Will not hit rate limits
-}
-```
-
-#### Example: Production Setup with Rate Limiting and Blacklist
-```go
-// Maximum security configuration
-rateLimitConfig := jwt.RateLimitConfig{
-    Enabled:           true,
-    TokenCreationRate: 50,    // Conservative limits
-    ValidationRate:    500,
-    LoginAttemptRate:  3,     // Strict login protection
-    PasswordResetRate: 1,     // Very strict password reset
-    CleanupInterval:   2 * time.Minute,
-}
-
-blacklistConfig := jwt.BlacklistConfig{
-    MaxSize:           50000,
-    CleanupInterval:   3 * time.Minute,
-    EnableAutoCleanup: true,
-    StoreType:        "memory",
-}
-
-config := jwt.DefaultConfig()
-config.EnableRateLimit = true
-config.RateLimit = &rateLimitConfig
-
-processor, err := jwt.NewWithBlacklist(secretKey, blacklistConfig, config)
-if err != nil {
-    log.Fatalf("Secure processor creation failed: %v", err)
-}
-defer processor.Close()
-
-// Both rate limiting and token revocation available
 token, err := processor.CreateToken(claims)
 if err == jwt.ErrRateLimitExceeded {
     return errors.New("rate limit exceeded")
 }
+```
 
-// Later, revoke the token
-err = processor.RevokeToken(token)
+#### Example: Custom Rate Limiter
+```go
+// Create custom rate limiter
+rateLimiter := jwt.NewRateLimiter(200, time.Minute)
+
+config := jwt.DefaultConfig()
+config.RateLimiter = rateLimiter
+
+processor, err := jwt.New(secretKey, config)
 ```
 
 ### Processor.CreateToken
 
-Creates a JWT token with the processor's configuration. Provides better performance than convenience functions for high-throughput applications.
+Creates a JWT token with the processor's configuration.
 
 ```go
 func (p *Processor) CreateToken(claims Claims) (string, error)
 ```
 
-#### Parameters
-| Parameter | Type     | Description      |
-|-----------|----------|------------------|
-| `claims`  | `Claims` | JWT payload data |
-
-#### Returns
-| Type     | Description      |
-|----------|------------------|
-| `string` | Signed JWT token |
-| `error`  | Creation error   |
-
-#### Example: High-Performance Token Creation
+#### Example
 ```go
-// Optimized for high throughput
-func createUserSession(processor *jwt.Processor, userID, role string) (string, error) {
-    claims := jwt.Claims{
-        UserID:    userID,
-        Role:      role,
-    }
-
-    claims.ExpiresAt = jwt.NewNumericDate(time.Now().Add(60 * time.Minute))
-
-    return processor.CreateToken(claims)
+claims := jwt.Claims{
+    UserID: "user123",
+    Role:   "admin",
 }
-```
+claims.ExpiresAt = jwt.NewNumericDate(time.Now().Add(60 * time.Minute))
 
-### Processor.CreateTokenWithContext
-
-Creates a JWT token with context support for cancellation and timeouts. Ideal for web applications with request timeouts.
-
-```go
-func (p *Processor) CreateTokenWithContext(ctx context.Context, claims Claims) (string, error)
-```
-
-#### Parameters
-| Parameter | Type              | Description                      |
-|-----------|-------------------|----------------------------------|
-| `ctx`     | `context.Context` | Request context for cancellation |
-| `claims`  | `Claims`          | JWT payload data                 |
-
-#### Returns
-| Type     | Description               |
-|----------|---------------------------|
-| `string` | Signed JWT token          |
-| `error`  | Creation or context error |
-
-#### Example: Web Handler with Timeout
-```go
-func loginHandler(processor *jwt.Processor, w http.ResponseWriter, r *http.Request) {
-    // Create context with timeout
-    ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
-    defer cancel()
-
-    // Extract user info from request
-    userID := getUserIDFromRequest(r)
-    role := getUserRoleFromDB(userID)
-
-    claims := jwt.Claims{
-        UserID: userID,
-        Role:   role,
-    }
-
-    // Create token with context
-    token, err := processor.CreateTokenWithContext(ctx, claims)
-    if err != nil {
-        if errors.Is(err, context.DeadlineExceeded) {
-            http.Error(w, "Request timeout", http.StatusRequestTimeout)
-            return
-        }
-        http.Error(w, "Token creation failed", http.StatusInternalServerError)
-        return
-    }
-
-    // Return token
-    json.NewEncoder(w).Encode(map[string]string{"token": token})
+token, err := processor.CreateToken(claims)
+if err != nil {
+    return fmt.Errorf("token creation failed: %w", err)
 }
 ```
 
 ### Processor.ValidateToken
 
-Validates a JWT token using the processor's configuration with comprehensive security checks.
+Validates a JWT token using the processor's configuration.
 
 ```go
-func (p *Processor) ValidateToken(tokenString string) (*Claims, bool, error)
+func (p *Processor) ValidateToken(tokenString string) (Claims, bool, error)
 ```
 
-#### Parameters
-| Parameter     | Type     | Description           |
-|---------------|----------|-----------------------|
-| `tokenString` | `string` | JWT token to validate |
-
-#### Returns
-| Type      | Description                              |
-|-----------|------------------------------------------|
-| `*Claims` | Parsed claims (nil if invalid)           |
-| `bool`    | `true` if token is valid and not expired |
-| `error`   | Validation error details                 |
-
-#### Example: API Authentication
+#### Example
 ```go
-func authenticateRequest(processor *jwt.Processor, token string) (*jwt.Claims, error) {
-    claims, valid, err := processor.ValidateToken(token)
-    if err != nil {
-        return nil, fmt.Errorf("token validation failed: %w", err)
-    }
-
-    if !valid {
-        return nil, fmt.Errorf("token is invalid or expired")
-    }
-
-    return claims, nil
+claims, valid, err := processor.ValidateToken(token)
+if err != nil || !valid {
+    return fmt.Errorf("invalid token")
 }
+
+fmt.Printf("User: %s\n", claims.UserID)
 ```
-
-### Processor.ValidateTokenWithContext
-
-Validates a JWT token with context support for request cancellation and timeout handling.
-
-```go
-func (p *Processor) ValidateTokenWithContext(ctx context.Context, tokenString string) (*Claims, bool, error)
-```
-
-#### Parameters
-| Parameter     | Type              | Description           |
-|---------------|-------------------|-----------------------|
-| `ctx`         | `context.Context` | Request context       |
-| `tokenString` | `string`          | JWT token to validate |
-
-#### Returns
-| Type      | Description                    |
-|-----------|--------------------------------|
-| `*Claims` | Parsed claims (nil if invalid) |
-| `bool`    | `true` if token is valid       |
-| `error`   | Validation or context error    |
 
 ### Processor.CreateRefreshToken
 
-Creates a long-lived refresh token using the configured RefreshTokenTTL. Used in token refresh workflows.
+Creates a long-lived refresh token using the configured RefreshTokenTTL.
 
 ```go
 func (p *Processor) CreateRefreshToken(claims Claims) (string, error)
 ```
 
-#### Parameters
-| Parameter | Type     | Description                   |
-|-----------|----------|-------------------------------|
-| `claims`  | `Claims` | JWT payload for refresh token |
-
-#### Returns
-| Type     | Description              |
-|----------|--------------------------|
-| `string` | Long-lived refresh token |
-| `error`  | Creation error           |
-
-#### Example: Login with Refresh Token
+#### Example
 ```go
-func loginUser(processor *jwt.Processor, userID, role string) (accessToken, refreshToken string, err error) {
-    claims := jwt.Claims{
-        UserID: userID,
-        Role:   role,
-    }
-
-    // Create short-lived access token
-    accessToken, err = processor.CreateToken(claims)
-    if err != nil {
-        return "", "", fmt.Errorf("access token creation failed: %w", err)
-    }
-
-    // Create long-lived refresh token
-    refreshToken, err = processor.CreateRefreshToken(claims)
-    if err != nil {
-        return "", "", fmt.Errorf("refresh token creation failed: %w", err)
-    }
-
-    return accessToken, refreshToken, nil
+refreshToken, err := processor.CreateRefreshToken(claims)
+if err != nil {
+    return fmt.Errorf("refresh token creation failed: %w", err)
 }
 ```
 
 ### Processor.RefreshToken
 
-Creates a new access token from a valid refresh token. Essential for seamless user experience without frequent re-authentication.
+Creates a new access token from a valid refresh token.
 
 ```go
 func (p *Processor) RefreshToken(refreshTokenString string) (string, error)
 ```
 
-#### Parameters
-| Parameter            | Type     | Description         |
-|----------------------|----------|---------------------|
-| `refreshTokenString` | `string` | Valid refresh token |
-
-#### Returns
-| Type     | Description                                   |
-|----------|-----------------------------------------------|
-| `string` | New access token with fresh expiration        |
-| `error`  | Refresh error (invalid/expired refresh token) |
-
-#### Example: Token Refresh Endpoint
+#### Example
 ```go
-func refreshTokenHandler(processor *jwt.Processor) http.HandlerFunc {
-    return func(w http.ResponseWriter, r *http.Request) {
-        var req struct {
-            RefreshToken string `json:"refresh_token"`
-        }
-
-        if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-            http.Error(w, "Invalid request body", http.StatusBadRequest)
-            return
-        }
-
-        // Generate new access token
-        newAccessToken, err := processor.RefreshToken(req.RefreshToken)
-        if err != nil {
-            http.Error(w, "Invalid refresh token", http.StatusUnauthorized)
-            return
-        }
-
-        // Return new access token
-        response := map[string]string{
-            "access_token": newAccessToken,
-            "token_type":   "Bearer",
-        }
-
-        w.Header().Set("Content-Type", "application/json")
-        json.NewEncoder(w).Encode(response)
-    }
+newAccessToken, err := processor.RefreshToken(refreshToken)
+if err != nil {
+    return fmt.Errorf("token refresh failed: %w", err)
 }
 ```
 
 ### Processor.RevokeToken
 
-Immediately revokes a JWT token by adding it to the blacklist, preventing future use.
+Revokes a JWT token by adding it to the blacklist.
 
 ```go
 func (p *Processor) RevokeToken(tokenString string) error
 ```
 
-#### Parameters
-| Parameter     | Type     | Description         |
-|---------------|----------|---------------------|
-| `tokenString` | `string` | JWT token to revoke |
-
-#### Returns
-| Type    | Description                        |
-|---------|------------------------------------|
-| `error` | Revocation error or nil on success |
+#### Example
+```go
+err := processor.RevokeToken(token)
+if err != nil {
+    return fmt.Errorf("revocation failed: %w", err)
+}
+```
 
 ### Processor.Close
 
-Securely closes the processor and cleans up all resources including memory wiping of sensitive data.
+Closes the processor and cleans up resources.
 
 ```go
 func (p *Processor) Close() error
 ```
 
-#### Returns
-| Type    | Description                     |
-|---------|---------------------------------|
-| `error` | Cleanup error or nil on success |
-
-#### Example: Graceful Shutdown
+#### Example
 ```go
-func main() {
-    processor, err := jwt.New(secretKey)
-    if err != nil {
-        log.Fatal(err)
-    }
-
-    // Ensure cleanup on shutdown
-    defer func() {
-        if err := processor.Close(); err != nil {
-            log.Printf("Processor cleanup failed: %v", err)
-        }
-    }()
-
-    // Handle shutdown signals
-    c := make(chan os.Signal, 1)
-    signal.Notify(c, os.Interrupt, syscall.SIGTERM)
-
-    go func() {
-        <-c
-        log.Println("Shutting down gracefully...")
-        processor.Close()
-        os.Exit(0)
-    }()
-
-    // Application logic...
+processor, err := jwt.New(secretKey)
+if err != nil {
+    return err
 }
+defer processor.Close()
 ```
 
 ---
 
 ## ⚙️ Configuration
 
-> **Setup and customization** - Comprehensive configuration options for JWT processors with security-focused defaults and production-ready settings.
-
 ### Config
 
-Main configuration structure for JWT processors with comprehensive security and performance options.
+Main configuration structure for JWT processors.
 
 ```go
 type Config struct {
-    SecretKey       string
-    AccessTokenTTL  time.Duration
-    RefreshTokenTTL time.Duration
-    Issuer          string
-    SigningMethod   SigningMethod
-    Timezone        *time.Location
-    EnableRateLimit bool
-    RateLimit       *RateLimitConfig
+    SecretKey        string
+    AccessTokenTTL   time.Duration
+    RefreshTokenTTL  time.Duration
+    Issuer           string
+    SigningMethod    SigningMethod
+    EnableRateLimit  bool
+    RateLimitRate    int
+    RateLimitWindow  time.Duration
+    RateLimiter      *RateLimiter
 }
 ```
 
 #### Configuration Fields
 
-| Field             | Type               | Description                 | Default         | Requirements            |
-|-------------------|--------------------|-----------------------------|-----------------|-------------------------|
-| `SecretKey`       | `string`           | Cryptographic secret key    | `""`            | ≥32 bytes, high entropy |
-| `AccessTokenTTL`  | `time.Duration`    | Access token lifetime       | `15m`           | > 0, < RefreshTokenTTL  |
-| `RefreshTokenTTL` | `time.Duration`    | Refresh token lifetime      | `168h` (7 days) | > AccessTokenTTL        |
-| `Issuer`          | `string`           | Token issuer identifier     | `"jwt-service"` | Non-empty string        |
-| `SigningMethod`   | `SigningMethod`    | HMAC algorithm              | `HS256`         | HS256/HS384/HS512       |
-| `Timezone`        | `*time.Location`   | Timestamp timezone          | `time.Local`    | Valid timezone          |
-| `EnableRateLimit` | `bool`             | Enable rate limiting        | `false`         | Boolean flag            |
-| `RateLimit`       | `*RateLimitConfig` | Rate limiting configuration | `nil`           | Valid when enabled      |
+| Field             | Type            | Description              | Default         |
+|-------------------|-----------------|--------------------------|-----------------|
+| `SecretKey`       | `string`        | Cryptographic secret key | `""`            |
+| `AccessTokenTTL`  | `time.Duration` | Access token lifetime    | `15m`           |
+| `RefreshTokenTTL` | `time.Duration` | Refresh token lifetime   | `168h` (7 days) |
+| `Issuer`          | `string`        | Token issuer identifier  | `"jwt-service"` |
+| `SigningMethod`   | `SigningMethod` | HMAC algorithm           | `HS256`         |
+| `EnableRateLimit` | `bool`          | Enable rate limiting     | `false`         |
+| `RateLimitRate`   | `int`           | Requests per window      | `100`           |
+| `RateLimitWindow` | `time.Duration` | Rate limit window        | `1m`            |
+| `RateLimiter`     | `*RateLimiter`  | Custom rate limiter      | `nil`           |
 
 ### DefaultConfig
 
-Returns a secure default configuration optimized for production use.
+Returns default configuration.
 
 ```go
 func DefaultConfig() Config
 ```
 
-#### Returns
-| Type     | Description                            |
-|----------|----------------------------------------|
-| `Config` | Production-ready default configuration |
-
-#### Example: Production Configuration
+#### Example
 ```go
-// Start with secure defaults
 config := jwt.DefaultConfig()
+config.SecretKey = os.Getenv("JWT_SECRET_KEY")
+config.AccessTokenTTL = 10 * time.Minute
+config.RefreshTokenTTL = 24 * time.Hour
 
-// Customize for your application
-config.SecretKey = os.Getenv("JWT_SECRET_KEY")  // From environment
-config.AccessTokenTTL = 10 * time.Minute        // Short-lived for security
-config.RefreshTokenTTL = 24 * time.Hour         // Daily refresh
-config.Issuer = "myapp-production-v1.2"         // Version-specific issuer
-config.SigningMethod = jwt.SigningMethodHS512   // Stronger algorithm
-
-// Validate before use
-if err := config.Validate(); err != nil {
-    log.Fatalf("Invalid configuration: %v", err)
-}
+processor, err := jwt.New(secretKey, config)
 ```
-
-### Config.Validate
-
-Validates configuration for security compliance and logical consistency.
-
-```go
-func (c *Config) Validate() error
-```
-
-#### Returns
-| Type    | Description                              |
-|---------|------------------------------------------|
-| `error` | Validation error details or nil if valid |
-
-#### Validation Rules
-- **Secret Key**: Minimum 32 bytes, entropy validation, weak key detection
-- **TTL Values**: Positive durations, AccessTokenTTL < RefreshTokenTTL
-- **Signing Method**: Must be supported algorithm (HS256/HS384/HS512)
-- **Issuer**: Non-empty string identifier
 
 ### BlacklistConfig
 
-Configuration for token revocation and blacklist management.
+Configuration for token revocation.
 
 ```go
 type BlacklistConfig struct {
-    MaxSize           int           `yaml:"max_size" json:"max_size"`
-    CleanupInterval   time.Duration `yaml:"cleanup_interval" json:"cleanup_interval"`
-    EnableAutoCleanup bool          `yaml:"enable_auto_cleanup" json:"enable_auto_cleanup"`
-    StoreType         string        `yaml:"store_type" json:"store_type"`
+    MaxSize           int
+    CleanupInterval   time.Duration
+    EnableAutoCleanup bool
 }
 ```
 
-#### Configuration Fields
-
-| Field               | Type            | Description                          | Default    | Recommendations              |
-|---------------------|-----------------|--------------------------------------|------------|------------------------------|
-| `MaxSize`           | `int`           | Maximum revoked tokens to store      | `10000`    | Scale based on user base     |
-| `CleanupInterval`   | `time.Duration` | Expired entry cleanup frequency      | `5m`       | Balance memory vs CPU        |
-| `EnableAutoCleanup` | `bool`          | Automatic cleanup of expired entries | `true`     | Always enable for production |
-| `StoreType`         | `string`        | Storage backend type                 | `"memory"` | "memory" for single instance |
-
-### DefaultBlacklistConfig
-
-Returns optimized blacklist configuration for production use.
-
+#### Example
 ```go
-func DefaultBlacklistConfig() BlacklistConfig
-```
+blacklistConfig := jwt.DefaultBlacklistConfig()
+blacklistConfig.MaxSize = 100000
+blacklistConfig.CleanupInterval = 2 * time.Minute
 
-#### Example: High-Volume Configuration
-```go
-// For high-traffic applications
-blacklistConfig := jwt.BlacklistConfig{
-    MaxSize:           100000,           // 100K revoked tokens
-    CleanupInterval:   2 * time.Minute,  // Frequent cleanup
-    EnableAutoCleanup: true,             // Essential for memory management
-    StoreType:        "memory",          // Fast in-memory storage
-}
-```
-
-### RateLimitConfig
-
-Configuration for DoS protection and rate limiting controls.
-
-```go
-type RateLimitConfig struct {
-    Enabled           bool          `yaml:"enabled" json:"enabled"`
-    TokenCreationRate int           `yaml:"token_creation_rate" json:"token_creation_rate"`
-    ValidationRate    int           `yaml:"validation_rate" json:"validation_rate"`
-    LoginAttemptRate  int           `yaml:"login_attempt_rate" json:"login_attempt_rate"`
-    PasswordResetRate int           `yaml:"password_reset_rate" json:"password_reset_rate"`
-    CleanupInterval   time.Duration `yaml:"cleanup_interval" json:"cleanup_interval"`
-}
-```
-
-#### Configuration Fields
-
-| Field               | Type            | Description               | Default | Recommendations              |
-|---------------------|-----------------|---------------------------|---------|------------------------------|
-| `Enabled`           | `bool`          | Enable rate limiting      | `true`  | Always enable for production |
-| `TokenCreationRate` | `int`           | Tokens per minute limit   | `100`   | Adjust based on user load    |
-| `ValidationRate`    | `int`           | Validations per minute    | `1000`  | High limit for API calls     |
-| `LoginAttemptRate`  | `int`           | Login attempts per minute | `5`     | Prevent brute force attacks  |
-| `PasswordResetRate` | `int`           | Password resets per hour  | `3`     | Prevent abuse                |
-| `CleanupInterval`   | `time.Duration` | Cleanup frequency         | `5m`    | Balance memory vs CPU        |
-
-#### Example: Production Rate Limiting
-```go
-// High-security rate limiting
-rateLimitConfig := jwt.RateLimitConfig{
-    Enabled:           true,
-    TokenCreationRate: 200,              // Allow burst traffic
-    ValidationRate:    5000,             // High API throughput
-    LoginAttemptRate:  3,                // Strict login security
-    PasswordResetRate: 2,                // Conservative reset policy
-    CleanupInterval:   2 * time.Minute,  // Frequent cleanup
-}
+processor, err := jwt.NewWithBlacklist(secretKey, blacklistConfig)
 ```
 
 ---
 
 ## 📊 Data Types
 
-> **Core data structures** - Essential types for JWT operations with comprehensive field descriptions and usage examples.
-
 ### Claims
 
-Main JWT claims structure with custom fields and embedded standard claims.
+JWT claims structure with custom fields and standard registered claims.
 
 ```go
 type Claims struct {
@@ -999,13 +551,11 @@ const (
 )
 ```
 
-#### Algorithm Comparison
+#### Supported Algorithms
 
-| Algorithm | Security | Performance | Key Size | Recommendation                |
-|-----------|----------|-------------|----------|-------------------------------|
-| **HS256** | High     | Fastest     | 256-bit  | **Production default**        |
-| **HS384** | Higher   | Fast        | 384-bit  | Balanced security/performance |
-| **HS512** | Highest  | Good        | 512-bit  | Maximum security applications |
+- **HS256** - HMAC-SHA256 (recommended for most use cases)
+- **HS384** - HMAC-SHA384 (balanced security/performance)
+- **HS512** - HMAC-SHA512 (maximum security)
 
 ### NumericDate
 
@@ -1015,195 +565,59 @@ JWT timestamp type implementing RFC 7519 numeric date format.
 type NumericDate struct {
     time.Time
 }
-```
 
-#### NewNumericDate
-
-Creates a new NumericDate from time.Time with timezone handling.
-
-```go
 func NewNumericDate(t time.Time) NumericDate
 ```
 
-#### Parameters
-| Parameter | Type        | Description           |
-|-----------|-------------|-----------------------|
-| `t`       | `time.Time` | Time value to convert |
-
-#### Returns
-| Type          | Description              |
-|---------------|--------------------------|
-| `NumericDate` | JWT-compatible timestamp |
-
-#### Example Usage
+#### Example
 ```go
-// Set expiration 15 minutes from now
-expiresAt := jwt.NewNumericDate(time.Now().Add(15 * time.Minute))
-
-// Set issued at current time
-issuedAt := jwt.NewNumericDate(time.Now())
-
-// Use in claims
-claims := jwt.Claims{
-    UserID: "user123",
-    RegisteredClaims: jwt.RegisteredClaims{
-        ExpiresAt: expiresAt,
-        IssuedAt:  issuedAt,
-        Issuer:    "my-app",
-    },
-}
+claims.ExpiresAt = jwt.NewNumericDate(time.Now().Add(15 * time.Minute))
+claims.IssuedAt = jwt.NewNumericDate(time.Now())
 ```
 ---
 
 ## ❌ Error Handling
 
-> **Comprehensive error management** - Complete error types and handling patterns for robust JWT operations.
-
 ### Error Constants
 
-Pre-defined error constants for common JWT operations.
+Pre-defined error constants for JWT operations.
 
 ```go
 var (
-    // Configuration errors
     ErrInvalidConfig        = errors.New("invalid configuration")
     ErrInvalidSecretKey     = errors.New("invalid secret key")
     ErrInvalidSigningMethod = errors.New("invalid signing method")
-
-    // Token errors
-    ErrInvalidToken = errors.New("invalid token")
-    ErrEmptyToken   = errors.New("empty token")
-
-    // Claims errors
-    ErrInvalidClaims = errors.New("invalid claims")
-
-    // System errors
-    ErrRateLimitExceeded = errors.New("rate limit exceeded")
+    ErrInvalidToken         = errors.New("invalid token")
+    ErrEmptyToken           = errors.New("empty token")
+    ErrInvalidClaims        = errors.New("invalid claims")
+    ErrRateLimitExceeded    = errors.New("rate limit exceeded")
+    ErrTokenRevoked         = errors.New("token revoked")
+    ErrProcessorClosed      = errors.New("processor closed")
 )
 ```
 
-#### Error Categories
+### Error Handling Example
 
-| Category          | Errors                                    | Description                    | HTTP Status |
-|-------------------|-------------------------------------------|--------------------------------|-------------|
-| **Configuration** | `ErrInvalidConfig`, `ErrInvalidSecretKey` | Setup and configuration issues | 500         |
-| **Token**         | `ErrInvalidToken`, `ErrEmptyToken`        | Token format and validation    | 401         |
-| **Claims**        | `ErrInvalidClaims`                        | Claims validation failures     | 400         |
-| **System**        | `ErrRateLimitExceeded`                    | System resource limits         | 429         |
-
-### ValidationError
-
-Structured validation error with field-level details.
-
-```go
-type ValidationError struct {
-    Field   string  // Field that failed validation
-    Message string  // Human-readable error message
-    Err     error   // Underlying error (optional)
-}
-```
-
-#### Methods
-
-| Method           | Description                               | Returns       |
-|------------------|-------------------------------------------|---------------|
-| `Error() string` | Returns formatted error message           | Error string  |
-| `Unwrap() error` | Returns underlying error for error chains | Wrapped error |
-
-### Error Handling Patterns
-
-#### Basic Error Handling
 ```go
 token, err := jwt.CreateToken(secretKey, claims)
 if err != nil {
     switch {
     case errors.Is(err, jwt.ErrInvalidSecretKey):
-        log.Fatal("Invalid secret key configuration")
-    case errors.Is(err, jwt.ErrInvalidClaims):
-        http.Error(w, "Invalid claims", http.StatusBadRequest)
+        return fmt.Errorf("invalid secret key")
+    case errors.Is(err, jwt.ErrRateLimitExceeded):
+        return fmt.Errorf("rate limit exceeded")
     default:
-        http.Error(w, "Token creation failed", http.StatusInternalServerError)
+        return fmt.Errorf("token creation failed: %w", err)
     }
-    return
-}
-```
-
-#### Advanced Error Handling with Validation Errors
-```go
-claims, valid, err := jwt.ValidateToken(secretKey, tokenString)
-if err != nil {
-    var validationErr *jwt.ValidationError
-    if errors.As(err, &validationErr) {
-        log.Printf("Validation failed for field %s: %s", validationErr.Field, validationErr.Message)
-        http.Error(w, fmt.Sprintf("Invalid %s", validationErr.Field), http.StatusBadRequest)
-        return
-    }
-
-    // Handle other error types
-    http.Error(w, "Token validation failed", http.StatusUnauthorized)
-    return
 }
 ```
 
 ---
 
-## 🎯 API Usage Guidelines
+## 🔗 Related Documentation
 
-### 🚀 Performance Recommendations
-
-| Scenario                         | Recommended API       | Reason                                   |
-|----------------------------------|-----------------------|------------------------------------------|
-| **High-throughput applications** | Processor API         | Eliminates processor creation overhead   |
-| **Simple applications**          | Quick Functions       | Automatic caching and optimization       |
-| **Microservices**                | Processor per service | Isolated configuration and resources     |
-| **Web applications**             | Context-aware methods | Request timeout and cancellation support |
-
-### 🔒 Security Best Practices
-
-1. **Secret Key Management**
-   ```go
-   // ✅ DO: Use environment variables
-   secretKey := os.Getenv("JWT_SECRET_KEY")
-
-   // ❌ DON'T: Hardcode secrets
-   secretKey := "hardcoded-secret"
-   ```
-
-2. **Token Lifecycle Management**
-   ```go
-   // ✅ DO: Use short-lived access tokens with refresh tokens
-   config := jwt.Config{
-       AccessTokenTTL:  15 * time.Minute,   // Short-lived
-       RefreshTokenTTL: 7 * 24 * time.Hour, // Weekly refresh
-   }
-   ```
-
-3. **Resource Cleanup**
-   ```go
-   // ✅ DO: Always close processors
-   processor, err := jwt.New(secretKey)
-   if err != nil {
-       return err
-   }
-   defer processor.Close() // Essential for security
-   ```
-
-### 📊 Performance Benchmarks
-
-Based on the latest benchmarks:
-- **Token Creation**: ~85,000 ops/sec (13.8μs/op)
-- **Token Validation**: ~90,000 ops/sec (11.1μs/op)
-- **Memory Usage**: 3.7KB per operation with 45 allocations
-- **Concurrent Performance**: Linear scaling up to CPU cores
-
-### 🔗 Related Documentation
-
-- **[Security Guide](SECURITY.md)** - Comprehensive security features and best practices
-- **[Performance Guide](PERFORMANCE.md)** - Optimization techniques and benchmarks
-- **[Examples](EXAMPLES.md)** - Real-world integration examples
-- **[Best Practices](BEST_PRACTICES.md)** - Production deployment guidelines
-- **[Troubleshooting](TROUBLESHOOTING.md)** - Common issues and solutions
-
----
-
-**📚 This API reference provides complete coverage of the JWT library's functionality. For additional help, consult the related documentation or review the comprehensive examples.**
+- [Security Guide](SECURITY.md) - Security features and best practices
+- [Performance Guide](PERFORMANCE.md) - Optimization techniques
+- [Examples](EXAMPLES.md) - Integration examples
+- [Best Practices](BEST_PRACTICES.md) - Production guidelines
+- [Troubleshooting](TROUBLESHOOTING.md) - Common issues and solutions

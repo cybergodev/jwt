@@ -1,20 +1,25 @@
-package core
+package internal
 
 import (
 	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"strings"
+)
 
-	"github.com/cybergodev/jwt/internal/signing"
+const (
+	maxTokenLength = 8192
+	TokenIDLength  = 16
 )
 
 var (
 	errEmptyToken         = fmt.Errorf("empty token")
-	errTokenTooLarge      = fmt.Errorf("token too large: maximum 8192 characters allowed")
-	errInvalidTokenFormat = fmt.Errorf("invalid token format")
+	errTokenTooLarge      = fmt.Errorf("token too large: maximum %d characters allowed", maxTokenLength)
+	errInvalidTokenFormat = fmt.Errorf("invalid token format: expected 3 parts separated by dots")
+	errEmptyHeader        = fmt.Errorf("empty header: JWT must have a valid header")
 )
 
-func NewTokenWithClaims(method signing.Method, claims any) *Core {
+func NewTokenWithClaims(method Method, claims any) *Core {
 	return &Core{
 		Header: map[string]any{
 			"typ": "JWT",
@@ -26,11 +31,10 @@ func NewTokenWithClaims(method signing.Method, claims any) *Core {
 }
 
 func fastSplit3(s string, sep byte) (string, string, string, bool) {
-	sLen := len(s)
 	first := -1
 	second := -1
 
-	for i := 0; i < sLen; i++ {
+	for i := 0; i < len(s); i++ {
 		if s[i] == sep {
 			if first == -1 {
 				first = i
@@ -49,13 +53,10 @@ func fastSplit3(s string, sep byte) (string, string, string, bool) {
 }
 
 func ParseWithClaims(tokenString string, claims any, keyFunc func(*Core) (any, error)) (*Core, error) {
-	tokenLen := len(tokenString)
-	if tokenLen == 0 {
+	if len(tokenString) == 0 {
 		return nil, errEmptyToken
 	}
-
-	const maxTokenLength = 8192
-	if tokenLen > maxTokenLength {
+	if len(tokenString) > maxTokenLength {
 		return nil, errTokenTooLarge
 	}
 
@@ -74,14 +75,21 @@ func ParseWithClaims(tokenString string, claims any, keyFunc func(*Core) (any, e
 		return nil, fmt.Errorf("failed to decode header: %w", err)
 	}
 
-	alg, ok := token.Header["alg"].(string)
-	if !ok || alg == "" || isInsecureAlgorithm(alg) {
-		return nil, fmt.Errorf("invalid or insecure algorithm")
+	if len(token.Header) == 0 {
+		return nil, errEmptyHeader
 	}
 
-	method, err := signing.GetInternalSigningMethod(alg)
+	alg, ok := token.Header["alg"].(string)
+	if !ok || alg == "" {
+		return nil, fmt.Errorf("missing or invalid algorithm in header")
+	}
+	if isInsecureAlgorithm(alg) {
+		return nil, fmt.Errorf("insecure algorithm not allowed: %s", alg)
+	}
+
+	method, err := GetInternalSigningMethod(alg)
 	if err != nil {
-		return nil, fmt.Errorf("unsupported signing method: %s", alg)
+		return nil, err
 	}
 	token.Method = method
 
@@ -94,7 +102,12 @@ func ParseWithClaims(tokenString string, claims any, keyFunc func(*Core) (any, e
 		return nil, fmt.Errorf("failed to get key: %w", err)
 	}
 
-	signingString := part1 + "." + part2
+	signingStringLen := len(part1) + 1 + len(part2)
+	signingStringBuf := make([]byte, signingStringLen)
+	copy(signingStringBuf, part1)
+	signingStringBuf[len(part1)] = '.'
+	copy(signingStringBuf[len(part1)+1:], part2)
+	signingString := string(signingStringBuf)
 
 	if err := method.Verify(signingString, part3, key); err != nil {
 		token.Valid = false
@@ -106,13 +119,10 @@ func ParseWithClaims(tokenString string, claims any, keyFunc func(*Core) (any, e
 }
 
 func ParseUnverified(tokenString string, claims any) (*Core, map[string]any, error) {
-	tokenLen := len(tokenString)
-	if tokenLen == 0 {
+	if len(tokenString) == 0 {
 		return nil, nil, errEmptyToken
 	}
-
-	const maxTokenLength = 8192
-	if tokenLen > maxTokenLength {
+	if len(tokenString) > maxTokenLength {
 		return nil, nil, errTokenTooLarge
 	}
 
@@ -126,8 +136,12 @@ func ParseUnverified(tokenString string, claims any) (*Core, map[string]any, err
 		return nil, nil, fmt.Errorf("failed to decode header: %w", err)
 	}
 
+	if len(header) == 0 {
+		return nil, nil, errEmptyHeader
+	}
+
 	if alg, ok := header["alg"].(string); ok && isInsecureAlgorithm(alg) {
-		return nil, nil, fmt.Errorf("insecure algorithm detected")
+		return nil, nil, fmt.Errorf("insecure algorithm detected: %s", alg)
 	}
 
 	if err := DecodeSegment(part2, claims); err != nil {
@@ -159,29 +173,24 @@ var insecureAlgorithms = map[string]struct{}{
 }
 
 func isInsecureAlgorithm(alg string) bool {
-	upper := strings.ToUpper(strings.TrimSpace(alg))
-	_, exists := insecureAlgorithms[upper]
+	normalized := strings.ToUpper(strings.TrimSpace(alg))
+	_, exists := insecureAlgorithms[normalized]
 	return exists
 }
 
 func (t *Core) SignedString(key any) (string, error) {
-	return signing.SignedString(t.Header, t.Claims, t.Method, key)
+	return SignedString(t.Header, t.Claims, t.Method, key)
 }
 
-func GenerateTokenIDFast() string {
-	bytes := make([]byte, TokenIDLength)
-	if _, err := rand.Read(bytes); err != nil {
-		panic("crypto/rand is unavailable: " + err.Error())
+func GenerateTokenIDFast() (string, error) {
+	randomBytes := make([]byte, TokenIDLength)
+	if _, err := rand.Read(randomBytes); err != nil {
+		return "", fmt.Errorf("failed to generate token ID: %w", err)
 	}
 
-	const hexChars = "0123456789abcdef"
 	result := make([]byte, 4+TokenIDLength*2)
 	copy(result, "tok_")
+	hex.Encode(result[4:], randomBytes)
 
-	for i, b := range bytes {
-		result[4+i*2] = hexChars[b>>4]
-		result[4+i*2+1] = hexChars[b&0x0f]
-	}
-
-	return string(result)
+	return string(result), nil
 }

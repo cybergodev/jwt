@@ -2,6 +2,7 @@ package jwt
 
 import (
 	"fmt"
+	"strings"
 )
 
 const (
@@ -53,7 +54,7 @@ func validateClaims(claims *Claims) error {
 	if len(claims.Extra) > maxExtraSize {
 		return &ValidationError{
 			Field:   "extra",
-			Message: fmt.Sprintf("too many fields: maximum %d allowed", maxExtraSize),
+			Message: fmt.Sprintf("exceeds maximum of %d fields", maxExtraSize),
 		}
 	}
 
@@ -87,7 +88,7 @@ func validateStringArray(name string, items []string) error {
 	if len(items) > maxArraySize {
 		return &ValidationError{
 			Field:   name,
-			Message: fmt.Sprintf("too many items: maximum %d allowed", maxArraySize),
+			Message: fmt.Sprintf("exceeds maximum of %d items", maxArraySize),
 		}
 	}
 	for _, item := range items {
@@ -99,31 +100,32 @@ func validateStringArray(name string, items []string) error {
 }
 
 func validateString(fieldName, value string, maxLength int) error {
-	if len(value) == 0 {
+	valueLen := len(value)
+	if valueLen == 0 {
 		return nil
 	}
 
-	if len(value) > maxLength {
+	if valueLen > maxLength {
 		return &ValidationError{
 			Field:   fieldName,
-			Message: fmt.Sprintf("too long: maximum %d characters", maxLength),
+			Message: fmt.Sprintf("exceeds maximum length of %d", maxLength),
 		}
 	}
 
-	for i := 0; i < len(value); i++ {
-		char := value[i]
-		if char < 32 && char != '\t' && char != '\n' && char != '\r' {
+	for i := 0; i < valueLen; i++ {
+		c := value[i]
+		if c < 32 && c != '\t' && c != '\n' && c != '\r' {
 			return &ValidationError{
 				Field:   fieldName,
-				Message: "contains invalid control character",
+				Message: "invalid control character",
 			}
 		}
 	}
 
-	if containsDangerousPattern(value) {
+	if valueLen >= 4 && containsDangerousPattern(value) {
 		return &ValidationError{
 			Field:   fieldName,
-			Message: "contains suspicious pattern",
+			Message: "suspicious pattern detected",
 		}
 	}
 
@@ -132,36 +134,18 @@ func validateString(fieldName, value string, maxLength int) error {
 
 var dangerousPatterns = [...]string{
 	"<script", "javascript:", "data:", "eval(", "../", "file://", "vbscript:",
+	"alert(", "union select", "drop table", "exec(", "sp_", "/etc/passwd", "mocha:",
 }
 
 func containsDangerousPattern(value string) bool {
-	valueLen := len(value)
-	if valueLen < 4 {
+	if len(value) < 4 {
 		return false
 	}
 
+	valueLower := strings.ToLower(value)
 	for _, pattern := range dangerousPatterns {
-		patternLen := len(pattern)
-		if patternLen > valueLen {
-			continue
-		}
-
-		for i := 0; i <= valueLen-patternLen; i++ {
-			match := true
-			for j := 0; j < patternLen; j++ {
-				c := value[i+j]
-				pc := pattern[j]
-				if c >= 'A' && c <= 'Z' {
-					c += 32
-				}
-				if c != pc {
-					match = false
-					break
-				}
-			}
-			if match {
-				return true
-			}
+		if strings.Contains(valueLower, pattern) {
+			return true
 		}
 	}
 	return false
