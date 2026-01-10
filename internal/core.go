@@ -1,4 +1,4 @@
-package signing
+package internal
 
 import (
 	"crypto"
@@ -7,19 +7,10 @@ import (
 	"fmt"
 )
 
-// Method represents a signing method for JWT tokens.
-// Implementations must be thread-safe for concurrent use.
 type Method interface {
-	// Alg returns the algorithm name (e.g., "HS256")
 	Alg() string
-
-	// Sign creates a signature for the given signing string
 	Sign(signingString string, key any) (string, error)
-
-	// Verify verifies a signature against the signing string
 	Verify(signingString string, signature string, key any) error
-
-	// Hash returns the crypto.Hash used by this method
 	Hash() crypto.Hash
 }
 
@@ -61,14 +52,9 @@ func SignedString(header map[string]any, claims any, method Method, key any) (st
 }
 
 func GetInternalSigningMethod(alg string) (Method, error) {
-	switch alg {
-	case "HS256":
-		return GetHMACMethod("HS256"), nil
-	case "HS384":
-		return GetHMACMethod("HS384"), nil
-	case "HS512":
-		return GetHMACMethod("HS512"), nil
-	default:
+	method := GetHMACMethod(alg)
+	if method == nil {
 		return nil, fmt.Errorf("unsupported signing method: %s", alg)
 	}
+	return method, nil
 }

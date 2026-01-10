@@ -1,4 +1,4 @@
-package signing
+package internal
 
 import (
 	"crypto"
@@ -10,10 +10,9 @@ import (
 	"fmt"
 )
 
-// hmacSigningMethod implements HMAC-based JWT signing
 type hmacSigningMethod struct {
-	Name     string      // Algorithm name (e.g., "HS256")
-	HashFunc crypto.Hash // Hash function to use
+	Name     string
+	HashFunc crypto.Hash
 }
 
 func (h *hmacSigningMethod) Verify(signingString string, signature string, key any) error {
@@ -73,7 +72,6 @@ var (
 	hmacHS512 = &hmacSigningMethod{"HS512", crypto.SHA512}
 )
 
-// GetHMACMethod returns the HMAC signing method for the given algorithm
 func GetHMACMethod(alg string) Method {
 	switch alg {
 	case "HS256":
