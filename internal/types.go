@@ -8,5 +8,3 @@ type Core struct {
 	Valid     bool
 	Raw       string
 }
-
-

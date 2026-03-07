@@ -54,6 +54,11 @@ func (rl *RateLimiter) AllowN(key string, n int) bool {
 		return false
 	}
 
+	// Early rejection if request exceeds max rate
+	if n > rl.maxRate {
+		return false
+	}
+
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
 
@@ -65,9 +70,6 @@ func (rl *RateLimiter) AllowN(key string, n int) bool {
 	b, exists := rl.buckets[key]
 
 	if !exists {
-		if n > rl.maxRate {
-			return false
-		}
 		if len(rl.buckets) >= rl.maxBuckets {
 			rl.evictOldestUnsafe()
 		}
@@ -91,7 +93,9 @@ func (rl *RateLimiter) AllowN(key string, n int) bool {
 			if b.tokens > rl.maxRate {
 				b.tokens = rl.maxRate
 			}
-			b.lastRefill = nowNano
+			// Preserve residual time instead of resetting
+			consumedNano := (int64(tokensToAdd) * windowNano) / int64(rl.maxRate)
+			b.lastRefill += consumedNano
 		}
 	}
 

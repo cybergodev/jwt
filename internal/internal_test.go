@@ -1,7 +1,11 @@
 package internal
 
 import (
-	"crypto"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/rsa"
+	"encoding/base64"
 	"strings"
 	"testing"
 	"time"
@@ -10,42 +14,6 @@ import (
 // =============================================================================
 // HMAC Signing Method Tests
 // =============================================================================
-
-func TestGetHMACMethod(t *testing.T) {
-	tests := []struct {
-		alg      string
-		wantNil  bool
-		wantHash crypto.Hash
-	}{
-		{"HS256", false, crypto.SHA256},
-		{"HS384", false, crypto.SHA384},
-		{"HS512", false, crypto.SHA512},
-		{"HS128", true, 0},
-		{"invalid", true, 0},
-		{"", true, 0},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.alg, func(t *testing.T) {
-			method := GetHMACMethod(tt.alg)
-			if tt.wantNil {
-				if method != nil {
-					t.Errorf("Expected nil for %q, got %v", tt.alg, method)
-				}
-			} else {
-				if method == nil {
-					t.Fatalf("Expected method for %q, got nil", tt.alg)
-				}
-				if method.Alg() != tt.alg {
-					t.Errorf("Expected alg %q, got %q", tt.alg, method.Alg())
-				}
-				if method.Hash() != tt.wantHash {
-					t.Errorf("Expected hash %v, got %v", tt.wantHash, method.Hash())
-				}
-			}
-		})
-	}
-}
 
 func TestHMACSignAndVerify(t *testing.T) {
 	key := []byte("test-secret-key-with-sufficient-length")
@@ -61,9 +29,12 @@ func TestHMACSignAndVerify(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.alg, func(t *testing.T) {
-			method := GetHMACMethod(tt.alg)
+			method, err := GetInternalSigningMethod(tt.alg)
+			if err != nil {
+				t.Fatalf("GetInternalSigningMethod(%q) failed: %v", tt.alg, err)
+			}
 			if method == nil {
-				t.Fatalf("GetHMACMethod(%q) returned nil", tt.alg)
+				t.Fatalf("GetInternalSigningMethod(%q) returned nil", tt.alg)
 			}
 
 			if !method.Hash().Available() {
@@ -103,11 +74,14 @@ func TestHMACSignAndVerify(t *testing.T) {
 }
 
 func TestHMACInvalidKey(t *testing.T) {
-	method := GetHMACMethod("HS256")
+	method, err := GetInternalSigningMethod("HS256")
+	if err != nil {
+		t.Fatalf("GetInternalSigningMethod failed: %v", err)
+	}
 	signingString := "test.data"
 
 	// Test Sign with non-[]byte key
-	_, err := method.Sign(signingString, "string-key")
+	_, err = method.Sign(signingString, "string-key")
 	if err == nil {
 		t.Error("Expected error for non-[]byte key in Sign, got nil")
 	}
@@ -141,7 +115,10 @@ func TestSignedString(t *testing.T) {
 		"sub": "user123",
 		"exp": 1234567890,
 	}
-	method := GetHMACMethod("HS256")
+	method, err := GetInternalSigningMethod("HS256")
+	if err != nil {
+		t.Fatalf("GetInternalSigningMethod failed: %v", err)
+	}
 	key := []byte("test-secret-key-with-sufficient-length")
 
 	tokenString, err := SignedString(header, claims, method, key)
@@ -184,12 +161,21 @@ func TestGetInternalSigningMethod(t *testing.T) {
 		alg     string
 		wantErr bool
 	}{
+		// HMAC methods
 		{"HS256", false},
 		{"HS384", false},
 		{"HS512", false},
+		// RSA methods
+		{"RS256", false},
+		{"RS384", false},
+		{"RS512", false},
+		// ECDSA methods
+		{"ES256", false},
+		{"ES384", false},
+		{"ES512", false},
+		// Invalid/unsupported methods
 		{"", true},
 		{"none", true},
-		{"RS256", true},
 		{"invalid", true},
 	}
 
@@ -214,7 +200,10 @@ func TestGetInternalSigningMethod(t *testing.T) {
 // =============================================================================
 
 func TestNewTokenWithClaims(t *testing.T) {
-	method := GetHMACMethod("HS256")
+	method, err := GetInternalSigningMethod("HS256")
+	if err != nil {
+		t.Fatalf("GetInternalSigningMethod failed: %v", err)
+	}
 	claims := map[string]any{
 		"sub": "user123",
 		"exp": 1234567890,
@@ -243,7 +232,10 @@ func TestNewTokenWithClaims(t *testing.T) {
 }
 
 func TestCoreSignedString(t *testing.T) {
-	method := GetHMACMethod("HS256")
+	method, err := GetInternalSigningMethod("HS256")
+	if err != nil {
+		t.Fatalf("GetInternalSigningMethod failed: %v", err)
+	}
 	claims := map[string]any{
 		"sub": "user123",
 		"exp": 1234567890,
@@ -267,10 +259,10 @@ func TestCoreSignedString(t *testing.T) {
 	}
 }
 
-func TestGenerateTokenIDFast(t *testing.T) {
-	id1, err := GenerateTokenIDFast()
+func TestGenerateTokenID(t *testing.T) {
+	id1, err := GenerateTokenID()
 	if err != nil {
-		t.Fatalf("GenerateTokenIDFast failed: %v", err)
+		t.Fatalf("GenerateTokenID failed: %v", err)
 	}
 
 	if len(id1) != 4+TokenIDLength*2 {
@@ -281,9 +273,9 @@ func TestGenerateTokenIDFast(t *testing.T) {
 		t.Errorf("Expected prefix 'tok_', got %q", id1[:4])
 	}
 
-	id2, err := GenerateTokenIDFast()
+	id2, err := GenerateTokenID()
 	if err != nil {
-		t.Fatalf("GenerateTokenIDFast failed: %v", err)
+		t.Fatalf("GenerateTokenID failed: %v", err)
 	}
 	if id1 == id2 {
 		t.Error("Generated IDs should be unique")
@@ -292,9 +284,9 @@ func TestGenerateTokenIDFast(t *testing.T) {
 	// Test uniqueness with 100 IDs
 	ids := make(map[string]bool)
 	for i := 0; i < 100; i++ {
-		id, err := GenerateTokenIDFast()
+		id, err := GenerateTokenID()
 		if err != nil {
-			t.Fatalf("GenerateTokenIDFast failed: %v", err)
+			t.Fatalf("GenerateTokenID failed: %v", err)
 		}
 		if ids[id] {
 			t.Errorf("Duplicate ID generated: %s", id)
@@ -302,7 +294,6 @@ func TestGenerateTokenIDFast(t *testing.T) {
 		ids[id] = true
 	}
 }
-
 
 // =============================================================================
 // Parser Tests
@@ -486,7 +477,10 @@ func TestParseWithClaimsErrors(t *testing.T) {
 
 func TestParseWithClaimsKeyFuncError(t *testing.T) {
 	// Create a valid token first
-	method := GetHMACMethod("HS256")
+	method, err := GetInternalSigningMethod("HS256")
+	if err != nil {
+		t.Fatalf("GetInternalSigningMethod failed: %v", err)
+	}
 	claims := map[string]any{
 		"user_id": "test",
 	}
@@ -514,7 +508,10 @@ func TestParseWithClaimsKeyFuncError(t *testing.T) {
 
 func TestParseWithClaimsInvalidSignature(t *testing.T) {
 	// Create a valid token
-	method := GetHMACMethod("HS256")
+	method, err := GetInternalSigningMethod("HS256")
+	if err != nil {
+		t.Fatalf("GetInternalSigningMethod failed: %v", err)
+	}
 	claims := map[string]any{
 		"user_id": "test",
 	}
@@ -642,7 +639,7 @@ func TestIsWeakKey(t *testing.T) {
 		[]byte("12345678901234567890123456789012"),
 		[]byte("qwertyuiopasdfghjklzxcvbnm123456"),
 		[]byte{}, // empty key
-		[]byte("abcdefghijklmnopqrstuvwxyz123456"), // sequential
+		[]byte("abcdefghijklmnopqrstuvwxyz123456"),   // sequential
 		[]byte("ababababababababababababababababab"), // low entropy
 	}
 
@@ -901,7 +898,7 @@ func TestManagerBlacklistToken(t *testing.T) {
 	store := NewMemoryStore(1000, 5*time.Minute, false)
 	defer store.Close()
 
-	manager := NewManager(store)
+	manager := NewManager(store.Add, store.Contains, store.Close)
 
 	// Test with empty token ID
 	err := manager.BlacklistToken("", time.Now().Add(time.Hour))
@@ -932,7 +929,7 @@ func TestManagerBlacklistToken(t *testing.T) {
 
 func TestManagerIsBlacklisted(t *testing.T) {
 	store := NewMemoryStore(1000, 5*time.Minute, false)
-	manager := NewManager(store)
+	manager := NewManager(store.Add, store.Contains, store.Close)
 	defer manager.Close()
 
 	// Test with empty token ID
@@ -956,7 +953,7 @@ func TestManagerIsBlacklisted(t *testing.T) {
 
 func TestManagerBlacklistTokenString(t *testing.T) {
 	store := NewMemoryStore(1000, 5*time.Minute, false)
-	manager := NewManager(store)
+	manager := NewManager(store.Add, store.Contains, store.Close)
 	defer manager.Close()
 
 	tests := []struct {
@@ -1013,7 +1010,7 @@ func TestManagerBlacklistTokenString(t *testing.T) {
 
 func TestManagerClose(t *testing.T) {
 	store := NewMemoryStore(1000, 5*time.Minute, false)
-	manager := NewManager(store)
+	manager := NewManager(store.Add, store.Contains, store.Close)
 
 	// Add some tokens
 	err := manager.BlacklistToken("tok_test1", time.Now().Add(time.Hour))
@@ -1040,3 +1037,241 @@ func (e *testError) Error() string {
 	return e.msg
 }
 
+// =============================================================================
+// RSA Signing Method Tests
+// =============================================================================
+
+func TestRSASignAndVerify(t *testing.T) {
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("Failed to generate RSA key: %v", err)
+	}
+
+	signingString := "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ0ZXN0In0"
+
+	tests := []struct {
+		alg string
+	}{
+		{"RS256"},
+		{"RS384"},
+		{"RS512"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.alg, func(t *testing.T) {
+			method, err := GetInternalSigningMethod(tt.alg)
+			if err != nil {
+				t.Fatalf("GetInternalSigningMethod(%q) failed: %v", tt.alg, err)
+			}
+			if method == nil {
+				t.Fatalf("GetInternalSigningMethod(%q) returned nil", tt.alg)
+			}
+
+			// Test algorithm name
+			if method.Alg() != tt.alg {
+				t.Errorf("Alg() = %q, want %q", method.Alg(), tt.alg)
+			}
+
+			// Sign with private key
+			signature, err := method.Sign(signingString, privateKey)
+			if err != nil {
+				t.Fatalf("Sign failed: %v", err)
+			}
+			if signature == "" {
+				t.Error("Sign returned empty signature")
+			}
+
+			// Verify with public key (from private key)
+			err = method.Verify(signingString, signature, privateKey)
+			if err != nil {
+				t.Errorf("Verify with private key failed: %v", err)
+			}
+
+			// Verify with public key
+			err = method.Verify(signingString, signature, &privateKey.PublicKey)
+			if err != nil {
+				t.Errorf("Verify with public key failed: %v", err)
+			}
+
+			// Verify with wrong key
+			wrongKey, _ := rsa.GenerateKey(rand.Reader, 2048)
+			err = method.Verify(signingString, signature, wrongKey)
+			if err == nil {
+				t.Error("Expected error for wrong key, got nil")
+			}
+
+			// Verify with invalid signature
+			err = method.Verify(signingString, "invalid-signature", privateKey)
+			if err == nil {
+				t.Error("Expected error for invalid signature, got nil")
+			}
+		})
+	}
+}
+
+func TestRSAInvalidKeyType(t *testing.T) {
+	method, err := GetInternalSigningMethod("RS256")
+	if err != nil {
+		t.Fatalf("GetInternalSigningMethod failed: %v", err)
+	}
+
+	signingString := "test.data"
+
+	// Test Sign with non-RSA key
+	_, err = method.Sign(signingString, "string-key")
+	if err == nil {
+		t.Error("Expected error for non-RSA key in Sign, got nil")
+	}
+	if !strings.Contains(err.Error(), "must be *rsa.PrivateKey") {
+		t.Errorf("Expected 'must be *rsa.PrivateKey' in error, got: %v", err)
+	}
+
+	// Test Verify with non-RSA key
+	err = method.Verify(signingString, "signature", "string-key")
+	if err == nil {
+		t.Error("Expected error for non-RSA key in Verify, got nil")
+	}
+	if !strings.Contains(err.Error(), "must be *rsa.PublicKey") {
+		t.Errorf("Expected 'must be *rsa.PublicKey' in error, got: %v", err)
+	}
+
+	// Test Verify with invalid base64 signature
+	err = method.Verify(signingString, "!!!invalid-base64!!!", &rsa.PublicKey{})
+	if err == nil {
+		t.Error("Expected error for invalid base64 signature, got nil")
+	}
+}
+
+// =============================================================================
+// ECDSA Signing Method Tests
+// =============================================================================
+
+func TestECDSASignAndVerify(t *testing.T) {
+	signingString := "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ0ZXN0In0"
+
+	tests := []struct {
+		alg   string
+		curve elliptic.Curve
+	}{
+		{"ES256", elliptic.P256()},
+		{"ES384", elliptic.P384()},
+		{"ES512", elliptic.P521()},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.alg, func(t *testing.T) {
+			privateKey, err := ecdsa.GenerateKey(tt.curve, rand.Reader)
+			if err != nil {
+				t.Fatalf("Failed to generate ECDSA key: %v", err)
+			}
+
+			method, err := GetInternalSigningMethod(tt.alg)
+			if err != nil {
+				t.Fatalf("GetInternalSigningMethod(%q) failed: %v", tt.alg, err)
+			}
+			if method == nil {
+				t.Fatalf("GetInternalSigningMethod(%q) returned nil", tt.alg)
+			}
+
+			// Test algorithm name
+			if method.Alg() != tt.alg {
+				t.Errorf("Alg() = %q, want %q", method.Alg(), tt.alg)
+			}
+
+			// Sign with private key
+			signature, err := method.Sign(signingString, privateKey)
+			if err != nil {
+				t.Fatalf("Sign failed: %v", err)
+			}
+			if signature == "" {
+				t.Error("Sign returned empty signature")
+			}
+
+			// Verify with private key (extracts public key)
+			err = method.Verify(signingString, signature, privateKey)
+			if err != nil {
+				t.Errorf("Verify with private key failed: %v", err)
+			}
+
+			// Verify with public key
+			err = method.Verify(signingString, signature, &privateKey.PublicKey)
+			if err != nil {
+				t.Errorf("Verify with public key failed: %v", err)
+			}
+
+			// Verify with wrong key
+			wrongKey, _ := ecdsa.GenerateKey(tt.curve, rand.Reader)
+			err = method.Verify(signingString, signature, wrongKey)
+			if err == nil {
+				t.Error("Expected error for wrong key, got nil")
+			}
+
+			// Verify with invalid signature length
+			err = method.Verify(signingString, "YWJj", privateKey) // "abc" in base64
+			if err == nil {
+				t.Error("Expected error for invalid signature length, got nil")
+			}
+		})
+	}
+}
+
+func TestECDSAInvalidKeyType(t *testing.T) {
+	method, err := GetInternalSigningMethod("ES256")
+	if err != nil {
+		t.Fatalf("GetInternalSigningMethod failed: %v", err)
+	}
+
+	signingString := "test.data"
+
+	// Test Sign with non-ECDSA key
+	_, err = method.Sign(signingString, "string-key")
+	if err == nil {
+		t.Error("Expected error for non-ECDSA key in Sign, got nil")
+	}
+	if !strings.Contains(err.Error(), "must be *ecdsa.PrivateKey") {
+		t.Errorf("Expected 'must be *ecdsa.PrivateKey' in error, got: %v", err)
+	}
+
+	// Test Verify with non-ECDSA key
+	err = method.Verify(signingString, "signature", "string-key")
+	if err == nil {
+		t.Error("Expected error for non-ECDSA key in Verify, got nil")
+	}
+	if !strings.Contains(err.Error(), "must be *ecdsa.PublicKey") {
+		t.Errorf("Expected 'must be *ecdsa.PublicKey' in error, got: %v", err)
+	}
+
+	// Test Verify with invalid base64 signature
+	err = method.Verify(signingString, "!!!invalid-base64!!!", &ecdsa.PublicKey{})
+	if err == nil {
+		t.Error("Expected error for invalid base64 signature, got nil")
+	}
+}
+
+func TestECDSASignatureLength(t *testing.T) {
+	method, err := GetInternalSigningMethod("ES256")
+	if err != nil {
+		t.Fatalf("GetInternalSigningMethod failed: %v", err)
+	}
+
+	privateKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("Failed to generate ECDSA key: %v", err)
+	}
+
+	// Create a valid signature first
+	signingString := "test.data"
+	validSig, err := method.Sign(signingString, privateKey)
+	if err != nil {
+		t.Fatalf("Sign failed: %v", err)
+	}
+
+	// Create a signature with wrong length (decode, truncate, re-encode)
+	sigBytes, _ := base64.RawURLEncoding.DecodeString(validSig)
+	wrongLenSig := base64.RawURLEncoding.EncodeToString(sigBytes[:10]) // Too short
+
+	err = method.Verify(signingString, wrongLenSig, privateKey)
+	if err == nil {
+		t.Error("Expected error for wrong signature length, got nil")
+	}
+}

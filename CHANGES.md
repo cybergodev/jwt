@@ -2,9 +2,69 @@
 
 All notable changes to the cybergodev/jwt library will be documented in this file.
 
-[//]: # (The format is based on [Keep a Changelog]&#40;https://keepachangelog.com/en/1.0.0/&#41;,)
-[//]: # (and this project adheres to [Semantic Versioning]&#40;https://semver.org/spec/v2.0.0.html&#41;.)
+[//]: # (The format is based on [Keep a Changelog]&#40;https://keepachangelog.com&#41;,)
+[//]: # (and this project adheres to [Semantic Versioning]&#40;https://semver.org&#41;.)
 
+---
+
+## v1.1.0 - API Redesign & Major Refactoring (2026-03-07)
+
+### Breaking Changes
+
+- **Unified Constructor**: `New(cfg)` replaces `New(secretKey)`, `NewWithBlacklist()`, `NewWithRSA()`, `NewWithECDSA()`, `NewWithAsymmetricKey()`, and `NewWithAsymmetricKeyAndBlacklist()`
+- **Removed Global Functions**: `CreateToken()`, `ValidateToken()`, `RevokeToken()`, `GetCacheStats()`, `ClearCache()` - use `API` type methods instead
+- **Simplified Rate Limiting**: Direct `Config.RateLimitRate` and `Config.RateLimitWindow` fields replace `RateLimitConfig` struct
+- **Config Pattern**: All configurations must use `DefaultConfig()` as base (zero-value Config is invalid)
+
+### Added
+
+- **Asymmetric Cryptography**: Full RSA (RS256/384/512) and ECDSA (ES256/384/512) signing support with `Config.SigningKey` and `Config.VerificationKey`
+- **Custom Claims API**: `Processor.CreateTokenWith()`, `ValidateTokenWith()`, `CreateRefreshTokenWith()` for type-safe custom claims
+- **Extensibility Interfaces**: `TokenManager`, `RateLimitProvider`, `ClockProvider`, `BlacklistStore` for dependency injection and testing
+- **API Type**: Explicit lifecycle management with `NewAPI()` replacing global convenience functions
+- **Enhanced Security**: Signature length validation, extended XSS pattern detection, error message sanitization
+
+### Changed
+
+- **Unified Config**: Single `Config` struct with embedded `Blacklist`, `SigningKey`, and rate limit fields
+- **API Type Renamed**: `ConvenienceAPI` → `API`, `ConvenienceConfig` → `APIConfig`
+- **Documentation**: Comprehensive docs suite (API.md, PERFORMANCE.md, CONCURRENCY.md, BEST_PRACTICES.md, TROUBLESHOOTING.md, EXAMPLES.md)
+- **Examples**: Restructured from 9 to 7 focused files with clear learning progression
+
+### Fixed
+
+- **Critical**: Claims pool race condition with map/slice reallocation in `Claims.reset()`
+- **Critical**: Memory store `maxSize` violation and TOCTOU race in `Contains()`
+- **Security**: HMAC/RSA/ECDSA signature length validation before cryptographic comparison
+- **Security**: Information leakage in error messages (key size disclosure)
+- **Concurrency**: Race conditions in `cleanupAsync()`, `evictOldest()`, and rate limiter
+- **Memory**: Processor creation reduced from ~620ms to ~3.8ms with lazy store initialization
+
+### Performance
+
+| Metric | Improvement |
+|--------|-------------|
+| Token Creation | 25.5% faster, 22.1% less memory |
+| Token Validation | 24.9% less memory, 9.8% fewer allocations |
+| Processor Creation | 99.4% faster (620ms → 3.8ms) |
+| Pattern Matching | 70% faster with O(n+m) algorithm |
+| Test Coverage | 90.7% (up from 88.2%) |
+
+### Migration Guide
+
+```go
+// Before (v1.0.x)
+processor, _ := jwt.New(secretKey)
+token, _ := jwt.CreateToken(secretKey, claims)
+
+// After (v1.1.x)
+cfg := jwt.DefaultConfig()
+cfg.SecretKey = secretKey
+processor, _ := jwt.New(cfg)
+defer processor.Close()
+
+token, _ := processor.CreateToken(claims)
+```
 
 ---
 

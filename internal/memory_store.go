@@ -2,11 +2,15 @@ package internal
 
 import (
 	"errors"
+	"sort"
 	"sync"
 	"time"
 )
 
-var errStoreClosed = errors.New("blacklist store is closed")
+var (
+	errStoreClosed = errors.New("blacklist store is closed")
+	errStoreFull   = errors.New("blacklist store is full")
+)
 
 type memoryStore struct {
 	tokens        map[string]time.Time
@@ -19,8 +23,13 @@ type memoryStore struct {
 }
 
 func NewMemoryStore(maxSize int, cleanupInterval time.Duration, enableAutoCleanup bool) Store {
+	// Ensure maxSize is positive to prevent nil map creation
+	if maxSize <= 0 {
+		maxSize = 10000 // Default to reasonable size
+	}
+
 	store := &memoryStore{
-		tokens:      make(map[string]time.Time, maxSize/2),
+		tokens:      make(map[string]time.Time), // Lazy allocation, grows as needed
 		maxSize:     maxSize,
 		stopCleanup: make(chan struct{}),
 	}
@@ -45,6 +54,10 @@ func (m *memoryStore) Add(tokenID string, expiresAt time.Time) error {
 		if len(m.tokens) >= m.maxSize {
 			m.evictOldestUnsafe(m.maxSize / 10)
 		}
+		// Final check: if still full after cleanup and eviction, reject
+		if len(m.tokens) >= m.maxSize {
+			return errStoreFull
+		}
 	}
 
 	m.tokens[tokenID] = expiresAt
@@ -60,7 +73,13 @@ func (m *memoryStore) Contains(tokenID string) (bool, error) {
 	}
 
 	expiresAt, exists := m.tokens[tokenID]
-	if !exists || time.Now().After(expiresAt) {
+	if !exists {
+		return false, nil
+	}
+
+	// Capture current time once to avoid TOCTOU issues
+	now := time.Now()
+	if now.After(expiresAt) {
 		return false, nil
 	}
 
@@ -139,16 +158,12 @@ func (m *memoryStore) evictOldestUnsafe(count int) {
 		entries = append(entries, tokenEntry{id, exp})
 	}
 
+	// Use sort.Slice for O(n log n) instead of O(n²) selection sort
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].exp.Before(entries[j].exp)
+	})
+
 	for i := 0; i < count && i < len(entries); i++ {
-		minIdx := i
-		for j := i + 1; j < len(entries); j++ {
-			if entries[j].exp.Before(entries[minIdx].exp) {
-				minIdx = j
-			}
-		}
-		if minIdx != i {
-			entries[i], entries[minIdx] = entries[minIdx], entries[i]
-		}
 		delete(m.tokens, entries[i].id)
 	}
 }

@@ -44,7 +44,7 @@ func TestWeakKeyDetection(t *testing.T) {
 
 func TestCoreTokenParsing(t *testing.T) {
 	// Create a valid token first
-	processor, err := New(testSecretKey)
+	processor, err := newTestProcessor(testSecretKey)
 	if err != nil {
 		t.Fatalf("Failed to create processor: %v", err)
 	}
@@ -84,10 +84,15 @@ func TestCoreTokenParsing(t *testing.T) {
 }
 
 func TestSigningMethods(t *testing.T) {
-	methods := map[string]internal.Method{
-		"HS256": internal.GetHMACMethod("HS256"),
-		"HS384": internal.GetHMACMethod("HS384"),
-		"HS512": internal.GetHMACMethod("HS512"),
+	methods := map[string]internal.Method{}
+
+	// Get methods using the registry
+	for _, alg := range []string{"HS256", "HS384", "HS512"} {
+		method, err := internal.GetInternalSigningMethod(alg)
+		if err != nil {
+			t.Fatalf("Failed to get method %s: %v", alg, err)
+		}
+		methods[alg] = method
 	}
 
 	testData := "test-signing-string"

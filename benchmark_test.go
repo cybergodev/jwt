@@ -11,15 +11,15 @@ import (
 
 func BenchmarkTokenCreation(b *testing.B) {
 	// Create processor with disabled rate limiting for benchmarks
-	config := Config{
-		SecretKey:       testSecretKey,
-		AccessTokenTTL:  15 * time.Minute,
-		RefreshTokenTTL: 24 * time.Hour,
-		Issuer:          "test-service",
-		SigningMethod:   SigningMethodHS256,
-	}
+	cfg := DefaultConfig()
+	cfg.SecretKey = testSecretKey
+	cfg.AccessTokenTTL = 15 * time.Minute
+	cfg.RefreshTokenTTL = 24 * time.Hour
+	cfg.Issuer = "test-service"
+	cfg.SigningMethod = SigningMethodHS256
+	cfg.Blacklist = DefaultBlacklistConfig()
 
-	processor, err := NewWithBlacklist(testSecretKey, DefaultBlacklistConfig(), config)
+	processor, err := New(cfg)
 	if err != nil {
 		b.Fatalf("Failed to create processor: %v", err)
 	}
@@ -45,7 +45,7 @@ func BenchmarkTokenCreation(b *testing.B) {
 }
 
 func BenchmarkTokenValidation(b *testing.B) {
-	processor, err := New(testSecretKey)
+	processor, err := newTestProcessor(testSecretKey)
 	if err != nil {
 		b.Fatalf("Failed to create processor: %v", err)
 	}
@@ -76,7 +76,7 @@ func BenchmarkTokenValidation(b *testing.B) {
 }
 
 func BenchmarkTokenCreationAndValidation(b *testing.B) {
-	processor, err := New(testSecretKey)
+	processor, err := newTestProcessor(testSecretKey)
 	if err != nil {
 		b.Fatalf("Failed to create processor: %v", err)
 	}
@@ -106,68 +106,11 @@ func BenchmarkTokenCreationAndValidation(b *testing.B) {
 	}
 }
 
-func BenchmarkConvenienceCreateToken(b *testing.B) {
-	claims := Claims{
-		UserID:   "user123",
-		Username: "testuser",
-		Role:     "admin",
-	}
-
-	_, err := CreateToken(testSecretKey, claims)
-	if err != nil {
-		b.Fatalf("Failed to warm up cache: %v", err)
-	}
-
-	processor, release, err := getProcessor(testSecretKey)
-	if err != nil {
-		b.Fatalf("Failed to get processor: %v", err)
-	}
-	defer release()
-	processor.rateLimiter = nil
-
-	b.ResetTimer()
-	b.ReportAllocs()
-
-	for i := 0; i < b.N; i++ {
-		_, err := CreateToken(testSecretKey, claims)
-		if err != nil {
-			b.Fatalf("Failed to create token: %v", err)
-		}
-	}
-}
-
-func BenchmarkConvenienceValidateToken(b *testing.B) {
-	claims := Claims{
-		UserID:   "user123",
-		Username: "testuser",
-		Role:     "admin",
-	}
-
-	token, err := CreateToken(testSecretKey, claims)
-	if err != nil {
-		b.Fatalf("Failed to create token: %v", err)
-	}
-
-	processor, release, err := getProcessor(testSecretKey)
-	if err != nil {
-		b.Fatalf("Failed to get processor: %v", err)
-	}
-	defer release()
-	processor.rateLimiter = nil
-
-	b.ResetTimer()
-	b.ReportAllocs()
-
-	for i := 0; i < b.N; i++ {
-		_, _, err := ValidateToken(testSecretKey, token)
-		if err != nil {
-			b.Fatalf("Failed to validate token: %v", err)
-		}
-	}
-}
-
 func BenchmarkBlacklistOperations(b *testing.B) {
-	processor, err := NewWithBlacklist(testSecretKey, DefaultBlacklistConfig())
+	cfg := DefaultConfig()
+	cfg.SecretKey = testSecretKey
+	cfg.Blacklist = DefaultBlacklistConfig()
+	processor, err := New(cfg)
 	if err != nil {
 		b.Fatalf("Failed to create processor: %v", err)
 	}
@@ -203,7 +146,10 @@ func BenchmarkBlacklistOperations(b *testing.B) {
 }
 
 func BenchmarkBlacklistValidation(b *testing.B) {
-	processor, err := NewWithBlacklist(testSecretKey, DefaultBlacklistConfig())
+	cfg := DefaultConfig()
+	cfg.SecretKey = testSecretKey
+	cfg.Blacklist = DefaultBlacklistConfig()
+	processor, err := New(cfg)
 	if err != nil {
 		b.Fatalf("Failed to create processor: %v", err)
 	}
@@ -248,7 +194,7 @@ func BenchmarkBlacklistValidation(b *testing.B) {
 }
 
 func BenchmarkConcurrentTokenCreation(b *testing.B) {
-	processor, err := New(testSecretKey)
+	processor, err := newTestProcessor(testSecretKey)
 	if err != nil {
 		b.Fatalf("Failed to create processor: %v", err)
 	}
@@ -276,7 +222,7 @@ func BenchmarkConcurrentTokenCreation(b *testing.B) {
 }
 
 func BenchmarkConcurrentTokenValidation(b *testing.B) {
-	processor, err := New(testSecretKey)
+	processor, err := newTestProcessor(testSecretKey)
 	if err != nil {
 		b.Fatalf("Failed to create processor: %v", err)
 	}
@@ -323,15 +269,15 @@ func BenchmarkDifferentSigningMethods(b *testing.B) {
 
 	for _, method := range signingMethods {
 		b.Run(string(method), func(b *testing.B) {
-			config := Config{
-				SecretKey:       testSecretKey,
-				AccessTokenTTL:  15 * time.Minute,
-				RefreshTokenTTL: 24 * time.Hour,
-				Issuer:          "test-service",
-				SigningMethod:   method,
-			}
+			cfg := DefaultConfig()
+			cfg.SecretKey = testSecretKey
+			cfg.AccessTokenTTL = 15 * time.Minute
+			cfg.RefreshTokenTTL = 24 * time.Hour
+			cfg.Issuer = "test-service"
+			cfg.SigningMethod = method
+			cfg.Blacklist = DefaultBlacklistConfig()
 
-			processor, err := NewWithBlacklist(testSecretKey, DefaultBlacklistConfig(), config)
+			processor, err := New(cfg)
 			if err != nil {
 				b.Fatalf("Failed to create processor: %v", err)
 			}
@@ -358,7 +304,7 @@ func BenchmarkDifferentSigningMethods(b *testing.B) {
 }
 
 func BenchmarkMemoryUsage(b *testing.B) {
-	processor, err := New(testSecretKey)
+	processor, err := newTestProcessor(testSecretKey)
 	if err != nil {
 		b.Fatalf("Failed to create processor: %v", err)
 	}
@@ -405,7 +351,7 @@ func BenchmarkMemoryUsage(b *testing.B) {
 }
 
 func BenchmarkLargeClaimsToken(b *testing.B) {
-	processor, err := New(testSecretKey)
+	processor, err := newTestProcessor(testSecretKey)
 	if err != nil {
 		b.Fatalf("Failed to create processor: %v", err)
 	}
@@ -466,7 +412,7 @@ func BenchmarkProcessorCreation(b *testing.B) {
 	b.ReportAllocs()
 
 	for i := 0; i < b.N; i++ {
-		processor, err := New(testSecretKey)
+		processor, err := newTestProcessor(testSecretKey)
 		if err != nil {
 			b.Fatalf("Failed to create processor: %v", err)
 		}
@@ -475,7 +421,10 @@ func BenchmarkProcessorCreation(b *testing.B) {
 }
 
 func BenchmarkHighConcurrencyMixed(b *testing.B) {
-	processor, err := NewWithBlacklist(testSecretKey, DefaultBlacklistConfig())
+	cfg := DefaultConfig()
+	cfg.SecretKey = testSecretKey
+	cfg.Blacklist = DefaultBlacklistConfig()
+	processor, err := New(cfg)
 	if err != nil {
 		b.Fatalf("Failed to create processor: %v", err)
 	}
