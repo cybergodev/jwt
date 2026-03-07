@@ -1,3 +1,5 @@
+//go:build example
+
 package main
 
 import (
@@ -15,12 +17,17 @@ import (
 	"github.com/cybergodev/jwt"
 )
 
-// Production-ready web server with JWT authentication
-// Demonstrates: authentication flow, middleware, RBAC, graceful shutdown
+// Production-ready web server with JWT authentication.
+// Demonstrates: authentication flow, middleware, RBAC, graceful shutdown.
 
 var processor *jwt.Processor
 
-// User represents application user data
+// contextKey is a custom type for context values to avoid collisions.
+type contextKey string
+
+const claimsKey contextKey = "claims"
+
+// User represents application user data.
 type User struct {
 	ID          string   `json:"id"`
 	Username    string   `json:"username"`
@@ -29,13 +36,13 @@ type User struct {
 	Permissions []string `json:"permissions"`
 }
 
-// LoginRequest represents login credentials
+// LoginRequest represents login credentials.
 type LoginRequest struct {
 	Username string `json:"username"`
 	Password string `json:"password"`
 }
 
-// LoginResponse represents successful login response
+// LoginResponse represents successful login response.
 type LoginResponse struct {
 	AccessToken  string `json:"access_token"`
 	RefreshToken string `json:"refresh_token"`
@@ -44,7 +51,7 @@ type LoginResponse struct {
 	User         User   `json:"user"`
 }
 
-// ErrorResponse represents error response
+// ErrorResponse represents error response.
 type ErrorResponse struct {
 	Error   string `json:"error"`
 	Message string `json:"message"`
@@ -56,39 +63,36 @@ func init() {
 	if secretKey == "" {
 		// Demo key - use environment variable in production
 		secretKey = "Kx9#mP2$vL8@nQ5!wR7&tY3^uI6*oE4%aS1+dF0-gH9~jK2#bN5$cM8@xZ7&vB4!"
-		log.Println("⚠️  Using demo secret key - set JWT_SECRET_KEY in production")
+		log.Println("WARNING: Using demo secret key - set JWT_SECRET_KEY in production")
 	}
 
-	// Production configuration with rate limiting
-	config := jwt.Config{
-		SecretKey:       secretKey,
-		AccessTokenTTL:  15 * time.Minute,
-		RefreshTokenTTL: 7 * 24 * time.Hour,
-		Issuer:          "web-server-example",
-		SigningMethod:   jwt.SigningMethodHS256,
-		EnableRateLimit: true,
-		RateLimitRate:   100,
-		RateLimitWindow: time.Minute,
-	}
-
-	blacklistConfig := jwt.BlacklistConfig{
+	cfg := jwt.DefaultConfig()
+	cfg.SecretKey = secretKey
+	cfg.AccessTokenTTL = 15 * time.Minute
+	cfg.RefreshTokenTTL = 7 * 24 * time.Hour
+	cfg.Issuer = "web-server-example"
+	cfg.SigningMethod = jwt.SigningMethodHS256
+	cfg.EnableRateLimit = true
+	cfg.RateLimitRate = 100
+	cfg.RateLimitWindow = time.Minute
+	cfg.Blacklist = jwt.BlacklistConfig{
 		MaxSize:           10000,
 		CleanupInterval:   5 * time.Minute,
 		EnableAutoCleanup: true,
 	}
 
 	var err error
-	processor, err = jwt.NewWithBlacklist(secretKey, blacklistConfig, config)
+	processor, err = jwt.New(cfg)
 	if err != nil {
 		log.Fatalf("Failed to initialize JWT processor: %v", err)
 	}
 
-	log.Println("✅ JWT processor initialized")
+	log.Println("JWT processor initialized")
 }
 
 func main() {
-	fmt.Println("🚀 JWT Web Server - Production Example")
-	fmt.Println("=======================================\n ")
+	fmt.Println("JWT Web Server - Production Example")
+	fmt.Println("====================================")
 
 	// Setup HTTP routes
 	mux := http.NewServeMux()
@@ -97,6 +101,7 @@ func main() {
 	mux.HandleFunc("/profile", authMiddleware(profileHandler))
 	mux.HandleFunc("/admin", authMiddleware(requireRole("admin", adminHandler)))
 	mux.HandleFunc("/logout", authMiddleware(logoutHandler))
+	mux.HandleFunc("/refresh", authMiddleware(refreshHandler))
 
 	// Create HTTP server
 	server := &http.Server{
@@ -109,13 +114,14 @@ func main() {
 
 	// Start server in goroutine
 	go func() {
-		log.Println("🌐 Server listening on http://localhost:8080")
-		log.Println("\n📋 Available endpoints:")
+		log.Println("Server listening on http://localhost:8080")
+		log.Println("\nAvailable endpoints:")
 		log.Println("  POST /login    - User login")
 		log.Println("  GET  /profile  - User profile (requires auth)")
 		log.Println("  GET  /admin    - Admin page (requires admin role)")
 		log.Println("  POST /logout   - User logout (requires auth)")
-		log.Println("\n💡 Test with:")
+		log.Println("  POST /refresh  - Refresh access token (requires auth)")
+		log.Println("\nTest with:")
 		log.Println(`  curl -X POST http://localhost:8080/login \`)
 		log.Println(`    -H "Content-Type: application/json" \`)
 		log.Println(`    -d '{"username":"admin","password":"password"}'`)
@@ -131,7 +137,7 @@ func main() {
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 
-	log.Println("\n🛑 Shutting down server...")
+	log.Println("\nShutting down server...")
 
 	// Graceful shutdown with timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -146,10 +152,10 @@ func main() {
 		log.Printf("Processor close error: %v", err)
 	}
 
-	log.Println("✅ Server gracefully stopped")
+	log.Println("Server gracefully stopped")
 }
 
-// homeHandler serves the home page
+// homeHandler serves the home page.
 func homeHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{
@@ -158,7 +164,7 @@ func homeHandler(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// loginHandler authenticates users and issues JWT tokens
+// loginHandler authenticates users and issues JWT tokens.
 func loginHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		sendError(w, http.StatusMethodNotAllowed, "method_not_allowed", "Only POST method supported")
@@ -217,12 +223,12 @@ func loginHandler(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(response)
-	log.Printf("✅ User logged in: %s", user.Username)
+	log.Printf("User logged in: %s", user.Username)
 }
 
-// profileHandler returns authenticated user's profile
+// profileHandler returns authenticated user's profile.
 func profileHandler(w http.ResponseWriter, r *http.Request) {
-	claims := r.Context().Value("claims").(*jwt.Claims)
+	claims := r.Context().Value(claimsKey).(*jwt.Claims)
 
 	user := User{
 		ID:          claims.UserID,
@@ -239,9 +245,9 @@ func profileHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(user)
 }
 
-// adminHandler handles admin-only requests
+// adminHandler handles admin-only requests.
 func adminHandler(w http.ResponseWriter, r *http.Request) {
-	claims := r.Context().Value("claims").(*jwt.Claims)
+	claims := r.Context().Value(claimsKey).(*jwt.Claims)
 
 	response := map[string]any{
 		"message":     "Welcome to admin dashboard",
@@ -254,7 +260,43 @@ func adminHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(response)
 }
 
-// logoutHandler revokes the user's token
+// refreshHandler refreshes the access token.
+func refreshHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		sendError(w, http.StatusMethodNotAllowed, "method_not_allowed", "Only POST method supported")
+		return
+	}
+
+	// Get refresh token from request body
+	var req struct {
+		RefreshToken string `json:"refresh_token"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		sendError(w, http.StatusBadRequest, "invalid_request", "Invalid JSON format")
+		return
+	}
+
+	if req.RefreshToken == "" {
+		sendError(w, http.StatusBadRequest, "missing_token", "Refresh token required")
+		return
+	}
+
+	// Refresh token
+	newAccessToken, err := processor.RefreshToken(req.RefreshToken)
+	if err != nil {
+		sendError(w, http.StatusUnauthorized, "invalid_token", "Invalid or expired refresh token")
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{
+		"access_token": newAccessToken,
+		"token_type":   "Bearer",
+		"expires_in":   "900",
+	})
+}
+
+// logoutHandler revokes the user's token.
 func logoutHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		sendError(w, http.StatusMethodNotAllowed, "method_not_allowed", "Only POST method supported")
@@ -278,10 +320,10 @@ func logoutHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{
 		"message": "Successfully logged out",
 	})
-	log.Println("✅ User logged out")
+	log.Println("User logged out")
 }
 
-// authMiddleware validates JWT tokens
+// authMiddleware validates JWT tokens.
 func authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		token := extractToken(r)
@@ -297,15 +339,15 @@ func authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 		}
 
 		// Add claims to context
-		ctx := context.WithValue(r.Context(), "claims", claims)
+		ctx := context.WithValue(r.Context(), claimsKey, claims)
 		next(w, r.WithContext(ctx))
 	}
 }
 
-// requireRole checks if user has required role
+// requireRole checks if user has required role.
 func requireRole(role string, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		claims := r.Context().Value("claims").(*jwt.Claims)
+		claims := r.Context().Value(claimsKey).(*jwt.Claims)
 
 		if claims.Role != role {
 			sendError(w, http.StatusForbidden, "insufficient_permissions",
@@ -317,7 +359,7 @@ func requireRole(role string, next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-// extractToken extracts JWT from Authorization header
+// extractToken extracts JWT from Authorization header.
 func extractToken(r *http.Request) string {
 	authHeader := r.Header.Get("Authorization")
 	if authHeader == "" {
@@ -332,7 +374,7 @@ func extractToken(r *http.Request) string {
 	return ""
 }
 
-// sendError sends JSON error response
+// sendError sends JSON error response.
 func sendError(w http.ResponseWriter, status int, errorCode, message string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
@@ -342,7 +384,7 @@ func sendError(w http.ResponseWriter, status int, errorCode, message string) {
 	})
 }
 
-// authenticateUser validates credentials (mock implementation)
+// authenticateUser validates credentials (mock implementation).
 func authenticateUser(username, password string) (User, bool) {
 	// Mock user database - replace with real authentication
 	users := map[string]User{

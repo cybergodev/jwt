@@ -11,7 +11,7 @@ import (
 // Focused security validation tests
 
 func TestSecurityAlgorithmConfusion(t *testing.T) {
-	processor, err := New(testSecretKey)
+	processor, err := newTestProcessor(testSecretKey)
 	if err != nil {
 		t.Fatalf("Failed to create processor: %v", err)
 	}
@@ -50,7 +50,7 @@ func TestSecurityWeakKeyDetection(t *testing.T) {
 
 	for i, weakKey := range weakKeys {
 		t.Run(fmt.Sprintf("WeakKey_%d", i), func(t *testing.T) {
-			_, err := New(weakKey)
+			_, err := newTestProcessor(weakKey)
 			if err == nil {
 				t.Errorf("Should reject weak key: %s", weakKey)
 			}
@@ -59,7 +59,7 @@ func TestSecurityWeakKeyDetection(t *testing.T) {
 }
 
 func TestSecurityInputValidation(t *testing.T) {
-	processor, err := New(testSecretKey)
+	processor, err := newTestProcessor(testSecretKey)
 	if err != nil {
 		t.Fatalf("Failed to create processor: %v", err)
 	}
@@ -88,7 +88,7 @@ func TestSecurityInputValidation(t *testing.T) {
 }
 
 func TestSecurityDoSProtection(t *testing.T) {
-	processor, err := New(testSecretKey)
+	processor, err := newTestProcessor(testSecretKey)
 	if err != nil {
 		t.Fatalf("Failed to create processor: %v", err)
 	}
@@ -131,7 +131,7 @@ func TestSecurityDoSProtection(t *testing.T) {
 }
 
 func TestSecurityTimingAttackProtection(t *testing.T) {
-	processor, err := New(testSecretKey)
+	processor, err := newTestProcessor(testSecretKey)
 	if err != nil {
 		t.Fatalf("Failed to create processor: %v", err)
 	}
@@ -182,7 +182,7 @@ func TestSecurityTimingAttackProtection(t *testing.T) {
 }
 
 func TestSecurityInjectionPatterns(t *testing.T) {
-	processor, err := New(testSecretKey)
+	processor, err := newTestProcessor(testSecretKey)
 	if err != nil {
 		t.Fatalf("Failed to create processor: %v", err)
 	}
@@ -253,7 +253,7 @@ func TestSecurityConfigurationDefaults(t *testing.T) {
 }
 
 func TestSecurityMemoryHandling(t *testing.T) {
-	processor, err := New(testSecretKey)
+	processor, err := newTestProcessor(testSecretKey)
 	if err != nil {
 		t.Fatalf("Failed to create processor: %v", err)
 	}
@@ -289,7 +289,7 @@ func TestSecurityKeyboardPatterns(t *testing.T) {
 	}
 
 	for _, weakKey := range keyboardPatternKeys {
-		if _, err := New(weakKey); err == nil {
+		if _, err := newTestProcessor(weakKey); err == nil {
 			t.Errorf("Should reject keyboard pattern key: %s", weakKey)
 		}
 	}
@@ -305,14 +305,14 @@ func TestSecurityLowEntropy(t *testing.T) {
 	}
 
 	for _, weakKey := range lowEntropyKeys {
-		if _, err := New(weakKey); err == nil {
+		if _, err := newTestProcessor(weakKey); err == nil {
 			t.Errorf("Should reject low entropy key: %s", weakKey)
 		}
 	}
 }
 
 func TestSecurityTokenValidation(t *testing.T) {
-	processor, err := New(testSecretKey)
+	processor, err := newTestProcessor(testSecretKey)
 	if err != nil {
 		t.Fatalf("Failed to create processor: %v", err)
 	}

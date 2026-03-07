@@ -1,15 +1,14 @@
 package internal
 
 import (
-	"crypto/rand"
-	"encoding/hex"
 	"fmt"
 	"strings"
+	"sync"
+	"unsafe"
 )
 
 const (
 	maxTokenLength = 8192
-	TokenIDLength  = 16
 )
 
 var (
@@ -17,7 +16,27 @@ var (
 	errTokenTooLarge      = fmt.Errorf("token too large: maximum %d characters allowed", maxTokenLength)
 	errInvalidTokenFormat = fmt.Errorf("invalid token format: expected 3 parts separated by dots")
 	errEmptyHeader        = fmt.Errorf("empty header: JWT must have a valid header")
+	errEmptySignature     = fmt.Errorf("empty signature: JWT must have a valid signature")
 )
+
+// parseBufPool pools byte slices for parsing operations.
+var parseBufPool = sync.Pool{
+	New: func() any {
+		buf := make([]byte, 0, 512)
+		return &buf
+	},
+}
+
+func getParseBuf() *[]byte {
+	return parseBufPool.Get().(*[]byte)
+}
+
+func putParseBuf(buf *[]byte) {
+	if cap(*buf) <= 2048 {
+		*buf = (*buf)[:0]
+		parseBufPool.Put(buf)
+	}
+}
 
 func NewTokenWithClaims(method Method, claims any) *Core {
 	return &Core{
@@ -65,6 +84,11 @@ func ParseWithClaims(tokenString string, claims any, keyFunc func(*Core) (any, e
 		return nil, errInvalidTokenFormat
 	}
 
+	// Explicitly check for empty signature
+	if part3 == "" {
+		return nil, errEmptySignature
+	}
+
 	token := &Core{
 		Raw:       tokenString,
 		Signature: part3,
@@ -103,11 +127,21 @@ func ParseWithClaims(tokenString string, claims any, keyFunc func(*Core) (any, e
 	}
 
 	signingStringLen := len(part1) + 1 + len(part2)
-	signingStringBuf := make([]byte, signingStringLen)
+
+	bufPtr := getParseBuf()
+	defer putParseBuf(bufPtr)
+
+	if cap(*bufPtr) < signingStringLen {
+		*bufPtr = make([]byte, 0, signingStringLen)
+	}
+
+	signingStringBuf := (*bufPtr)[:signingStringLen]
 	copy(signingStringBuf, part1)
 	signingStringBuf[len(part1)] = '.'
 	copy(signingStringBuf[len(part1)+1:], part2)
-	signingString := string(signingStringBuf)
+
+	// Use unsafe string for internal Verify call (safe: buffer not returned to pool until after Verify returns)
+	signingString := unsafe.String(&signingStringBuf[0], len(signingStringBuf))
 
 	if err := method.Verify(signingString, part3, key); err != nil {
 		token.Valid = false
@@ -180,17 +214,4 @@ func isInsecureAlgorithm(alg string) bool {
 
 func (t *Core) SignedString(key any) (string, error) {
 	return SignedString(t.Header, t.Claims, t.Method, key)
-}
-
-func GenerateTokenIDFast() (string, error) {
-	randomBytes := make([]byte, TokenIDLength)
-	if _, err := rand.Read(randomBytes); err != nil {
-		return "", fmt.Errorf("failed to generate token ID: %w", err)
-	}
-
-	result := make([]byte, 4+TokenIDLength*2)
-	copy(result, "tok_")
-	hex.Encode(result[4:], randomBytes)
-
-	return string(result), nil
 }

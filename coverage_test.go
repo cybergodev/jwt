@@ -2,10 +2,120 @@ package jwt
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 )
+
+// ============================================================================
+// ERROR TYPE TESTS - Covering TokenError, SigningError
+// ============================================================================
+
+func TestTokenErrorMethods(t *testing.T) {
+	baseErr := errors.New("base error")
+
+	// Test TokenError with all fields
+	tokenErr := &TokenError{
+		Err:       baseErr,
+		TokenID:   "tok_abc123",
+		ExpiresAt: time.Now().Add(time.Hour),
+	}
+
+	// Test Error() with TokenID
+	errMsg := tokenErr.Error()
+	if !strings.Contains(errMsg, "tok_abc123") {
+		t.Errorf("Error message should contain TokenID: %s", errMsg)
+	}
+	if !strings.Contains(errMsg, "token error") {
+		t.Errorf("Error message should contain 'token error': %s", errMsg)
+	}
+
+	// Test Error() without TokenID
+	tokenErrNoID := &TokenError{
+		Err:       baseErr,
+		TokenID:   "",
+		ExpiresAt: time.Now().Add(time.Hour),
+	}
+	errMsgNoID := tokenErrNoID.Error()
+	if strings.Contains(errMsgNoID, "id=") {
+		t.Errorf("Error message should not contain 'id=' when TokenID is empty: %s", errMsgNoID)
+	}
+
+	// Test Unwrap()
+	unwrapped := tokenErr.Unwrap()
+	if unwrapped != baseErr {
+		t.Errorf("Unwrap() = %v, want %v", unwrapped, baseErr)
+	}
+
+	// Test Is() - should match base error
+	if !errors.Is(tokenErr, baseErr) {
+		t.Error("errors.Is should match base error")
+	}
+
+	// Test Is() - should not match different error
+	differentErr := errors.New("different")
+	if errors.Is(tokenErr, differentErr) {
+		t.Error("errors.Is should not match different error")
+	}
+}
+
+func TestSigningErrorMethods(t *testing.T) {
+	baseErr := errors.New("signing failed")
+
+	// Test SigningError
+	signingErr := &SigningError{
+		Algorithm: "RS256",
+		Err:       baseErr,
+	}
+
+	// Test Error()
+	errMsg := signingErr.Error()
+	if !strings.Contains(errMsg, "RS256") {
+		t.Errorf("Error message should contain algorithm: %s", errMsg)
+	}
+	if !strings.Contains(errMsg, "signing error") {
+		t.Errorf("Error message should contain 'signing error': %s", errMsg)
+	}
+
+	// Test Unwrap()
+	unwrapped := signingErr.Unwrap()
+	if unwrapped != baseErr {
+		t.Errorf("Unwrap() = %v, want %v", unwrapped, baseErr)
+	}
+}
+
+func TestNewTokenError(t *testing.T) {
+	baseErr := errors.New("test error")
+	tokenID := "tok_test123"
+	expiresAt := time.Now().Add(time.Hour)
+
+	tokenErr := NewTokenError(baseErr, tokenID, expiresAt)
+
+	if tokenErr.Err != baseErr {
+		t.Errorf("Err field = %v, want %v", tokenErr.Err, baseErr)
+	}
+	if tokenErr.TokenID != tokenID {
+		t.Errorf("TokenID field = %v, want %v", tokenErr.TokenID, tokenID)
+	}
+	if !tokenErr.ExpiresAt.Equal(expiresAt) {
+		t.Errorf("ExpiresAt field = %v, want %v", tokenErr.ExpiresAt, expiresAt)
+	}
+}
+
+func TestNewSigningError(t *testing.T) {
+	baseErr := errors.New("base signing error")
+	algorithm := "ES256"
+
+	signingErr := NewSigningError(algorithm, baseErr)
+
+	if signingErr.Algorithm != algorithm {
+		t.Errorf("Algorithm field = %v, want %v", signingErr.Algorithm, algorithm)
+	}
+	if signingErr.Err != baseErr {
+		t.Errorf("Err field = %v, want %v", signingErr.Err, baseErr)
+	}
+}
 
 // Tests for uncovered error methods
 func TestValidationErrorMethods(t *testing.T) {
@@ -45,29 +155,6 @@ func TestValidationErrorMethods(t *testing.T) {
 	unwrapped2 := valErr2.Unwrap()
 	if unwrapped2 != nil {
 		t.Errorf("Unwrap() should return nil when Err is nil, got %v", unwrapped2)
-	}
-}
-
-// Tests for convenience cache
-func TestProcessorCacheEviction(t *testing.T) {
-	cache.mu.Lock()
-	cache.entries = make(map[string]*cacheEntry, 16)
-	cache.mu.Unlock()
-
-	secretKey := "Str0ng!S3cr3t#K3y$W1th%Suff1c13nt&Entr0py*2024"
-
-	_, release, err := getProcessor(secretKey)
-	if err != nil {
-		t.Fatalf("Failed to get processor: %v", err)
-	}
-	defer release()
-
-	cache.mu.Lock()
-	size := len(cache.entries)
-	cache.mu.Unlock()
-
-	if size != 1 {
-		t.Errorf("Expected 1 cache entry, got %d", size)
 	}
 }
 
@@ -166,7 +253,10 @@ func TestRateLimiterWithConfig(t *testing.T) {
 
 // Tests for uncovered processor functions
 func TestProcessorIsTokenRevoked(t *testing.T) {
-	processor, err := NewWithBlacklist("Str0ng!S3cr3t#K3y$W1th%Suff1c13nt&Entr0py*2024", DefaultBlacklistConfig())
+	cfg := DefaultConfig()
+	cfg.SecretKey = "Str0ng!S3cr3t#K3y$W1th%Suff1c13nt&Entr0py*2024"
+	cfg.Blacklist = DefaultBlacklistConfig()
+	processor, err := New(cfg)
 	if err != nil {
 		t.Fatalf("Failed to create processor: %v", err)
 	}
@@ -204,7 +294,10 @@ func TestProcessorIsTokenRevoked(t *testing.T) {
 }
 
 func TestProcessorIsTokenRevokedInvalidToken(t *testing.T) {
-	processor, err := NewWithBlacklist("Str0ng!S3cr3t#K3y$W1th%Suff1c13nt&Entr0py*2024", DefaultBlacklistConfig())
+	cfg := DefaultConfig()
+	cfg.SecretKey = "Str0ng!S3cr3t#K3y$W1th%Suff1c13nt&Entr0py*2024"
+	cfg.Blacklist = DefaultBlacklistConfig()
+	processor, err := New(cfg)
 	if err != nil {
 		t.Fatalf("Failed to create processor: %v", err)
 	}
@@ -221,7 +314,7 @@ func TestProcessorIsTokenRevokedInvalidToken(t *testing.T) {
 }
 
 func TestProcessorIsTokenRevokedNoBlacklist(t *testing.T) {
-	processor, err := New("Str0ng!S3cr3t#K3y$W1th%Suff1c13nt&Entr0py*2024")
+	processor, err := newTestProcessor("Str0ng!S3cr3t#K3y$W1th%Suff1c13nt&Entr0py*2024")
 	if err != nil {
 		t.Fatalf("Failed to create processor: %v", err)
 	}
@@ -308,44 +401,10 @@ func TestRateLimiterTokenRefill(t *testing.T) {
 // TESTS FOR UNCOVERED FUNCTIONS
 // ============================================================================
 
-// TestClearCache tests the ClearCache convenience function
-func TestClearCache(t *testing.T) {
-	// Setup: Create some cached processors
-	secretKey := "Str0ng!S3cr3t#K3y$W1th%Suff1c13nt&Entr0py*2024"
-	claims := Claims{UserID: "user1", Username: "testuser"}
-
-	// Create tokens to populate cache
-	_, err := CreateToken(secretKey, claims)
-	if err != nil {
-		t.Fatalf("Failed to create token: %v", err)
-	}
-
-	// Verify cache has entries
-	cache.mu.RLock()
-	initialSize := len(cache.entries)
-	cache.mu.RUnlock()
-
-	if initialSize == 0 {
-		t.Fatal("Cache should have entries before clearing")
-	}
-
-	// Clear the cache
-	ClearCache()
-
-	// Verify cache is empty
-	cache.mu.RLock()
-	finalSize := len(cache.entries)
-	cache.mu.RUnlock()
-
-	if finalSize != 0 {
-		t.Errorf("Cache should be empty after clearing, got %d entries", finalSize)
-	}
-}
-
 // TestProcessorIsClosed tests the IsClosed method
 func TestProcessorIsClosed(t *testing.T) {
 	secretKey := "Str0ng!S3cr3t#K3y$W1th%Suff1c13nt&Entr0py*2024"
-	processor, err := New(secretKey)
+	processor, err := newTestProcessor(secretKey)
 	if err != nil {
 		t.Fatalf("Failed to create processor: %v", err)
 	}
@@ -389,6 +448,7 @@ func TestConfigValidationEdgeCases(t *testing.T) {
 				EnableRateLimit: true,
 				RateLimitRate:   100,
 				RateLimitWindow: time.Minute,
+				Blacklist:       DefaultBlacklistConfig(),
 			},
 			wantError: false,
 		},
@@ -447,7 +507,7 @@ func TestConfigValidationEdgeCases(t *testing.T) {
 // TestValidationEdgeCases tests validation edge cases
 func TestValidationEdgeCases(t *testing.T) {
 	secretKey := "Str0ng!S3cr3t#K3y$W1th%Suff1c13nt&Entr0py*2024"
-	processor, err := New(secretKey)
+	processor, err := newTestProcessor(secretKey)
 	if err != nil {
 		t.Fatalf("Failed to create processor: %v", err)
 	}
@@ -608,7 +668,7 @@ func TestValidationEdgeCases(t *testing.T) {
 // TestDangerousPatternDetection tests all dangerous patterns
 func TestDangerousPatternDetection(t *testing.T) {
 	secretKey := "Str0ng!S3cr3t#K3y$W1th%Suff1c13nt&Entr0py*2024"
-	processor, err := New(secretKey)
+	processor, err := newTestProcessor(secretKey)
 	if err != nil {
 		t.Fatalf("Failed to create processor: %v", err)
 	}
@@ -640,32 +700,10 @@ func TestDangerousPatternDetection(t *testing.T) {
 	}
 }
 
-// TestConvenienceFunctionsEdgeCases tests edge cases in convenience functions
-func TestConvenienceFunctionsEdgeCases(t *testing.T) {
-	// Test with short secret key
-	shortKey := "short"
-	claims := Claims{UserID: "user1", Username: "testuser"}
-
-	_, err := CreateToken(shortKey, claims)
-	if err != ErrInvalidSecretKey {
-		t.Errorf("Expected ErrInvalidSecretKey, got %v", err)
-	}
-
-	_, _, err = ValidateToken(shortKey, "dummy.token.string")
-	if err != ErrInvalidSecretKey {
-		t.Errorf("Expected ErrInvalidSecretKey, got %v", err)
-	}
-
-	err = RevokeToken(shortKey, "dummy.token.string")
-	if err != ErrInvalidSecretKey {
-		t.Errorf("Expected ErrInvalidSecretKey, got %v", err)
-	}
-}
-
 // TestProcessorOperationsAfterClose tests operations on closed processor
 func TestProcessorOperationsAfterClose(t *testing.T) {
 	secretKey := "Str0ng!S3cr3t#K3y$W1th%Suff1c13nt&Entr0py*2024"
-	processor, err := New(secretKey)
+	processor, err := newTestProcessor(secretKey)
 	if err != nil {
 		t.Fatalf("Failed to create processor: %v", err)
 	}
@@ -717,7 +755,7 @@ func TestProcessorOperationsAfterClose(t *testing.T) {
 // TestRefreshTokenEdgeCases tests edge cases in RefreshToken
 func TestRefreshTokenEdgeCases(t *testing.T) {
 	secretKey := "Str0ng!S3cr3t#K3y$W1th%Suff1c13nt&Entr0py*2024"
-	processor, err := New(secretKey)
+	processor, err := newTestProcessor(secretKey)
 	if err != nil {
 		t.Fatalf("Failed to create processor: %v", err)
 	}
@@ -745,7 +783,7 @@ func TestRefreshTokenEdgeCases(t *testing.T) {
 // TestRevokeTokenEdgeCases tests edge cases in RevokeToken
 func TestRevokeTokenEdgeCases(t *testing.T) {
 	secretKey := "Str0ng!S3cr3t#K3y$W1th%Suff1c13nt&Entr0py*2024"
-	processor, err := New(secretKey)
+	processor, err := newTestProcessor(secretKey)
 	if err != nil {
 		t.Fatalf("Failed to create processor: %v", err)
 	}
@@ -761,7 +799,7 @@ func TestRevokeTokenEdgeCases(t *testing.T) {
 // TestIsTokenRevokedEdgeCases tests edge cases in IsTokenRevoked
 func TestIsTokenRevokedEdgeCases(t *testing.T) {
 	secretKey := "Str0ng!S3cr3t#K3y$W1th%Suff1c13nt&Entr0py*2024"
-	processor, err := New(secretKey)
+	processor, err := newTestProcessor(secretKey)
 	if err != nil {
 		t.Fatalf("Failed to create processor: %v", err)
 	}
@@ -787,7 +825,7 @@ func TestIsTokenRevokedEdgeCases(t *testing.T) {
 	}
 
 	// Manually create a token without jti claim
-	processor2, err := New(secretKey)
+	processor2, err := newTestProcessor(secretKey)
 	if err != nil {
 		t.Fatalf("Failed to create processor: %v", err)
 	}
@@ -805,8 +843,8 @@ func TestIsTokenRevokedEdgeCases(t *testing.T) {
 	}
 }
 
-// TestNewWithBlacklistInvalidConfig tests NewWithBlacklist with invalid configs
-func TestNewWithBlacklistInvalidConfig(t *testing.T) {
+// TestBlacklistConfigValidation tests BlacklistConfig validation
+func TestBlacklistConfigValidation(t *testing.T) {
 	secretKey := "Str0ng!S3cr3t#K3y$W1th%Suff1c13nt&Entr0py*2024"
 
 	tests := []struct {
@@ -850,7 +888,10 @@ func TestNewWithBlacklistInvalidConfig(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := NewWithBlacklist(secretKey, tt.blacklistConfig)
+			cfg := DefaultConfig()
+			cfg.SecretKey = secretKey
+			cfg.Blacklist = tt.blacklistConfig
+			_, err := New(cfg)
 			if tt.wantError && err == nil {
 				t.Error("Expected error, got nil")
 			}
@@ -864,7 +905,7 @@ func TestNewWithBlacklistInvalidConfig(t *testing.T) {
 // TestClaimsWithEmptyUserIDAndUsername tests claims validation
 func TestClaimsWithEmptyUserIDAndUsername(t *testing.T) {
 	secretKey := "Str0ng!S3cr3t#K3y$W1th%Suff1c13nt&Entr0py*2024"
-	processor, err := New(secretKey)
+	processor, err := newTestProcessor(secretKey)
 	if err != nil {
 		t.Fatalf("Failed to create processor: %v", err)
 	}
@@ -882,41 +923,256 @@ func TestClaimsWithEmptyUserIDAndUsername(t *testing.T) {
 	}
 }
 
-// TestCacheCleanupConcurrency tests cache cleanup under concurrent load
-func TestCacheCleanupConcurrency(t *testing.T) {
+// ============================================================================
+// CLOCK PROVIDER TESTS
+// ============================================================================
+
+func TestSystemClock(t *testing.T) {
+	clock := SystemClock{}
+
+	// Test Now() returns current time
+	now := clock.Now()
+	if now.IsZero() {
+		t.Error("SystemClock.Now() should not return zero time")
+	}
+
+	// Verify it's close to current time
+	timeDiff := time.Since(now)
+	if timeDiff < 0 || timeDiff > time.Second {
+		t.Errorf("SystemClock.Now() time difference unexpected: %v", timeDiff)
+	}
+}
+
+func TestFixedClock(t *testing.T) {
+	fixedTime := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
+	clock := FixedClock{T: fixedTime}
+
+	// Test Now() returns fixed time
+	now := clock.Now()
+	if !now.Equal(fixedTime) {
+		t.Errorf("FixedClock.Now() = %v, want %v", now, fixedTime)
+	}
+
+	// Multiple calls should return same time
+	now2 := clock.Now()
+	if !now2.Equal(now) {
+		t.Error("FixedClock.Now() should return same time on multiple calls")
+	}
+}
+
+// ============================================================================
+// PROCESSOR WITH CUSTOM CLAIMS TESTS
+// ============================================================================
+
+func TestProcessorCreateTokenWith(t *testing.T) {
 	secretKey := "Str0ng!S3cr3t#K3y$W1th%Suff1c13nt&Entr0py*2024"
-	claims := Claims{UserID: "user1", Username: "testuser"}
+	processor, err := newTestProcessor(secretKey)
+	if err != nil {
+		t.Fatalf("Failed to create processor: %v", err)
+	}
+	defer processor.Close()
 
-	// Clear cache first
-	ClearCache()
+	claims := &TestCustomClaims{
+		UserID:  "custom-user",
+		Email:   "custom@example.com",
+		IsAdmin: true,
+	}
 
-	// Create multiple tokens concurrently
+	token, err := processor.CreateTokenWith(claims)
+	if err != nil {
+		t.Fatalf("CreateTokenWith failed: %v", err)
+	}
+	if token == "" {
+		t.Error("Token should not be empty")
+	}
+
+	// Validate the token
+	validatedClaims := &TestCustomClaims{}
+	result, valid, err := processor.ValidateTokenWith(token, validatedClaims)
+	if err != nil {
+		t.Fatalf("ValidateTokenWith failed: %v", err)
+	}
+	if !valid {
+		t.Error("Token should be valid")
+	}
+
+	resultClaims, ok := result.(*TestCustomClaims)
+	if !ok {
+		t.Fatal("Expected TestCustomClaims type")
+	}
+	if resultClaims.UserID != claims.UserID {
+		t.Errorf("UserID = %s, want %s", resultClaims.UserID, claims.UserID)
+	}
+}
+
+func TestProcessorValidateTokenWith(t *testing.T) {
+	secretKey := "Str0ng!S3cr3t#K3y$W1th%Suff1c13nt&Entr0py*2024"
+	processor, err := newTestProcessor(secretKey)
+	if err != nil {
+		t.Fatalf("Failed to create processor: %v", err)
+	}
+	defer processor.Close()
+
+	claims := &TestCustomClaims{
+		UserID:  "validate-user",
+		Email:   "validate@example.com",
+		IsAdmin: false,
+	}
+
+	token, err := processor.CreateTokenWith(claims)
+	if err != nil {
+		t.Fatalf("CreateTokenWith failed: %v", err)
+	}
+
+	// Test with valid token
+	validatedClaims := &TestCustomClaims{}
+	_, valid, err := processor.ValidateTokenWith(token, validatedClaims)
+	if err != nil || !valid {
+		t.Errorf("Token should be valid: err=%v, valid=%v", err, valid)
+	}
+
+	// Test with invalid token
+	_, valid, err = processor.ValidateTokenWith("invalid.token", validatedClaims)
+	if err == nil || valid {
+		t.Error("Invalid token should fail validation")
+	}
+
+	// Test with empty token
+	_, valid, err = processor.ValidateTokenWith("", validatedClaims)
+	if err == nil || valid {
+		t.Error("Empty token should fail validation")
+	}
+}
+
+func TestProcessorCreateRefreshTokenWith(t *testing.T) {
+	secretKey := "Str0ng!S3cr3t#K3y$W1th%Suff1c13nt&Entr0py*2024"
+	processor, err := newTestProcessor(secretKey)
+	if err != nil {
+		t.Fatalf("Failed to create processor: %v", err)
+	}
+	defer processor.Close()
+
+	claims := &TestCustomClaims{
+		UserID: "refresh-user",
+		Email:  "refresh@example.com",
+	}
+
+	token, err := processor.CreateRefreshTokenWith(claims)
+	if err != nil {
+		t.Fatalf("CreateRefreshTokenWith failed: %v", err)
+	}
+	if token == "" {
+		t.Error("Refresh token should not be empty")
+	}
+
+	// Validate the refresh token
+	validatedClaims := &TestCustomClaims{}
+	_, valid, err := processor.ValidateTokenWith(token, validatedClaims)
+	if err != nil || !valid {
+		t.Errorf("Refresh token should be valid: err=%v, valid=%v", err, valid)
+	}
+}
+
+func TestProcessorWithCustomClaimsWithClosedProcessor(t *testing.T) {
+	secretKey := "Str0ng!S3cr3t#K3y$W1th%Suff1c13nt&Entr0py*2024"
+	processor, err := newTestProcessor(secretKey)
+	if err != nil {
+		t.Fatalf("Failed to create processor: %v", err)
+	}
+
+	// Close processor
+	processor.Close()
+
+	claims := &TestCustomClaims{
+		UserID: "closed-user",
+		Email:  "closed@example.com",
+	}
+
+	// All operations should fail
+	_, err = processor.CreateTokenWith(claims)
+	if err != ErrProcessorClosed {
+		t.Errorf("Expected ErrProcessorClosed, got: %v", err)
+	}
+
+	_, _, err = processor.ValidateTokenWith("token", claims)
+	if err != ErrProcessorClosed {
+		t.Errorf("Expected ErrProcessorClosed, got: %v", err)
+	}
+
+	_, err = processor.CreateRefreshTokenWith(claims)
+	if err != ErrProcessorClosed {
+		t.Errorf("Expected ErrProcessorClosed, got: %v", err)
+	}
+}
+
+// ============================================================================
+// RATE LIMITER EDGE CASES
+// ============================================================================
+
+func TestRateLimiterNew(t *testing.T) {
+	// Test with valid parameters
+	rl := NewRateLimiter(100, time.Minute)
+	if rl == nil {
+		t.Fatal("NewRateLimiter returned nil")
+	}
+	rl.Close()
+
+	// Test with zero rate
+	rl = NewRateLimiter(0, time.Minute)
+	rl.Close()
+
+	// Test with zero window
+	rl = NewRateLimiter(100, 0)
+	rl.Close()
+}
+
+func TestRateLimiterAllowNEdgeCases(t *testing.T) {
+	rl := NewRateLimiter(10, time.Minute)
+	defer rl.Close()
+
+	key := "test-key"
+
+	// Test with zero n
+	if !rl.AllowN(key, 0) {
+		t.Error("AllowN with 0 should always return true")
+	}
+
+	// Test with negative n - should return false per implementation
+	if rl.AllowN(key, -1) {
+		t.Error("AllowN with negative should return false")
+	}
+
+	// Test with n greater than max
+	if rl.AllowN(key, 100) {
+		t.Error("AllowN with n > max should return false")
+	}
+}
+
+func TestRateLimiterResetNonExistent(t *testing.T) {
+	rl := NewRateLimiter(10, time.Minute)
+	defer rl.Close()
+
+	// Reset non-existent key should not panic
+	rl.Reset("non-existent-key")
+}
+
+func TestRateLimiterConcurrentReset(t *testing.T) {
+	rl := NewRateLimiter(100, time.Minute)
+	defer rl.Close()
+
 	const numGoroutines = 10
 	done := make(chan bool, numGoroutines)
 
 	for i := 0; i < numGoroutines; i++ {
-		go func() {
-			for j := 0; j < 5; j++ {
-				_, _ = CreateToken(secretKey, claims)
-			}
+		go func(id int) {
+			key := fmt.Sprintf("key-%d", id)
+			rl.Allow(key)
+			rl.Reset(key)
 			done <- true
-		}()
+		}(i)
 	}
 
-	// Wait for all goroutines
 	for i := 0; i < numGoroutines; i++ {
 		<-done
-	}
-
-	// Clear cache
-	ClearCache()
-
-	// Verify cache is empty
-	cache.mu.RLock()
-	size := len(cache.entries)
-	cache.mu.RUnlock()
-
-	if size != 0 {
-		t.Errorf("Cache should be empty, got %d entries", size)
 	}
 }

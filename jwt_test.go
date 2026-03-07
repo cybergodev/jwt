@@ -14,6 +14,13 @@ import (
 
 const testSecretKey = "Kx9#mP2$vL8@nQ5!wR7&tY3^uI6*oE4%aS1+dF0-gH9~jK2#bN5$cM8@xZ7&vB4!"
 
+// newTestProcessor creates a Processor for testing with the given secret key.
+func newTestProcessor(secretKey string) (*Processor, error) {
+	cfg := DefaultConfig()
+	cfg.SecretKey = secretKey
+	return New(cfg)
+}
+
 // ============================================================================
 // PROCESSOR TESTS
 // ============================================================================
@@ -32,7 +39,7 @@ func TestProcessorCreation(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			processor, err := New(tt.secretKey)
+			processor, err := newTestProcessor(tt.secretKey)
 			if tt.wantError {
 				if err == nil {
 					t.Errorf("Expected error for secret key: %s", tt.secretKey)
@@ -53,7 +60,7 @@ func TestProcessorCreation(t *testing.T) {
 }
 
 func TestTokenLifecycle(t *testing.T) {
-	processor, err := New(testSecretKey)
+	processor, err := newTestProcessor(testSecretKey)
 	if err != nil {
 		t.Fatalf("Failed to create processor: %v", err)
 	}
@@ -98,7 +105,7 @@ func TestTokenLifecycle(t *testing.T) {
 }
 
 func TestRefreshToken(t *testing.T) {
-	processor, err := New(testSecretKey)
+	processor, err := newTestProcessor(testSecretKey)
 	if err != nil {
 		t.Fatalf("Failed to create processor: %v", err)
 	}
@@ -138,15 +145,14 @@ func TestRefreshToken(t *testing.T) {
 }
 
 func TestProcessorWithConfig(t *testing.T) {
-	config := Config{
-		SecretKey:       testSecretKey,
-		AccessTokenTTL:  30 * time.Minute,
-		RefreshTokenTTL: 48 * time.Hour,
-		Issuer:          "test-service",
-		SigningMethod:   SigningMethodHS384,
-	}
+	config := DefaultConfig()
+	config.SecretKey = testSecretKey
+	config.AccessTokenTTL = 30 * time.Minute
+	config.RefreshTokenTTL = 48 * time.Hour
+	config.Issuer = "test-service"
+	config.SigningMethod = SigningMethodHS384
 
-	processor, err := NewWithBlacklist(testSecretKey, DefaultBlacklistConfig(), config)
+	processor, err := New(config)
 	if err != nil {
 		t.Fatalf("Failed to create processor with config: %v", err)
 	}
@@ -168,7 +174,7 @@ func TestProcessorWithConfig(t *testing.T) {
 }
 
 func TestProcessorClose(t *testing.T) {
-	processor, err := New(testSecretKey)
+	processor, err := newTestProcessor(testSecretKey)
 	if err != nil {
 		t.Fatalf("Failed to create processor: %v", err)
 	}
@@ -190,7 +196,7 @@ func TestProcessorClose(t *testing.T) {
 }
 
 func TestConcurrentOperations(t *testing.T) {
-	processor, err := New(testSecretKey)
+	processor, err := newTestProcessor(testSecretKey)
 	if err != nil {
 		t.Fatalf("Failed to create processor: %v", err)
 	}
@@ -235,213 +241,17 @@ func TestConcurrentOperations(t *testing.T) {
 	}
 }
 
-// ============================================================================
-// CONVENIENCE API TESTS
-// ============================================================================
-
-func TestConvenienceFunctions(t *testing.T) {
-	cache.mu.Lock()
-	cache.entries = make(map[string]*cacheEntry, 16)
-	cache.mu.Unlock()
-
-	claims := Claims{UserID: "user123", Username: "testuser", Role: "admin"}
-
-	token, err := CreateToken(testSecretKey, claims)
-	if err != nil {
-		t.Fatalf("Failed to create token: %v", err)
-	}
-
-	parsedClaims, valid, err := ValidateToken(testSecretKey, token)
-	if err != nil || !valid {
-		t.Fatalf("Token validation failed: %v", err)
-	}
-	if parsedClaims.UserID != claims.UserID {
-		t.Errorf("UserID mismatch: got %s, want %s", parsedClaims.UserID, claims.UserID)
-	}
-
-	if err := RevokeToken(testSecretKey, token); err != nil {
-		t.Fatalf("Failed to revoke token: %v", err)
-	}
-
-	_, valid, err = ValidateToken(testSecretKey, token)
-	if err == nil || valid {
-		t.Error("Revoked token should be invalid")
-	}
-}
-
-func TestProcessorCaching(t *testing.T) {
-	cache.mu.Lock()
-	cache.entries = make(map[string]*cacheEntry, 16)
-	cache.mu.Unlock()
-
-	claims := Claims{UserID: "user123", Username: "testuser"}
-
-	_, err := CreateToken(testSecretKey, claims)
-	if err != nil {
-		t.Fatalf("Failed to create token1: %v", err)
-	}
-
-	_, err = CreateToken(testSecretKey, claims)
-	if err != nil {
-		t.Fatalf("Failed to create token2: %v", err)
-	}
-
-	cache.mu.Lock()
-	cacheSize := len(cache.entries)
-	cache.mu.Unlock()
-
-	if cacheSize != 1 {
-		t.Errorf("Expected 1 cached processor, got %d", cacheSize)
-	}
-}
-
-func TestProcessorCacheLimit(t *testing.T) {
-	cache.mu.Lock()
-	cache.entries = make(map[string]*cacheEntry, 16)
-	cache.mu.Unlock()
-
-	claims := Claims{UserID: "user123", Username: "testuser"}
-
-	const maxCacheSize = 100
-	for i := 0; i < maxCacheSize+10; i++ {
-		uniquePart := fmt.Sprintf("Unique%dWithRandomData%x", i, i*31337+54321)
-		secretKey := "StrongBaseFor" + uniquePart + "MoreRandomStuff"
-
-		_, err := CreateToken(secretKey, claims)
-		if err != nil {
-			t.Fatalf("Failed to create token %d: %v", i, err)
-		}
-	}
-
-	cache.mu.Lock()
-	cacheSize := len(cache.entries)
-	cache.mu.Unlock()
-
-	if cacheSize > maxCacheSize {
-		t.Errorf("Cache size exceeded limit: expected <= %d, got %d", maxCacheSize, cacheSize)
-	}
-}
-
-// ============================================================================
-// CONFIG TESTS
-// ============================================================================
-
-func TestDefaultConfig(t *testing.T) {
-	config := DefaultConfig()
-
-	if config.SecretKey != "" {
-		t.Error("Default config should not have a preset secret key")
-	}
-	if config.AccessTokenTTL != 15*time.Minute {
-		t.Errorf("Expected AccessTokenTTL=15m, got %v", config.AccessTokenTTL)
-	}
-	if config.RefreshTokenTTL != 7*24*time.Hour {
-		t.Errorf("Expected RefreshTokenTTL=7d, got %v", config.RefreshTokenTTL)
-	}
-	if config.SigningMethod != SigningMethodHS256 {
-		t.Errorf("Expected SigningMethod=HS256, got %s", config.SigningMethod)
-	}
-}
-
-func TestConfigValidation(t *testing.T) {
-	tests := []struct {
-		name      string
-		config    Config
-		wantError bool
-	}{
-		{
-			name: "Valid config",
-			config: Config{
-				SecretKey:       testSecretKey,
-				AccessTokenTTL:  15 * time.Minute,
-				RefreshTokenTTL: 24 * time.Hour,
-				Issuer:          "test-service",
-				SigningMethod:   SigningMethodHS256,
-			},
-			wantError: false,
-		},
-		{
-			name: "Short secret key",
-			config: Config{
-				SecretKey:       "short",
-				AccessTokenTTL:  15 * time.Minute,
-				RefreshTokenTTL: 24 * time.Hour,
-				SigningMethod:   SigningMethodHS256,
-			},
-			wantError: true,
-		},
-		{
-			name: "Zero access token TTL",
-			config: Config{
-				SecretKey:       testSecretKey,
-				AccessTokenTTL:  0,
-				RefreshTokenTTL: 24 * time.Hour,
-				SigningMethod:   SigningMethodHS256,
-			},
-			wantError: true,
-		},
-		{
-			name: "Access TTL >= Refresh TTL",
-			config: Config{
-				SecretKey:       testSecretKey,
-				AccessTokenTTL:  24 * time.Hour,
-				RefreshTokenTTL: 12 * time.Hour,
-				SigningMethod:   SigningMethodHS256,
-			},
-			wantError: true,
-		},
-		{
-			name: "Invalid signing method",
-			config: Config{
-				SecretKey:       testSecretKey,
-				AccessTokenTTL:  15 * time.Minute,
-				RefreshTokenTTL: 24 * time.Hour,
-				SigningMethod:   "INVALID",
-			},
-			wantError: true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			err := tt.config.Validate()
-			if tt.wantError && err == nil {
-				t.Error("Expected validation error")
-			} else if !tt.wantError && err != nil {
-				t.Errorf("Unexpected validation error: %v", err)
-			}
-		})
-	}
-}
-
-func TestWeakSecretKeyDetection(t *testing.T) {
-	weakKeys := []string{
-		"password",
-		"12345678901234567890123456789012",
-		"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-		"qwertyuiopasdfghjklzxcvbnm123456",
-	}
-
-	for _, weakKey := range weakKeys {
-		config := Config{
-			SecretKey:       weakKey,
-			AccessTokenTTL:  15 * time.Minute,
-			RefreshTokenTTL: 24 * time.Hour,
-			SigningMethod:   SigningMethodHS256,
-		}
-
-		if err := config.Validate(); err == nil {
-			t.Errorf("Should reject weak key: %s", weakKey)
-		}
-	}
-}
+// Note: Config tests moved to config_test.go
 
 // ============================================================================
 // BLACKLIST TESTS
 // ============================================================================
 
 func TestBlacklistOperations(t *testing.T) {
-	processor, err := NewWithBlacklist(testSecretKey, DefaultBlacklistConfig())
+	cfg := DefaultConfig()
+	cfg.SecretKey = testSecretKey
+	cfg.Blacklist = DefaultBlacklistConfig()
+	processor, err := New(cfg)
 	if err != nil {
 		t.Fatalf("Failed to create processor: %v", err)
 	}
@@ -493,7 +303,10 @@ func TestBlacklistCleanup(t *testing.T) {
 		MaxSize:           1000,
 	}
 
-	processor, err := NewWithBlacklist(testSecretKey, blacklistConfig)
+	cfg := DefaultConfig()
+	cfg.SecretKey = testSecretKey
+	cfg.Blacklist = blacklistConfig
+	processor, err := New(cfg)
 	if err != nil {
 		t.Fatalf("Failed to create processor: %v", err)
 	}
@@ -516,64 +329,7 @@ func TestBlacklistCleanup(t *testing.T) {
 	t.Log("Cleanup test completed successfully")
 }
 
-// ============================================================================
-// RATE LIMIT TESTS
-// ============================================================================
-
-func TestConvenienceMethodsNoRateLimit(t *testing.T) {
-	claims := Claims{UserID: "test-user", Username: "testuser"}
-
-	// Test that we can create many tokens quickly without rate limiting
-	for i := 0; i < 100; i++ {
-		token, err := CreateToken(testSecretKey, claims)
-		if err != nil {
-			t.Fatalf("CreateToken failed on iteration %d: %v", i, err)
-		}
-
-		_, valid, err := ValidateToken(testSecretKey, token)
-		if err != nil || !valid {
-			t.Fatalf("ValidateToken failed on iteration %d: %v", i, err)
-		}
-	}
-}
-
-func TestProcessorWithRateLimit(t *testing.T) {
-	config := DefaultConfig()
-	config.EnableRateLimit = true
-	config.RateLimitRate = 5
-	config.RateLimitWindow = time.Minute
-
-	processor, err := New(testSecretKey, config)
-	if err != nil {
-		t.Fatalf("Failed to create processor with rate limit: %v", err)
-	}
-	defer processor.Close()
-
-	claims := Claims{UserID: "test-user", Username: "testuser"}
-
-	// Create tokens until we hit the rate limit
-	successCount := 0
-	rateLimitHit := false
-
-	for i := 0; i < 10; i++ {
-		_, err := processor.CreateToken(claims)
-		if err != nil {
-			if err == ErrRateLimitExceeded {
-				rateLimitHit = true
-				break
-			}
-			t.Fatalf("Unexpected error on iteration %d: %v", i, err)
-		}
-		successCount++
-	}
-
-	if !rateLimitHit {
-		t.Fatalf("Expected to hit rate limit, but created %d tokens successfully", successCount)
-	}
-	if successCount == 0 {
-		t.Fatal("Expected to create at least some tokens before hitting rate limit")
-	}
-}
+// Note: Rate limit tests moved to coverage_test.go
 
 // ============================================================================
 // EDGE CASES TESTS
@@ -586,9 +342,10 @@ func TestTokenExpiration(t *testing.T) {
 		RefreshTokenTTL: 24 * time.Hour,
 		Issuer:          "test-service",
 		SigningMethod:   SigningMethodHS256,
+		Blacklist:       DefaultBlacklistConfig(),
 	}
 
-	processor, err := NewWithBlacklist(testSecretKey, DefaultBlacklistConfig(), config)
+	processor, err := New(config)
 	if err != nil {
 		t.Fatalf("Failed to create processor: %v", err)
 	}
@@ -610,136 +367,14 @@ func TestTokenExpiration(t *testing.T) {
 	time.Sleep(1500 * time.Millisecond)
 
 	// Token should be invalid after expiration
-	_, valid, err = processor.ValidateToken(token)
+	_, valid, _ = processor.ValidateToken(token)
 	if valid {
 		t.Error("Token should be invalid after expiration")
 	}
 }
 
-func TestMalformedTokens(t *testing.T) {
-	processor, err := New(testSecretKey)
-	if err != nil {
-		t.Fatalf("Failed to create processor: %v", err)
-	}
-	defer processor.Close()
-
-	malformedTokens := []string{
-		"",
-		"invalid",
-		"invalid.token",
-		"invalid.token.signature.extra",
-		".token.signature",
-		"header.token.",
-		strings.Repeat("a", 10000),
-	}
-
-	for _, malformedToken := range malformedTokens {
-		_, valid, _ := processor.ValidateToken(malformedToken)
-		if valid {
-			t.Errorf("Malformed token should not be valid: %s", malformedToken)
-		}
-	}
-}
-
-func TestSpecialCharactersInClaims(t *testing.T) {
-	processor, err := New(testSecretKey)
-	if err != nil {
-		t.Fatalf("Failed to create processor: %v", err)
-	}
-	defer processor.Close()
-
-	specialClaims := []Claims{
-		{UserID: "user@example.com", Username: "test user"},
-		{UserID: "user123", Username: "测试用户"}, // Unicode
-		{UserID: "user123", Username: "user'with'apostrophes"},
-	}
-
-	for i, claims := range specialClaims {
-		token, err := processor.CreateToken(claims)
-		if err != nil {
-			t.Fatalf("Test %d: Failed to create token with special characters: %v", i, err)
-		}
-
-		parsedClaims, valid, err := processor.ValidateToken(token)
-		if err != nil || !valid {
-			t.Fatalf("Test %d: Failed to validate token with special characters: %v", i, err)
-		}
-		if parsedClaims.Username != claims.Username {
-			t.Errorf("Test %d: Username mismatch", i)
-		}
-	}
-}
-
-func TestLargeClaims(t *testing.T) {
-	processor, err := New(testSecretKey)
-	if err != nil {
-		t.Fatalf("Failed to create processor: %v", err)
-	}
-	defer processor.Close()
-
-	// Test with too many permissions
-	permissions := make([]string, 200)
-	for i := range permissions {
-		permissions[i] = fmt.Sprintf("perm%d", i)
-	}
-
-	claims := Claims{
-		UserID:      "test",
-		Username:    "test",
-		Permissions: permissions,
-	}
-
-	if _, err := processor.CreateToken(claims); err == nil {
-		t.Error("Should reject claims with too many permissions")
-	}
-
-	// Test with too many extra fields
-	extra := make(map[string]any)
-	for i := 0; i < 100; i++ {
-		extra[fmt.Sprintf("field%d", i)] = "value"
-	}
-
-	claims = Claims{
-		UserID:   "test",
-		Username: "test",
-		Extra:    extra,
-	}
-
-	if _, err := processor.CreateToken(claims); err == nil {
-		t.Error("Should reject claims with too many extra fields")
-	}
-}
-
-func TestNumericDateSerialization(t *testing.T) {
-	now := time.Now()
-	nd := NewNumericDate(now)
-
-	if nd.Time.IsZero() {
-		t.Error("NewNumericDate should not create zero time")
-	}
-	if nd.Unix() != now.Unix() {
-		t.Errorf("Unix timestamp mismatch: got %d, expected %d", nd.Unix(), now.Unix())
-	}
-}
-
-func TestTokenWithTimestamps(t *testing.T) {
-	claims := Claims{UserID: "test_user", Username: "test"}
-
-	token, err := CreateToken(testSecretKey, claims)
-	if err != nil {
-		t.Fatalf("Failed to create token: %v", err)
-	}
-
-	parsedClaims, valid, err := ValidateToken(testSecretKey, token)
-	if err != nil || !valid {
-		t.Fatalf("Token validation failed: %v", err)
-	}
-
-	// Verify timestamps are set
-	if parsedClaims.IssuedAt.IsZero() {
-		t.Error("IssuedAt should be set automatically")
-	}
-	if parsedClaims.ExpiresAt.IsZero() {
-		t.Error("ExpiresAt should be set automatically")
-	}
-}
+// Note: MalformedTokens test moved to security_test.go
+// Note: SpecialCharactersInClaims test moved to coverage_test.go
+// Note: LargeClaims test moved to coverage_test.go
+// Note: NumericDateSerialization test moved to types_test.go
+// Note: TokenWithTimestamps test moved to types_test.go
