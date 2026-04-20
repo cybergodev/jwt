@@ -38,18 +38,8 @@ func putParseBuf(buf *[]byte) {
 	}
 }
 
-func NewTokenWithClaims(method Method, claims any) *Core {
-	return &Core{
-		Header: map[string]any{
-			"typ": "JWT",
-			"alg": method.Alg(),
-		},
-		Claims: claims,
-		Method: method,
-	}
-}
-
 // corePool pools Core structs to reduce allocations during token parsing.
+
 var corePool = sync.Pool{
 	New: func() any {
 		return &Core{
@@ -122,33 +112,40 @@ func ParseWithClaims(tokenString string, claims any, keyFunc func(*Core) (any, e
 	token.Method = nil
 
 	if err := DecodeSegment(part1, &token.Header); err != nil {
+		ReleaseCore(token)
 		return nil, fmt.Errorf("failed to decode header: %w", err)
 	}
 
 	if len(token.Header) == 0 {
+		ReleaseCore(token)
 		return nil, errEmptyHeader
 	}
 
 	alg, ok := token.Header["alg"].(string)
 	if !ok || alg == "" {
+		ReleaseCore(token)
 		return nil, fmt.Errorf("missing or invalid algorithm in header")
 	}
 	if isInsecureAlgorithm(alg) {
+		ReleaseCore(token)
 		return nil, fmt.Errorf("insecure algorithm not allowed: %s", alg)
 	}
 
 	method, err := GetInternalSigningMethod(alg)
 	if err != nil {
+		ReleaseCore(token)
 		return nil, err
 	}
 	token.Method = method
 
 	if err := DecodeSegment(part2, claims); err != nil {
+		ReleaseCore(token)
 		return nil, fmt.Errorf("failed to decode claims: %w", err)
 	}
 
 	key, err := keyFunc(token)
 	if err != nil {
+		ReleaseCore(token)
 		return nil, fmt.Errorf("failed to get key: %w", err)
 	}
 
@@ -236,8 +233,4 @@ func isInsecureAlgorithm(alg string) bool {
 	normalized := strings.ToUpper(strings.TrimSpace(alg))
 	_, exists := insecureAlgorithms[normalized]
 	return exists
-}
-
-func (t *Core) SignedString(key any) (string, error) {
-	return SignedString(t.Header, t.Claims, t.Method, key)
 }

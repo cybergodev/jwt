@@ -20,18 +20,24 @@ type memoryStore struct {
 	cleanupTicker *time.Ticker
 	stopCleanup   chan struct{}
 	cleanupWg     sync.WaitGroup
+	nowFunc       func() time.Time
 }
 
-func NewMemoryStore(maxSize int, cleanupInterval time.Duration, enableAutoCleanup bool) Store {
+func NewMemoryStore(maxSize int, cleanupInterval time.Duration, enableAutoCleanup bool, nowFunc func() time.Time) Store {
 	// Ensure maxSize is positive to prevent nil map creation
 	if maxSize <= 0 {
 		maxSize = 10000 // Default to reasonable size
+	}
+
+	if nowFunc == nil {
+		nowFunc = time.Now
 	}
 
 	store := &memoryStore{
 		tokens:      make(map[string]time.Time), // Lazy allocation, grows as needed
 		maxSize:     maxSize,
 		stopCleanup: make(chan struct{}),
+		nowFunc:     nowFunc,
 	}
 
 	if enableAutoCleanup && cleanupInterval > 0 {
@@ -50,7 +56,7 @@ func (m *memoryStore) Add(tokenID string, expiresAt time.Time) error {
 	}
 
 	if len(m.tokens) >= m.maxSize {
-		m.cleanupExpiredUnsafe(time.Now())
+		m.cleanupExpiredUnsafe(m.nowFunc())
 		if len(m.tokens) >= m.maxSize {
 			m.evictOldestUnsafe(m.maxSize / 10)
 		}
@@ -78,7 +84,7 @@ func (m *memoryStore) Contains(tokenID string) (bool, error) {
 	}
 
 	// Capture current time once to avoid TOCTOU issues
-	now := time.Now()
+	now := m.nowFunc()
 	if now.After(expiresAt) {
 		return false, nil
 	}
@@ -94,7 +100,7 @@ func (m *memoryStore) Cleanup() (int, error) {
 		return 0, errStoreClosed
 	}
 
-	return m.cleanupExpiredUnsafe(time.Now()), nil
+	return m.cleanupExpiredUnsafe(m.nowFunc()), nil
 }
 
 func (m *memoryStore) Close() error {

@@ -26,17 +26,17 @@ defer processor.Close()
 
 // Goroutine 1
 go func() {
-    token, _ := processor.CreateToken(claims1)
+    token, _ := processor.Create(claims1)
 }()
 
 // Goroutine 2
 go func() {
-    claims, _, _ := processor.ValidateToken(token2)
+    claims, _, _ := processor.Validate(token2)
 }()
 
 // Goroutine 3
 go func() {
-    processor.RevokeToken(token3)
+    processor.Revoke(token3)
 }()
 ```
 
@@ -55,9 +55,9 @@ go func() {
 ```go
 type Processor struct {
     // These fields are protected by atomic operations or mutexes:
-    closed           atomic.Bool    // Atomic flag
-    blacklistManager *Manager       // Has internal synchronization
-    rateLimiter      RateLimiter    // Interface requires thread-safety
+    closed           atomic.Bool      // Atomic flag
+    blacklistManager *Manager         // Has internal synchronization
+    rateLimiter      RateLimitProvider // Interface requires thread-safety
 
     // These are read-only after creation:
     secretKey        []byte         // Immutable after New()
@@ -87,7 +87,7 @@ func init() {
 func handler(w http.ResponseWriter, r *http.Request) {
     // Each request uses the same processor concurrently
     token := r.Header.Get("Authorization")
-    claims, valid, err := processor.ValidateToken(token)
+    claims, valid, err := processor.Validate(token)
     // ...
 }
 ```
@@ -99,7 +99,7 @@ For batch processing with worker pools:
 ```go
 func processTokens(processor *jwt.Processor, tokens <-chan string, results chan<- Result) {
     for token := range tokens {
-        claims, valid, err := processor.ValidateToken(token)
+        claims, valid, err := processor.Validate(token)
         results <- Result{
             Token:  token,
             Claims: claims,
@@ -144,7 +144,7 @@ func middleware(processor *jwt.Processor) func(http.Handler) http.Handler {
     return func(next http.Handler) http.Handler {
         return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
             token := r.Header.Get("Authorization")
-            claims, valid, err := processor.ValidateToken(token)
+            claims, valid, err := processor.Validate(token)
 
             if !valid || err != nil {
                 http.Error(w, "Unauthorized", http.StatusUnauthorized)
@@ -202,8 +202,8 @@ func (r *TokenRefresher) GetToken(userID string) (string, error) {
         }
     }
 
-    claims := jwt.Claims{UserID: userID}
-    token, err := r.processor.CreateToken(claims)
+    claims := &jwt.Claims{UserID: userID}
+    token, err := r.processor.Create(claims)
     if err != nil {
         return "", err
     }
@@ -225,10 +225,9 @@ func (r *TokenRefresher) GetToken(userID string) (string, error) {
 
 The library uses these synchronization primitives:
 
-1. **sync.Pool**: Object pooling for buffers
-2. **sync.RWMutex**: Blacklist operations
+1. **sync.Pool**: Object pooling for buffers and structs
+2. **sync.RWMutex**: Blacklist operations and method registry
 3. **atomic.Bool**: Processor closed state
-4. **sync.Map**: Used internally for method registry
 
 ### Claims Synchronization
 
@@ -236,7 +235,7 @@ Claims objects are NOT thread-safe for writes:
 
 ```go
 // BAD: Concurrent writes to Claims
-claims := jwt.Claims{UserID: "user123"}
+claims := &jwt.Claims{UserID: "user123"}
 
 go func() {
     claims.Role = "admin" // Race condition!
@@ -248,13 +247,13 @@ go func() {
 
 // GOOD: Each goroutine has its own Claims
 go func() {
-    claims1 := jwt.Claims{UserID: "user123", Role: "admin"}
-    token1, _ := processor.CreateToken(claims1)
+    claims1 := &jwt.Claims{UserID: "user123", Role: "admin"}
+    token1, _ := processor.Create(claims1)
 }()
 
 go func() {
-    claims2 := jwt.Claims{UserID: "user456", Role: "user"}
-    token2, _ := processor.CreateToken(claims2)
+    claims2 := &jwt.Claims{UserID: "user456", Role: "user"}
+    token2, _ := processor.Create(claims2)
 }()
 ```
 
@@ -265,15 +264,15 @@ The blacklist is fully thread-safe:
 ```go
 // SAFE: Concurrent blacklist operations
 go func() {
-    processor.RevokeToken(token1) // Safe
+    processor.Revoke(token1) // Safe
 }()
 
 go func() {
-    processor.IsTokenRevoked(token2) // Safe
+    processor.IsRevoked(token2) // Safe
 }()
 
 go func() {
-    processor.ValidateToken(token3) // Safe (checks blacklist internally)
+    processor.Validate(token3) // Safe (checks blacklist internally)
 }()
 ```
 
@@ -288,22 +287,23 @@ go func() {
 ```go
 processor, _ := jwt.New(cfg)
 // All goroutines see fully initialized processor
-go processor.CreateToken(claims)
+go processor.Create(claims)
 ```
 
-2. **Close() happens-before complete shutdown**
+2. **Close() sets atomic flag preventing new operations**
 
 ```go
-go processor.CreateToken(claims)
-processor.Close() // Waits for in-flight operations
-// After Close() returns, no new operations succeed
+go processor.Create(claims)
+processor.Close() // Sets closed flag, releases resources
+// After Close() returns, new operations return ErrProcessorClosed
+// In-flight operations may still complete
 ```
 
 3. **Blacklist operations are sequentially consistent**
 
 ```go
-processor.RevokeToken(token)
-revoked, _ := processor.IsTokenRevoked(token)
+processor.Revoke(token)
+revoked, _ := processor.IsRevoked(token)
 // revoked is always true (no stale reads)
 ```
 
@@ -311,7 +311,7 @@ revoked, _ := processor.IsTokenRevoked(token)
 
 ```go
 // Close check uses atomic operation
-func (p *Processor) CreateToken(claims Claims) (string, error) {
+func (p *Processor) Create(claims CustomClaims) (string, error) {
     if p.closed.Load() { // Atomic read
         return "", ErrProcessorClosed
     }
@@ -327,8 +327,8 @@ func (p *Processor) CreateToken(claims Claims) (string, error) {
 
 ```go
 // BAD
-claims := jwt.Claims{UserID: "user123"}
-token, _ := processor.CreateToken(claims)
+claims := &jwt.Claims{UserID: "user123"}
+token, _ := processor.Create(claims)
 claims.UserID = "user456" // Doesn't affect the token
 
 // Token still has UserID: "user123"
@@ -338,23 +338,23 @@ claims.UserID = "user456" // Doesn't affect the token
 
 ```go
 // BAD
-claims := jwt.Claims{UserID: "user123"}
+claims := &jwt.Claims{UserID: "user123"}
 
 for i := 0; i < 10; i++ {
     go func(idx int) {
         claims.Extra = map[string]any{"index": idx} // Race!
-        processor.CreateToken(claims)
+        processor.Create(claims)
     }(i)
 }
 
 // GOOD
 for i := 0; i < 10; i++ {
     go func(idx int) {
-        claims := jwt.Claims{
+        claims := &jwt.Claims{
             UserID: "user123",
             Extra:  map[string]any{"index": idx},
         }
-        processor.CreateToken(claims)
+        processor.Create(claims)
     }(i)
 }
 ```
@@ -366,7 +366,7 @@ for i := 0; i < 10; i++ {
 processor, _ := jwt.New(cfg)
 processor.Close()
 
-token, err := processor.CreateToken(claims)
+token, err := processor.Create(claims)
 // err == ErrProcessorClosed
 
 // GOOD
@@ -427,17 +427,17 @@ func TestConcurrentTokenOperations(t *testing.T) {
         go func(id int) {
             defer wg.Done()
             for j := 0; j < operations; j++ {
-                claims := jwt.Claims{
+                claims := &jwt.Claims{
                     UserID: fmt.Sprintf("user-%d-%d", id, j),
                 }
 
-                token, err := processor.CreateToken(claims)
+                token, err := processor.Create(claims)
                 if err != nil {
                     errs <- err
                     return
                 }
 
-                _, valid, err := processor.ValidateToken(token)
+                _, valid, err := processor.Validate(token)
                 if err != nil || !valid {
                     errs <- fmt.Errorf("validation failed")
                     return
@@ -462,13 +462,13 @@ func BenchmarkConcurrentValidation(b *testing.B) {
     processor, _ := jwt.New(jwt.DefaultConfig())
     defer processor.Close()
 
-    claims := jwt.Claims{UserID: "user123"}
-    token, _ := processor.CreateToken(claims)
+    claims := &jwt.Claims{UserID: "user123"}
+    token, _ := processor.Create(claims)
 
     b.ResetTimer()
     b.RunParallel(func(pb *testing.PB) {
         for pb.Next() {
-            _, _, _ = processor.ValidateToken(token)
+            _, _, _ = processor.Validate(token)
         }
     })
 }
@@ -493,9 +493,9 @@ func TestStressTokenRevocation(t *testing.T) {
         go func() {
             defer wg.Done()
             for j := 0; j < 1000; j++ {
-                claims := jwt.Claims{UserID: fmt.Sprintf("user-%d", j)}
-                token, _ := processor.CreateToken(claims)
-                processor.RevokeToken(token)
+                claims := &jwt.Claims{UserID: fmt.Sprintf("user-%d", j)}
+                token, _ := processor.Create(claims)
+                processor.Revoke(token)
             }
         }()
     }
@@ -506,9 +506,9 @@ func TestStressTokenRevocation(t *testing.T) {
         go func() {
             defer wg.Done()
             for j := 0; j < 1000; j++ {
-                claims := jwt.Claims{UserID: fmt.Sprintf("user-%d", j)}
-                token, _ := processor.CreateToken(claims)
-                processor.ValidateToken(token)
+                claims := &jwt.Claims{UserID: fmt.Sprintf("user-%d", j)}
+                token, _ := processor.Create(claims)
+                processor.Validate(token)
             }
         }()
     }

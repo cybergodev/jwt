@@ -14,7 +14,10 @@ type tokenClaims struct {
 	ExpiresAt int64  `json:"exp,omitempty"`
 }
 
-// storeOps defines the minimal interface for blacklist storage operations.
+// storeOps defines the storage operations needed by Manager.
+// This is a subset of Store that excludes Cleanup(), since Manager
+// never triggers cleanup — the built-in memoryStore handles that internally.
+// The subset also matches the public jwt.BlacklistStore interface.
 type storeOps interface {
 	Add(tokenID string, expiresAt time.Time) error
 	Contains(tokenID string) (bool, error)
@@ -44,10 +47,9 @@ func NewManagerWithClock(s storeOps, nowFunc func() time.Time) *Manager {
 // ParseTokenID extracts the token ID (jti) from a JWT without verifying the signature.
 // Returns empty string if the token has no jti claim.
 func ParseTokenID(tokenString string) (string, error) {
-	claims := &tokenClaims{}
-	_, _, err := ParseUnverified(tokenString, claims)
+	claims, err := parseTokenClaims(tokenString)
 	if err != nil {
-		return "", fmt.Errorf("failed to parse token: %w", err)
+		return "", err
 	}
 	return claims.ID, nil
 }
@@ -92,7 +94,10 @@ func (m *Manager) BlacklistTokenString(tokenString string) error {
 
 	expiresAt := m.nowFunc().Add(DefaultBlacklistTTL)
 	if claims.ExpiresAt > 0 {
-		expiresAt = time.Unix(claims.ExpiresAt, 0)
+		tokenExp := time.Unix(claims.ExpiresAt, 0)
+		if tokenExp.After(expiresAt) {
+			expiresAt = tokenExp
+		}
 	}
 
 	return m.BlacklistToken(claims.ID, expiresAt)

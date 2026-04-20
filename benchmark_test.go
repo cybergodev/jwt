@@ -37,7 +37,7 @@ func BenchmarkTokenCreation(b *testing.B) {
 	b.ReportAllocs()
 
 	for i := 0; i < b.N; i++ {
-		_, err := processor.CreateToken(claims)
+		_, err := processor.Create(&claims)
 		if err != nil {
 			b.Fatalf("Failed to create token: %v", err)
 		}
@@ -59,7 +59,7 @@ func BenchmarkTokenValidation(b *testing.B) {
 		Role:     "admin",
 	}
 
-	token, err := processor.CreateToken(claims)
+	token, err := processor.Create(&claims)
 	if err != nil {
 		b.Fatalf("Failed to create token: %v", err)
 	}
@@ -68,7 +68,7 @@ func BenchmarkTokenValidation(b *testing.B) {
 	b.ReportAllocs()
 
 	for i := 0; i < b.N; i++ {
-		_, _, err := processor.ValidateToken(token)
+		_, _, err := processor.Validate(token)
 		if err != nil {
 			b.Fatalf("Failed to validate token: %v", err)
 		}
@@ -94,12 +94,12 @@ func BenchmarkTokenCreationAndValidation(b *testing.B) {
 	b.ReportAllocs()
 
 	for i := 0; i < b.N; i++ {
-		token, err := processor.CreateToken(claims)
+		token, err := processor.Create(&claims)
 		if err != nil {
 			b.Fatalf("Failed to create token: %v", err)
 		}
 
-		_, _, err = processor.ValidateToken(token)
+		_, _, err = processor.Validate(token)
 		if err != nil {
 			b.Fatalf("Failed to validate token: %v", err)
 		}
@@ -127,7 +127,7 @@ func BenchmarkBlacklistOperations(b *testing.B) {
 	// Pre-create tokens for revocation benchmark
 	tokens := make([]string, b.N)
 	for i := 0; i < b.N; i++ {
-		token, err := processor.CreateToken(claims)
+		token, err := processor.Create(&claims)
 		if err != nil {
 			b.Fatalf("Failed to create token %d: %v", i, err)
 		}
@@ -138,7 +138,7 @@ func BenchmarkBlacklistOperations(b *testing.B) {
 	b.ReportAllocs()
 
 	for i := 0; i < b.N; i++ {
-		err := processor.RevokeToken(tokens[i])
+		err := processor.Revoke(tokens[i])
 		if err != nil {
 			b.Fatalf("Failed to revoke token: %v", err)
 		}
@@ -166,18 +166,18 @@ func BenchmarkBlacklistValidation(b *testing.B) {
 	// Create and revoke some tokens
 	const numRevokedTokens = 1000
 	for i := 0; i < numRevokedTokens; i++ {
-		token, err := processor.CreateToken(claims)
+		token, err := processor.Create(&claims)
 		if err != nil {
 			b.Fatalf("Failed to create token %d: %v", i, err)
 		}
-		err = processor.RevokeToken(token)
+		err = processor.Revoke(token)
 		if err != nil {
 			b.Fatalf("Failed to revoke token %d: %v", i, err)
 		}
 	}
 
 	// Create a valid token for benchmarking
-	validToken, err := processor.CreateToken(claims)
+	validToken, err := processor.Create(&claims)
 	if err != nil {
 		b.Fatalf("Failed to create valid token: %v", err)
 	}
@@ -186,7 +186,7 @@ func BenchmarkBlacklistValidation(b *testing.B) {
 	b.ReportAllocs()
 
 	for i := 0; i < b.N; i++ {
-		_, _, err := processor.ValidateToken(validToken)
+		_, _, err := processor.Validate(validToken)
 		if err != nil {
 			b.Fatalf("Failed to validate token: %v", err)
 		}
@@ -213,7 +213,7 @@ func BenchmarkConcurrentTokenCreation(b *testing.B) {
 
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			_, err := processor.CreateToken(claims)
+			_, err := processor.Create(&claims)
 			if err != nil {
 				b.Fatalf("Failed to create token: %v", err)
 			}
@@ -236,7 +236,7 @@ func BenchmarkConcurrentTokenValidation(b *testing.B) {
 		Role:     "admin",
 	}
 
-	token, err := processor.CreateToken(claims)
+	token, err := processor.Create(&claims)
 	if err != nil {
 		b.Fatalf("Failed to create token: %v", err)
 	}
@@ -246,7 +246,7 @@ func BenchmarkConcurrentTokenValidation(b *testing.B) {
 
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			_, _, err := processor.ValidateToken(token)
+			_, _, err := processor.Validate(token)
 			if err != nil {
 				b.Fatalf("Failed to validate token: %v", err)
 			}
@@ -289,12 +289,12 @@ func BenchmarkDifferentSigningMethods(b *testing.B) {
 			b.ReportAllocs()
 
 			for i := 0; i < b.N; i++ {
-				token, err := processor.CreateToken(claims)
+				token, err := processor.Create(&claims)
 				if err != nil {
 					b.Fatalf("Failed to create token: %v", err)
 				}
 
-				_, _, err = processor.ValidateToken(token)
+				_, _, err = processor.Validate(token)
 				if err != nil {
 					b.Fatalf("Failed to validate token: %v", err)
 				}
@@ -327,12 +327,12 @@ func BenchmarkMemoryUsage(b *testing.B) {
 	b.ReportAllocs()
 
 	for i := 0; i < b.N; i++ {
-		token, err := processor.CreateToken(claims)
+		token, err := processor.Create(&claims)
 		if err != nil {
 			b.Fatalf("Failed to create token: %v", err)
 		}
 
-		_, _, err = processor.ValidateToken(token)
+		_, _, err = processor.Validate(token)
 		if err != nil {
 			b.Fatalf("Failed to validate token: %v", err)
 		}
@@ -382,11 +382,11 @@ func BenchmarkLargeClaimsToken(b *testing.B) {
 	b.ReportAllocs()
 
 	// Test token creation and validation once before benchmark
-	testToken, err := processor.CreateToken(claims)
+	testToken, err := processor.Create(&claims)
 	if err != nil {
 		b.Fatalf("Failed to create test token: %v", err)
 	}
-	_, valid, err := processor.ValidateToken(testToken)
+	_, valid, err := processor.Validate(testToken)
 	if err != nil {
 		b.Fatalf("Failed to validate test token: %v", err)
 	}
@@ -395,12 +395,12 @@ func BenchmarkLargeClaimsToken(b *testing.B) {
 	}
 
 	for i := 0; i < b.N; i++ {
-		token, err := processor.CreateToken(claims)
+		token, err := processor.Create(&claims)
 		if err != nil {
 			b.Fatalf("Failed to create token: %v", err)
 		}
 
-		_, _, err = processor.ValidateToken(token)
+		_, _, err = processor.Validate(token)
 		if err != nil {
 			b.Fatalf("Failed to validate token: %v", err)
 		}
@@ -442,7 +442,7 @@ func BenchmarkHighConcurrencyMixed(b *testing.B) {
 	const numPreTokens = 100
 	preTokens := make([]string, numPreTokens)
 	for i := 0; i < numPreTokens; i++ {
-		token, err := processor.CreateToken(claims)
+		token, err := processor.Create(&claims)
 		if err != nil {
 			b.Fatalf("Failed to create pre-token %d: %v", i, err)
 		}
@@ -457,27 +457,27 @@ func BenchmarkHighConcurrencyMixed(b *testing.B) {
 		for pb.Next() {
 			switch i % 4 {
 			case 0: // Create token
-				_, err := processor.CreateToken(claims)
+				_, err := processor.Create(&claims)
 				if err != nil {
 					b.Fatalf("Failed to create token: %v", err)
 				}
 			case 1: // Validate token
 				tokenIdx := i % numPreTokens
-				_, _, err := processor.ValidateToken(preTokens[tokenIdx])
+				_, _, err := processor.Validate(preTokens[tokenIdx])
 				if err != nil {
 					b.Fatalf("Failed to validate token: %v", err)
 				}
 			case 2: // Revoke token (occasionally)
 				if i%10 == 0 {
 					tokenIdx := i % numPreTokens
-					processor.RevokeToken(preTokens[tokenIdx])
+					processor.Revoke(preTokens[tokenIdx])
 				}
 			case 3: // Create and validate
-				token, err := processor.CreateToken(claims)
+				token, err := processor.Create(&claims)
 				if err != nil {
 					b.Fatalf("Failed to create token: %v", err)
 				}
-				_, _, err = processor.ValidateToken(token)
+				_, _, err = processor.Validate(token)
 				if err != nil {
 					b.Fatalf("Failed to validate token: %v", err)
 				}

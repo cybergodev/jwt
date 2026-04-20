@@ -15,7 +15,7 @@ This guide covers performance characteristics, optimization techniques, and benc
 
 ## Performance Characteristics
 
-### Benchmark Results (Go 1.22+, Intel Ultra 9 185H)
+### Benchmark Results (Go 1.25, Intel Ultra 9 185H)
 
 | Operation | Time | Memory | Allocations |
 |-----------|------|--------|-------------|
@@ -93,7 +93,7 @@ func BenchmarkMyUseCase(b *testing.B) {
     processor, _ := jwt.New(cfg)
     defer processor.Close()
 
-    claims := jwt.Claims{
+    claims := &jwt.Claims{
         UserID:   "user123",
         Username: "benchmark_user",
         Role:     "admin",
@@ -103,8 +103,8 @@ func BenchmarkMyUseCase(b *testing.B) {
     b.ReportAllocs()
 
     for i := 0; i < b.N; i++ {
-        token, _ := processor.CreateToken(claims)
-        _, _, _ = processor.ValidateToken(token)
+        token, _ := processor.Create(claims)
+        _, _, _ = processor.Validate(token)
     }
 }
 ```
@@ -117,9 +117,11 @@ func BenchmarkMyUseCase(b *testing.B) {
 
 The library uses `sync.Pool` for frequently allocated objects:
 
-- **Signing buffers**: Reused for token signing operations
-- **Claims objects**: Pooled to reduce GC pressure
-- **Parse buffers**: Reused for token parsing
+- **Signing buffers**: Reused for token signing operations (`signingBufPool`, `sigBufPool`)
+- **Claims objects**: Pooled to reduce GC pressure (`claimsPool`)
+- **Parse buffers**: Reused for token parsing (`parseBufPool`, `decodeBufPool`)
+- **Core structs**: Pooled for parsed token objects (`corePool`)
+- **Token ID buffers**: Pooled for token ID generation (`tokenIDBufPool`)
 
 ### Memory Allocation Breakdown
 
@@ -172,9 +174,11 @@ cfg.SecretKey = "your-secret-key"
 // Disable rate limiting if not needed
 cfg.EnableRateLimit = false
 
-// Disable blacklist if not using revocation
-cfg.Blacklist.EnableAutoCleanup = false
-cfg.Blacklist.MaxSize = 0
+// Minimize blacklist if not using revocation
+// Note: EnableAutoCleanup is always true for the built-in store
+// (enforced by normalizeConfig to prevent unbounded growth).
+// To fully disable auto-cleanup, provide a custom BlacklistStore.
+cfg.Blacklist.MaxSize = 1000 // Keep minimum; MaxSize must be > 0
 
 processor, _ := jwt.New(cfg)
 ```
@@ -191,13 +195,13 @@ processor, _ := jwt.New(cfg)
 
 ```go
 // GOOD: Minimal claims
-claims := jwt.Claims{
+claims := &jwt.Claims{
     UserID: "user123",
     Role:   "admin",
 }
 
 // BAD: Large claims (slower serialization)
-claims := jwt.Claims{
+claims := &jwt.Claims{
     UserID:      "user123",
     Permissions: make([]string, 100), // Large array
     Extra:       make(map[string]any, 50), // Large map
@@ -208,7 +212,7 @@ claims := jwt.Claims{
 
 ```go
 // GOOD: Pre-allocated
-claims := jwt.Claims{
+claims := &jwt.Claims{
     Permissions: []string{"read", "write", "delete"},
 }
 
@@ -230,7 +234,7 @@ func validateTokens(processor *jwt.Processor, tokens []string) []jwt.Claims {
         wg.Add(1)
         go func(idx int, t string) {
             defer wg.Done()
-            claims, valid, _ := processor.ValidateToken(t)
+            claims, valid, _ := processor.Validate(t)
             if valid {
                 results[idx] = claims
             }
@@ -272,7 +276,7 @@ go tool pprof mem.out
 
 # Common commands
 # (pprof) top10
-# (pprof) list CreateToken
+# (pprof) list Create
 ```
 
 ### Continuous Profiling
@@ -343,8 +347,23 @@ For asymmetric algorithms, keys are loaded once:
 ```go
 // Load keys at startup
 func loadKeys() (*rsa.PrivateKey, error) {
-    keyData, _ := os.ReadFile("private.pem")
-    return jwt.ParseRSAPrivateKey(keyData)
+    keyData, err := os.ReadFile("private.pem")
+    if err != nil {
+        return nil, err
+    }
+    block, _ := pem.Decode(keyData)
+    if block == nil {
+        return nil, fmt.Errorf("failed to decode PEM block")
+    }
+    key, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+    if err != nil {
+        return nil, err
+    }
+    rsaKey, ok := key.(*rsa.PrivateKey)
+    if !ok {
+        return nil, fmt.Errorf("not an RSA private key")
+    }
+    return rsaKey, nil
 }
 
 // Use cached keys
@@ -413,7 +432,7 @@ func handler(w http.ResponseWriter, r *http.Request) {
 
 ```go
 // BAD
-claims := jwt.Claims{
+claims := &jwt.Claims{
     Extra: map[string]any{
         "data": hugeSlice, // Large data in claims
     },
@@ -425,7 +444,7 @@ claims := jwt.Claims{
 ```go
 // BAD
 func handler(w http.ResponseWriter, r *http.Request) {
-    claims, _, _ := processor.ValidateToken(token)
+    claims, _, _ := processor.Validate(token)
     db.Query("SELECT * FROM users") // Database in hot path
 }
 ```

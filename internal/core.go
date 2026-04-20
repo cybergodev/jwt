@@ -107,77 +107,33 @@ var signingBufPool = sync.Pool{
 func SignedString(header map[string]any, claims any, method Method, key any) (string, error) {
 	alg := method.Alg()
 
+	// Fast path: standard JWT header — delegate to SignToken
+	if encoded := isStandardHeader(header, alg); encoded != "" {
+		return SignToken(alg, claims, method, key)
+	}
+
+	// Slow path: non-standard header — encode manually
+	headerJSON, err := json.Marshal(header)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal header: %w", err)
+	}
+
 	claimsJSON, err := json.Marshal(claims)
 	if err != nil {
 		return "", fmt.Errorf("failed to marshal claims: %w", err)
 	}
 
-	claimsEncodedLen := base64.RawURLEncoding.EncodedLen(len(claimsJSON))
+	headerEncoded := base64.RawURLEncoding.EncodeToString(headerJSON)
+	claimsEncoded := base64.RawURLEncoding.EncodeToString(claimsJSON)
 
-	var signingStringLen int
-	var headerBytes []byte
-	var isPrecomputed bool
-
-	// Check if we can use precomputed header (already base64 encoded)
-	if encoded := isStandardHeader(header, alg); encoded != "" {
-		headerBytes = stringToBytes(encoded)
-		signingStringLen = len(encoded) + 1 + claimsEncodedLen
-		isPrecomputed = true
-	} else {
-		// Fall back to encoding the header
-		headerJSON, err := json.Marshal(header)
-		if err != nil {
-			return "", fmt.Errorf("failed to marshal header: %w", err)
-		}
-		headerBytes = headerJSON
-		headerEncodedLen := base64.RawURLEncoding.EncodedLen(len(headerJSON))
-		signingStringLen = headerEncodedLen + 1 + claimsEncodedLen
-	}
-
-	// Use buffer pool for all cases
-	bufPtr := signingBufPool.Get().(*[]byte)
-	defer func() {
-		if cap(*bufPtr) <= 2048 {
-			*bufPtr = (*bufPtr)[:0]
-			signingBufPool.Put(bufPtr)
-		}
-	}()
-
-	if cap(*bufPtr) < signingStringLen {
-		*bufPtr = make([]byte, 0, signingStringLen)
-	}
-
-	signingStringBuf := (*bufPtr)[:signingStringLen]
-
-	if isPrecomputed {
-		// Header is already base64 encoded, just copy it
-		copy(signingStringBuf, headerBytes)
-		signingStringBuf[len(headerBytes)] = '.'
-		base64.RawURLEncoding.Encode(signingStringBuf[len(headerBytes)+1:], claimsJSON)
-	} else {
-		// Encode header to base64
-		base64.RawURLEncoding.Encode(signingStringBuf, headerBytes)
-		headerEncodedLen := base64.RawURLEncoding.EncodedLen(len(headerBytes))
-		signingStringBuf[headerEncodedLen] = '.'
-		base64.RawURLEncoding.Encode(signingStringBuf[headerEncodedLen+1:], claimsJSON)
-	}
-
-	// Use unsafe string for internal Sign call
-	signingString := unsafe.String(&signingStringBuf[0], len(signingStringBuf))
+	signingString := headerEncoded + "." + claimsEncoded
 
 	signature, err := method.Sign(signingString, key)
 	if err != nil {
 		return "", fmt.Errorf("failed to sign token: %w", err)
 	}
 
-	// Use strings.Builder for efficient string concatenation
-	var builder strings.Builder
-	builder.Grow(signingStringLen + 1 + len(signature))
-	builder.Write(signingStringBuf)
-	builder.WriteByte('.')
-	builder.WriteString(signature)
-
-	return builder.String(), nil
+	return signingString + "." + signature, nil
 }
 
 // SignToken creates a signed JWT token string directly without allocating
@@ -220,19 +176,16 @@ func SignToken(alg string, claims any, method Method, key any) (string, error) {
 		return "", fmt.Errorf("failed to sign token: %w", err)
 	}
 
-	// Extend buffer to hold full token: header.payload.signature
-	totalLen := signingStringLen + 1 + len(signature)
-	if cap(*bufPtr) < totalLen {
-		newBuf := make([]byte, totalLen)
-		copy(newBuf, signingStringBuf)
-		*bufPtr = newBuf
-	} else {
-		*bufPtr = (*bufPtr)[:totalLen]
-	}
-	(*bufPtr)[signingStringLen] = '.'
-	copy((*bufPtr)[signingStringLen+1:], signature)
+	// Use strings.Builder to copy data out of pooled buffer.
+	// string(slice) shares the backing array — returning it while the defer
+	// puts the buffer back in the pool creates a data race.
+	var builder strings.Builder
+	builder.Grow(signingStringLen + 1 + len(signature))
+	builder.Write(signingStringBuf)
+	builder.WriteByte('.')
+	builder.WriteString(signature)
 
-	return string(*bufPtr), nil
+	return builder.String(), nil
 }
 
 // GetInternalSigningMethod retrieves a signing method by algorithm name.

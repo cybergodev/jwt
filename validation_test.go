@@ -1,19 +1,13 @@
 package jwt
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
 
-// ============================================================================
-// VALIDATION TESTS - Tests for validation.go
-// Functions renamed to avoid conflicts with existing tests
-// ============================================================================
-
-// TestValidationClaimsEdgeCases tests validation edge cases for claims
 func TestValidationClaimsEdgeCases(t *testing.T) {
-	secretKey := "Str0ng!S3cr3t#K3y$W1th%Suff1c13nt&Entr0py*2024"
-	processor, err := newTestProcessor(secretKey)
+	processor, err := newTestProcessor(testSecretKey)
 	if err != nil {
 		t.Fatalf("Failed to create processor: %v", err)
 	}
@@ -24,132 +18,32 @@ func TestValidationClaimsEdgeCases(t *testing.T) {
 		claims    Claims
 		wantError bool
 	}{
-		{
-			name: "claims with control characters",
-			claims: Claims{
-				UserID:   "user\x00id",
-				Username: "testuser",
-			},
-			wantError: true,
-		},
-		{
-			name: "claims with tab character (allowed)",
-			claims: Claims{
-				UserID:   "user\tid",
-				Username: "testuser",
-			},
-			wantError: false,
-		},
-		{
-			name: "claims with newline (allowed)",
-			claims: Claims{
-				UserID:   "user\nid",
-				Username: "testuser",
-			},
-			wantError: false,
-		},
-		{
-			name: "claims with carriage return (allowed)",
-			claims: Claims{
-				UserID:   "user\rid",
-				Username: "testuser",
-			},
-			wantError: false,
-		},
-		{
-			name: "claims with too many permissions",
-			claims: Claims{
-				UserID:      "user1",
-				Username:    "testuser",
-				Permissions: make([]string, 101),
-			},
-			wantError: true,
-		},
-		{
-			name: "claims with too many scopes",
-			claims: Claims{
-				UserID:   "user1",
-				Username: "testuser",
-				Scopes:   make([]string, 101),
-			},
-			wantError: true,
-		},
-		{
-			name: "claims with too many audience",
-			claims: Claims{
-				UserID:   "user1",
-				Username: "testuser",
-				RegisteredClaims: RegisteredClaims{
-					Audience: make([]string, 101),
-				},
-			},
-			wantError: true,
-		},
-		{
-			name: "claims with too many extra fields",
-			claims: Claims{
-				UserID:   "user1",
-				Username: "testuser",
-				Extra:    make(map[string]any, 51),
-			},
-			wantError: true,
-		},
-		{
-			name: "claims with nested map in extra",
-			claims: Claims{
-				UserID:   "user1",
-				Username: "testuser",
-				Extra: map[string]any{
-					"nested": map[string]any{"key": "value"},
-				},
-			},
-			wantError: true,
-		},
-		{
-			name: "claims with string array in extra",
-			claims: Claims{
-				UserID:   "user1",
-				Username: "testuser",
-				Extra: map[string]any{
-					"tags": []string{"tag1", "tag2"},
-				},
-			},
-			wantError: false,
-		},
-		{
-			name: "claims with too long extra key",
-			claims: Claims{
-				UserID:   "user1",
-				Username: "testuser",
-				Extra: map[string]any{
-					strings.Repeat("a", 257): "value",
-				},
-			},
-			wantError: true,
-		},
-		{
-			name: "claims with too long extra value",
-			claims: Claims{
-				UserID:   "user1",
-				Username: "testuser",
-				Extra: map[string]any{
-					"key": strings.Repeat("a", 257),
-				},
-			},
-			wantError: true,
-		},
+		{"control characters in UserID", Claims{UserID: "user\x00id", Username: "testuser"}, true},
+		{"tab character allowed", Claims{UserID: "user\tid", Username: "testuser"}, false},
+		{"newline allowed", Claims{UserID: "user\nid", Username: "testuser"}, false},
+		{"carriage return allowed", Claims{UserID: "user\rid", Username: "testuser"}, false},
+		{"too many permissions", Claims{UserID: "user1", Username: "testuser", Permissions: make([]string, 101)}, true},
+		{"too many scopes", Claims{UserID: "user1", Username: "testuser", Scopes: make([]string, 101)}, true},
+		{"too many audience", Claims{UserID: "user1", Username: "testuser", RegisteredClaims: RegisteredClaims{Audience: make([]string, 101)}}, true},
+		{"too many extra fields", Claims{UserID: "user1", Username: "testuser", Extra: makeMapWithNFields(51)}, true},
+		{"max allowed extra fields", Claims{UserID: "user1", Username: "testuser", Extra: makeMapWithNFields(50)}, false},
+		{"nested map in extra", Claims{UserID: "user1", Username: "testuser", Extra: map[string]any{"nested": map[string]any{"key": "value"}}}, true},
+		{"string array in extra", Claims{UserID: "user1", Username: "testuser", Extra: map[string]any{"tags": []string{"tag1", "tag2"}}}, false},
+		{"too long extra key", Claims{UserID: "user1", Username: "testuser", Extra: map[string]any{strings.Repeat("a", 257): "value"}}, true},
+		{"too long extra value", Claims{UserID: "user1", Username: "testuser", Extra: map[string]any{"key": strings.Repeat("a", 257)}}, true},
+		{"unsupported extra type int", Claims{UserID: "user1", Username: "testuser", Extra: map[string]any{"key": 12345}}, true},
+		{"unsupported extra type bool", Claims{UserID: "user1", Username: "testuser", Extra: map[string]any{"key": true}}, true},
+		{"unsupported extra type float", Claims{UserID: "user1", Username: "testuser", Extra: map[string]any{"key": 3.14}}, true},
+		{"too long permission item", Claims{UserID: "user1", Username: "testuser", Permissions: []string{strings.Repeat("a", 257)}}, true},
+		{"too long scope item", Claims{UserID: "user1", Username: "testuser", Scopes: []string{strings.Repeat("a", 257)}}, true},
+		{"too long audience item", Claims{UserID: "user1", Username: "testuser", RegisteredClaims: RegisteredClaims{Audience: []string{strings.Repeat("a", 257)}}}, true},
+		{"dangerous permission item", Claims{UserID: "user1", Username: "testuser", Permissions: []string{"<script>alert(1)</script>"}}, true},
+		{"dangerous scope item", Claims{UserID: "user1", Username: "testuser", Scopes: []string{"javascript:alert(1)"}}, true},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Populate extra fields if needed
-			if tt.name == "claims with too many extra fields" {
-				for i := 0; i < 51; i++ {
-					tt.claims.Extra[string(rune('a'+i%26))+string(rune(i))] = "value"
-				}
-			}
-
-			_, err := processor.CreateToken(tt.claims)
+			_, err := processor.Create(&tt.claims)
 			if tt.wantError && err == nil {
 				t.Error("Expected validation error, got nil")
 			}
@@ -160,35 +54,67 @@ func TestValidationClaimsEdgeCases(t *testing.T) {
 	}
 }
 
-// Note: Dangerous pattern detection tests consolidated into security_test.go
-
-// Note: String/array validation tested via TestValidationClaimsEdgeCases
-
-// TestControlCharDetection tests control character detection
 func TestControlCharDetection(t *testing.T) {
-	// Test invalid control characters (0x00-0x1F, excluding tab/newline/CR)
-	invalidChars := []byte{0x00, 0x01, 0x02, 0x1F, 0x08, 0x1E}
-	for _, c := range invalidChars {
-		if !isControlChar(c) {
-			t.Errorf("Character 0x%02X should be detected as control char", c)
-		}
+	tests := []struct {
+		name    string
+		char    byte
+		isCtrl  bool
+	}{
+		{"null byte", 0x00, true},
+		{"SOH", 0x01, true},
+		{"ETX", 0x02, true},
+		{"US", 0x1F, true},
+		{"BS", 0x08, true},
+		{"RS", 0x1E, true},
+		{"tab (allowed)", 0x09, false},
+		{"newline (allowed)", 0x0A, false},
+		{"carriage return (allowed)", 0x0D, false},
+		{"space", 0x20, false},
+		{"tilde", 0x7E, false},
+		{"DEL", 0x7F, false},
 	}
 
-	// Test valid control characters (tab, newline, carriage return)
-	validChars := []byte{0x09, 0x0A, 0x0D} // tab, newline, carriage return
-	for _, c := range validChars {
-		if isControlChar(c) {
-			t.Errorf("Character 0x%02X should not be detected as control char", c)
-		}
-	}
-
-	// Test printable characters (0x20-0x7E)
-	for c := byte(0x20); c < 0x7F; c++ {
-		if isControlChar(c) {
-			t.Errorf("Printable character 0x%02X should not be detected as control char", c)
-		}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if isControlChar(tt.char) != tt.isCtrl {
+				t.Errorf("isControlChar(0x%02X) = %v, want %v", tt.char, !tt.isCtrl, tt.isCtrl)
+			}
+		})
 	}
 }
 
-// Note: ParseUnverified edge cases tested in coverage_test.go
+func TestValidateStringArray(t *testing.T) {
+	tests := []struct {
+		name   string
+		items  []string
+		err    bool
+	}{
+		{"nil slice", nil, false},
+		{"empty slice", []string{}, false},
+		{"valid slice", []string{"read", "write"}, false},
+		{"too many items", make([]string, 101), true},
+		{"item with control char", []string{"read\x00write"}, true},
+		{"item too long", []string{strings.Repeat("a", 257)}, true},
+		{"item with script tag", []string{"<script>"}, true},
+	}
 
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateStringArray("test_field", tt.items)
+			if tt.err && err == nil {
+				t.Error("Expected error")
+			}
+			if !tt.err && err != nil {
+				t.Errorf("Unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+func makeMapWithNFields(n int) map[string]any {
+	m := make(map[string]any, n)
+	for i := 0; i < n; i++ {
+		m[fmt.Sprintf("key%d", i)] = "value"
+	}
+	return m
+}

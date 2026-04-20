@@ -117,36 +117,11 @@ func validateString(fieldName, value string, maxLength int) error {
 		}
 	}
 
-	// Optimized control character check using bit operations
-	// Check 8 bytes at a time for longer strings
-	if valueLen >= 8 {
-		for i := 0; i <= valueLen-8; i += 8 {
-			b0, b1, b2, b3 := value[i], value[i+1], value[i+2], value[i+3]
-			b4, b5, b6, b7 := value[i+4], value[i+5], value[i+6], value[i+7]
-			if isControlChar(b0) || isControlChar(b1) || isControlChar(b2) || isControlChar(b3) ||
-				isControlChar(b4) || isControlChar(b5) || isControlChar(b6) || isControlChar(b7) {
-				return &ValidationError{
-					Field:   fieldName,
-					Message: "invalid control character",
-				}
-			}
-		}
-		// Check remaining bytes
-		for i := (valueLen / 8) * 8; i < valueLen; i++ {
-			if isControlChar(value[i]) {
-				return &ValidationError{
-					Field:   fieldName,
-					Message: "invalid control character",
-				}
-			}
-		}
-	} else {
-		for i := 0; i < valueLen; i++ {
-			if isControlChar(value[i]) {
-				return &ValidationError{
-					Field:   fieldName,
-					Message: "invalid control character",
-				}
+	for i := 0; i < valueLen; i++ {
+		if isControlChar(value[i]) {
+			return &ValidationError{
+				Field:   fieldName,
+				Message: "invalid control character",
 			}
 		}
 	}

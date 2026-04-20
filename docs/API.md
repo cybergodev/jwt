@@ -30,7 +30,7 @@ type Processor struct {
 
 ```go
 // Create with configuration
-func New(cfg ...Config) (*Processor, error)
+func New(cfg Config) (*Processor, error)
 
 // Configuration with defaults
 cfg := jwt.DefaultConfig()
@@ -55,13 +55,14 @@ type Config struct {
     // Signing configuration (choose one)
     SecretKey       string        // For HMAC algorithms (minimum 32 bytes)
     SigningKey      any           // For asymmetric algorithms (*rsa.PrivateKey or *ecdsa.PrivateKey)
-    VerificationKey any           // Optional: public key for verification only
+    VerificationKey any           // Optional: public key for verification only (*rsa.PublicKey or *ecdsa.PublicKey)
     SigningMethod   SigningMethod // HS256, HS384, HS512, RS256, RS384, RS512, ES256, ES384, ES512
 
     // Token configuration
-    AccessTokenTTL  time.Duration // Default: 15 minutes
-    RefreshTokenTTL time.Duration // Default: 7 days
-    Issuer          string        // Default: "jwt-service"
+    AccessTokenTTL   time.Duration // Default: 15 minutes
+    RefreshTokenTTL  time.Duration // Default: 7 days
+    Issuer           string        // Default: "jwt-service"
+    ExpectedAudience string        // Optional: reject tokens without matching aud claim
 
     // Blacklist configuration (embedded)
     Blacklist BlacklistConfig
@@ -71,6 +72,9 @@ type Config struct {
     RateLimitRate   int               // Default: 100
     RateLimitWindow time.Duration     // Default: 1 minute
     RateLimiter     RateLimitProvider // Optional: custom rate limiter
+
+    // Clock provider for time operations (optional, defaults to SystemClock)
+    Clock ClockProvider // Optional: inject custom clock for testing
 }
 ```
 
@@ -100,9 +104,9 @@ Configuration for the token blacklist.
 
 ```go
 type BlacklistConfig struct {
-    MaxSize           int           // Maximum entries (default: 10000)
-    CleanupInterval   time.Duration // Cleanup interval (default: 5 minutes)
-    EnableAutoCleanup bool          // Enable automatic cleanup (default: true)
+    MaxSize           int            // Maximum entries (default: 100000)
+    CleanupInterval   time.Duration  // Cleanup interval (default: 5 minutes)
+    EnableAutoCleanup bool           // Enable automatic cleanup (default: true)
     Store             BlacklistStore // Optional: custom store implementation
 }
 ```
@@ -121,53 +125,33 @@ func DefaultBlacklistConfig() BlacklistConfig
 
 ### Token Creation
 
-#### CreateToken
+#### Create
 
 Creates a new access token with the given claims.
+Accepts any type implementing `CustomClaims`, including `*Claims` for built-in claims.
 
 ```go
-func (p *Processor) CreateToken(claims Claims) (string, error)
+func (p *Processor) Create(claims CustomClaims) (string, error)
 ```
 
 **Parameters:**
-- `claims` - Claims struct with user data
+- `claims` - Any type implementing `CustomClaims` (use `&Claims{}` for built-in claims)
 
 **Returns:**
 - `string` - JWT token string
 - `error` - Error if creation fails
 
-**Example:**
+**Example (built-in Claims):**
 ```go
-claims := jwt.Claims{
+claims := &jwt.Claims{
     UserID:   "user123",
     Username: "john_doe",
     Role:     "admin",
 }
-token, err := processor.CreateToken(claims)
+token, err := processor.Create(claims)
 ```
 
-#### CreateRefreshToken
-
-Creates a new refresh token with the given claims.
-
-```go
-func (p *Processor) CreateRefreshToken(claims Claims) (string, error)
-```
-
-Uses `RefreshTokenTTL` for expiration instead of `AccessTokenTTL`.
-
-#### CreateTokenWith
-
-Creates a token with custom claims type.
-
-```go
-func (p *Processor) CreateTokenWith(claims CustomClaims) (string, error)
-```
-
-**Parameters:**
-- `claims` - Must implement `CustomClaims` interface
-
-**Example:**
+**Example (custom claims):**
 ```go
 type MyClaims struct {
     UserID string `json:"user_id"`
@@ -187,38 +171,41 @@ func (c *MyClaims) Validate() error {
 }
 
 claims := &MyClaims{UserID: "123", TeamID: "team-abc"}
-token, err := processor.CreateTokenWith(claims)
+token, err := processor.Create(claims)
 ```
 
-#### CreateRefreshTokenWith
+#### CreateRefresh
 
-Creates a refresh token with custom claims type.
+Creates a new refresh token with the given claims.
+Accepts any type implementing `CustomClaims`, including `*Claims` for built-in claims.
 
 ```go
-func (p *Processor) CreateRefreshTokenWith(claims CustomClaims) (string, error)
+func (p *Processor) CreateRefresh(claims CustomClaims) (string, error)
 ```
+
+Uses `RefreshTokenTTL` for expiration instead of `AccessTokenTTL`.
 
 ### Token Validation
 
-#### ValidateToken
+#### Validate
 
 Validates a token and returns the claims.
 
 ```go
-func (p *Processor) ValidateToken(tokenString string) (Claims, bool, error)
+func (p *Processor) Validate(tokenString string) (Claims, bool, error)
 ```
 
 **Parameters:**
 - `tokenString` - JWT token string
 
 **Returns:**
-- `Claims` - Parsed claims
+- `Claims` - Parsed claims (value copy)
 - `bool` - True if token is valid
 - `error` - Error if validation fails
 
 **Example:**
 ```go
-claims, valid, err := processor.ValidateToken(token)
+claims, valid, err := processor.Validate(token)
 if err != nil {
     switch {
     case errors.Is(err, jwt.ErrTokenExpired):
@@ -238,18 +225,27 @@ if !valid {
 fmt.Println(claims.Username)
 ```
 
-#### ValidateTokenWith
+#### ValidateInto
 
-Validates a token with custom claims type.
+Validates a token and populates the provided custom claims.
 
 ```go
-func (p *Processor) ValidateTokenWith(tokenString string, claims CustomClaims) (CustomClaims, bool, error)
+func (p *Processor) ValidateInto(tokenString string, claims CustomClaims) (CustomClaims, bool, error)
 ```
+
+**Parameters:**
+- `tokenString` - JWT token string
+- `claims` - Must be a pointer to a type implementing `CustomClaims`. Populated in place.
+
+**Returns:**
+- `CustomClaims` - The same claims pointer on success
+- `bool` - True if token is valid
+- `error` - Error if validation fails
 
 **Example:**
 ```go
 parsedClaims := &MyClaims{}
-result, valid, err := processor.ValidateTokenWith(token, parsedClaims)
+result, valid, err := processor.ValidateInto(token, parsedClaims)
 if valid {
     myClaims := result.(*MyClaims)
     fmt.Println(myClaims.TeamID)
@@ -258,32 +254,33 @@ if valid {
 
 #### ParseUnverified
 
-Parses a token without verifying the signature.
+Parses a token without verifying the signature. This is a method on `*Processor`.
 
 ```go
-func ParseUnverified(tokenString string, claims any) (map[string]any, error)
+func (p *Processor) ParseUnverified(tokenString string, claims any) error
 ```
 
 **Warning:** Use only for debugging or when you need to inspect claims without verification.
+The returned claims are NOT validated and should NOT be trusted.
 
 **Example:**
 ```go
-claims := &jwt.Claims{}
-header, err := jwt.ParseUnverified(token, claims)
+var parsedClaims jwt.Claims
+err := processor.ParseUnverified(token, &parsedClaims)
 if err != nil {
     log.Fatal(err)
 }
-fmt.Printf("Algorithm: %s\n", header["alg"])
+fmt.Printf("UserID: %s\n", parsedClaims.UserID)
 ```
 
 ### Token Refresh
 
-#### RefreshToken
+#### Refresh
 
 Creates a new access token using a valid refresh token.
 
 ```go
-func (p *Processor) RefreshToken(refreshTokenString string) (string, error)
+func (p *Processor) Refresh(refreshTokenString string) (string, error)
 ```
 
 **Parameters:**
@@ -293,30 +290,46 @@ func (p *Processor) RefreshToken(refreshTokenString string) (string, error)
 - `string` - New access token
 - `error` - Error if refresh fails
 
+#### RefreshInto
+
+Refreshes a custom-claims refresh token into a new access token.
+
+```go
+func (p *Processor) RefreshInto(refreshTokenString string, claims CustomClaims) (string, error)
+```
+
+**Parameters:**
+- `refreshTokenString` - Valid refresh token
+- `claims` - Must be a pointer to a type implementing `CustomClaims`
+
+**Returns:**
+- `string` - New access token
+- `error` - Error if refresh fails
+
 ### Token Revocation
 
-#### RevokeToken
+#### Revoke
 
 Adds a token to the blacklist.
 
 ```go
-func (p *Processor) RevokeToken(tokenString string) error
+func (p *Processor) Revoke(tokenString string) error
 ```
 
 **Example:**
 ```go
-err := processor.RevokeToken(token)
+err := processor.Revoke(token)
 if err != nil {
     log.Printf("Revocation failed: %v", err)
 }
 ```
 
-#### IsTokenRevoked
+#### IsRevoked
 
 Checks if a token has been revoked.
 
 ```go
-func (p *Processor) IsTokenRevoked(tokenString string) (bool, error)
+func (p *Processor) IsRevoked(tokenString string) (bool, error)
 ```
 
 ### Lifecycle
@@ -377,13 +390,13 @@ Standard JWT claims as defined in RFC 7519.
 
 ```go
 type RegisteredClaims struct {
-    Issuer    string      `json:"iss,omitempty"` // Token issuer
-    Subject   string      `json:"sub,omitempty"` // Token subject
-    Audience  []string    `json:"aud,omitempty"` // Intended audience
-    ExpiresAt NumericDate `json:"exp"`           // Expiration time
-    NotBefore NumericDate `json:"nbf"`           // Not valid before
-    IssuedAt  NumericDate `json:"iat"`           // Issued at time
-    ID        string      `json:"jti,omitempty"` // Unique token ID
+    Issuer    string        `json:"iss,omitempty"` // Token issuer
+    Subject   string        `json:"sub,omitempty"` // Token subject
+    Audience  StringOrSlice `json:"aud,omitempty"` // Intended audience (string or []string per RFC 7519 §4.1.3)
+    ExpiresAt NumericDate   `json:"exp"`           // Expiration time
+    NotBefore NumericDate   `json:"nbf"`           // Not valid before
+    IssuedAt  NumericDate   `json:"iat"`           // Issued at time
+    ID        string        `json:"jti,omitempty"` // Unique token ID
 }
 ```
 
@@ -410,6 +423,16 @@ type CustomClaims interface {
 }
 ```
 
+### RateLimitKeyer Interface
+
+Optional interface for custom claims types to provide a rate limit key.
+
+```go
+type RateLimitKeyer interface {
+    RateLimitKey() string
+}
+```
+
 ---
 
 ## Error Types
@@ -432,13 +455,17 @@ var (
     ErrTokenMissingID     = errors.New("token missing ID")
     ErrTokenExpired       = errors.New("token expired")
     ErrTokenNotValidYet   = errors.New("token not valid yet")
-    ErrTokenInvalidIssuer = errors.New("token invalid issuer")
+    ErrTokenInvalidIssuer   = errors.New("token invalid issuer")
+    ErrTokenInvalidAudience = errors.New("token invalid audience")
 
     // Claims errors
     ErrInvalidClaims = errors.New("invalid claims")
 
     // Rate limiting errors
     ErrRateLimitExceeded = errors.New("rate limit exceeded")
+
+    // Blacklist errors
+    ErrBlacklistNotConfigured = errors.New("blacklist not configured")
 
     // Lifecycle errors
     ErrProcessorClosed = errors.New("processor closed")
@@ -449,7 +476,7 @@ var (
 ### Error Handling Pattern
 
 ```go
-claims, valid, err := processor.ValidateToken(token)
+claims, valid, err := processor.Validate(token)
 if err != nil {
     switch {
     case errors.Is(err, jwt.ErrTokenExpired):
@@ -460,6 +487,8 @@ if err != nil {
         // Token nbf is in the future - clock sync issue
     case errors.Is(err, jwt.ErrTokenInvalidIssuer):
         // Token issuer mismatch
+    case errors.Is(err, jwt.ErrTokenInvalidAudience):
+        // Token audience mismatch
     case errors.Is(err, jwt.ErrRateLimitExceeded):
         // Rate limit exceeded - retry later
     case errors.Is(err, jwt.ErrProcessorClosed):
@@ -510,41 +539,52 @@ type SigningError struct {
 
 ## Interfaces
 
-### Signer
+### TokenManager
 
-Interface for custom signing algorithms.
+The primary interface for JWT token operations. All methods must be safe for concurrent use.
 
 ```go
-type Signer interface {
-    Alg() string                              // Algorithm identifier
-    Sign(data string) (string, error)         // Sign data
-    Verify(data, signature string) error      // Verify signature
-    Hash() crypto.Hash                        // Hash function
+type TokenManager interface {
+    // Token operations (accept CustomClaims — use &Claims{} for built-in)
+    Create(claims CustomClaims) (string, error)
+    Validate(tokenString string) (Claims, bool, error)
+    CreateRefresh(claims CustomClaims) (string, error)
+    Refresh(refreshTokenString string) (string, error)
+
+    // Custom claims target operations
+    ValidateInto(tokenString string, claims CustomClaims) (CustomClaims, bool, error)
+    RefreshInto(refreshTokenString string, claims CustomClaims) (string, error)
+
+    // Common operations
+    Revoke(tokenString string) error
+    IsRevoked(tokenString string) (bool, error)
+    ParseUnverified(tokenString string, claims any) error
+    Close() error
+    IsClosed() bool
 }
 ```
 
 ### RateLimitProvider
 
-Interface for custom rate limiters.
+Interface for custom rate limiters. Implementations must be safe for concurrent use.
 
 ```go
 type RateLimitProvider interface {
-    Allow(identifier string) bool  // Check if request is allowed
-    Close()                        // Release resources
+    Allow(key string) bool       // Check if a single request is allowed
+    AllowN(key string, n int) bool // Check if n requests are allowed
+    Reset(key string)            // Remove rate limit state for a key
+    Close()                      // Release resources
 }
 ```
 
 ### BlacklistStore
 
-Interface for custom blacklist storage.
+Interface for custom blacklist storage backends.
 
 ```go
 type BlacklistStore interface {
     Add(tokenID string, expiresAt time.Time) error
     Contains(tokenID string) (bool, error)
-    Remove(tokenID string) error
-    Clear() error
-    Len() int
     Close() error
 }
 ```
@@ -557,6 +597,10 @@ Interface for custom clock (testing).
 type ClockProvider interface {
     Now() time.Time
 }
+
+// Built-in implementations:
+type SystemClock struct{} // Uses time.Now()
+type FixedClock struct { T time.Time } // Returns fixed time
 ```
 
 ---
@@ -586,12 +630,15 @@ const (
 
 ### Validation Limits
 
-| Constant | Value | Description |
-|----------|-------|-------------|
-| `maxStringLength` | 256 | Maximum string field length |
-| `maxArraySize` | 100 | Maximum array size |
-| `maxExtraSize` | 50 | Maximum extra claims fields |
-| `MaxTokenSize` | 8192 | Maximum token size in bytes |
+The following limits are enforced internally (not exported):
+
+| Limit | Value | Description |
+|-------|-------|-------------|
+| String field max length | 256 | Maximum length for string fields |
+| Array max size | 100 | Maximum elements in arrays |
+| Extra claims max fields | 50 | Maximum keys in Extra map |
+| Token max size | 8192 | Maximum token size in bytes |
+| Segment max length | 4096 | Maximum base64 segment size (internal: `maxSegmentLength`) |
 
 ---
 
@@ -618,7 +665,23 @@ func DefaultBlacklistConfig() BlacklistConfig
 Creates a new rate limiter with the specified parameters.
 
 ```go
-func NewRateLimiter(rate int, window time.Duration) *RateLimiter
+func NewRateLimiter(maxRate int, window time.Duration) *RateLimiter
+```
+
+### NewTokenError
+
+Creates a TokenError wrapping an error with token context.
+
+```go
+func NewTokenError(err error, tokenID string, expiresAt time.Time) *TokenError
+```
+
+### NewSigningError
+
+Creates a SigningError wrapping an error with algorithm context.
+
+```go
+func NewSigningError(algorithm string, err error) *SigningError
 ```
 
 ---

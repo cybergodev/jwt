@@ -27,6 +27,9 @@ func (r *rsaSigningMethod) Sign(signingString string, key any) (string, error) {
 	if !ok {
 		return "", fmt.Errorf("RSA key must be *rsa.PrivateKey, got %T", key)
 	}
+	if rsaKey == nil {
+		return "", fmt.Errorf("RSA key cannot be nil")
+	}
 
 	if !r.HashFunc.Available() {
 		return "", fmt.Errorf("hash function %v not available", r.HashFunc)
@@ -48,14 +51,16 @@ func (r *rsaSigningMethod) Verify(signingString string, signature string, key an
 	rsaKey, ok := key.(*rsa.PublicKey)
 	if !ok {
 		// Support *rsa.PrivateKey for verification (extract public key)
-		if privKey, ok := key.(*rsa.PrivateKey); ok {
-			rsaKey = &privKey.PublicKey
-		} else {
+		privKey, ok := key.(*rsa.PrivateKey)
+		if !ok {
 			return fmt.Errorf("RSA key must be *rsa.PublicKey or *rsa.PrivateKey, got %T", key)
 		}
+		if privKey == nil {
+			return fmt.Errorf("RSA key cannot be nil")
+		}
+		rsaKey = &privKey.PublicKey
 	}
 
-	// Check for typed nil (e.g., (*rsa.PublicKey)(nil))
 	if rsaKey == nil {
 		return fmt.Errorf("RSA key cannot be nil")
 	}

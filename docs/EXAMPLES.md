@@ -7,7 +7,6 @@ Real-world integration examples with popular Go frameworks and patterns.
 - [Standard Library (net/http)](#standard-library-nethttp)
 - [Gin Framework](#gin-framework)
 - [Echo Framework](#echo-framework)
-- [Fiber Framework](#fiber-framework)
 - [Chi Router](#chi-router)
 - [gRPC Integration](#grpc-integration)
 - [GraphQL Integration](#graphql-integration)
@@ -23,6 +22,7 @@ Real-world integration examples with popular Go frameworks and patterns.
 package main
 
 import (
+    "context"
     "encoding/json"
     "log"
     "net/http"
@@ -35,6 +35,10 @@ import (
 type Handler struct {
     processor *jwt.Processor
 }
+
+type contextKey string
+
+const claimsKey contextKey = "claims"
 
 func main() {
     cfg := jwt.DefaultConfig()
@@ -77,20 +81,20 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
     }
 
     // Create claims
-    claims := jwt.Claims{
+    claims := &jwt.Claims{
         UserID:   getUserID(creds.Username),
         Username: creds.Username,
         Role:     getUserRole(creds.Username),
     }
 
     // Create tokens
-    accessToken, err := h.processor.CreateToken(claims)
+    accessToken, err := h.processor.Create(claims)
     if err != nil {
         http.Error(w, "Failed to create token", http.StatusInternalServerError)
         return
     }
 
-    refreshToken, err := h.processor.CreateRefreshToken(claims)
+    refreshToken, err := h.processor.CreateRefresh(claims)
     if err != nil {
         http.Error(w, "Failed to create refresh token", http.StatusInternalServerError)
         return
@@ -114,7 +118,7 @@ func (h *Handler) refresh(w http.ResponseWriter, r *http.Request) {
         return
     }
 
-    newAccessToken, err := h.processor.RefreshToken(req.RefreshToken)
+    newAccessToken, err := h.processor.Refresh(req.RefreshToken)
     if err != nil {
         http.Error(w, "Invalid refresh token", http.StatusUnauthorized)
         return
@@ -141,20 +145,20 @@ func (h *Handler) authMiddleware(next http.HandlerFunc) http.HandlerFunc {
             return
         }
 
-        claims, valid, err := h.processor.ValidateToken(token)
+        claims, valid, err := h.processor.Validate(token)
         if err != nil || !valid {
             http.Error(w, "Invalid token", http.StatusUnauthorized)
             return
         }
 
         // Add claims to request context
-        ctx := context.WithValue(r.Context(), "claims", claims)
+        ctx := context.WithValue(r.Context(), claimsKey, claims)
         next.ServeHTTP(w, r.WithContext(ctx))
     }
 }
 
 func (h *Handler) protected(w http.ResponseWriter, r *http.Request) {
-    claims := r.Context().Value("claims").(jwt.Claims)
+    claims := r.Context().Value(claimsKey).(jwt.Claims)
 
     json.NewEncoder(w).Encode(map[string]string{
         "message":  "Access granted",
@@ -168,7 +172,7 @@ func (h *Handler) logout(w http.ResponseWriter, r *http.Request) {
     authHeader := r.Header.Get("Authorization")
     token := strings.TrimPrefix(authHeader, "Bearer ")
 
-    if err := h.processor.RevokeToken(token); err != nil {
+    if err := h.processor.Revoke(token); err != nil {
         http.Error(w, "Failed to logout", http.StatusInternalServerError)
         return
     }
@@ -241,7 +245,7 @@ func JWTMiddleware(processor *jwt.Processor) gin.HandlerFunc {
             return
         }
 
-        claims, valid, err := processor.ValidateToken(token)
+        claims, valid, err := processor.Validate(token)
         if err != nil || !valid {
             c.JSON(401, gin.H{"error": "Invalid token"})
             c.Abort()
@@ -291,14 +295,14 @@ func loginHandler(processor *jwt.Processor) gin.HandlerFunc {
             return
         }
 
-        claims := jwt.Claims{
+        claims := &jwt.Claims{
             UserID:   getUserID(req.Username),
             Username: req.Username,
             Role:     getUserRole(req.Username),
         }
 
-        accessToken, _ := processor.CreateToken(claims)
-        refreshToken, _ := processor.CreateRefreshToken(claims)
+        accessToken, _ := processor.Create(claims)
+        refreshToken, _ := processor.CreateRefresh(claims)
 
         c.JSON(200, gin.H{
             "access_token":  accessToken,
@@ -323,7 +327,7 @@ func logoutHandler(processor *jwt.Processor) gin.HandlerFunc {
         authHeader := c.GetHeader("Authorization")
         token := strings.TrimPrefix(authHeader, "Bearer ")
 
-        if err := processor.RevokeToken(token); err != nil {
+        if err := processor.Revoke(token); err != nil {
             c.JSON(500, gin.H{"error": "Failed to logout"})
             return
         }
@@ -386,7 +390,7 @@ func JWTMiddleware(processor *jwt.Processor) echo.MiddlewareFunc {
                 return echo.NewHTTPError(401, "Invalid authorization format")
             }
 
-            claims, valid, err := processor.ValidateToken(token)
+            claims, valid, err := processor.Validate(token)
             if err != nil || !valid {
                 return echo.NewHTTPError(401, "Invalid token")
             }
@@ -412,13 +416,13 @@ func loginHandler(processor *jwt.Processor) echo.HandlerFunc {
             return echo.NewHTTPError(401, "Invalid credentials")
         }
 
-        claims := jwt.Claims{
+        claims := &jwt.Claims{
             UserID:   getUserID(req.Username),
             Username: req.Username,
         }
 
-        accessToken, _ := processor.CreateToken(claims)
-        refreshToken, _ := processor.CreateRefreshToken(claims)
+        accessToken, _ := processor.Create(claims)
+        refreshToken, _ := processor.CreateRefresh(claims)
 
         return c.JSON(200, map[string]interface{}{
             "access_token":  accessToken,
@@ -500,7 +504,7 @@ func AuthMiddleware(processor *jwt.Processor) func(http.Handler) http.Handler {
                 return
             }
 
-            claims, valid, err := processor.ValidateToken(token)
+            claims, valid, err := processor.Validate(token)
             if err != nil || !valid {
                 http.Error(w, "Invalid token", http.StatusUnauthorized)
                 return
@@ -586,7 +590,7 @@ func AuthInterceptor(processor *jwt.Processor) grpc.UnaryServerInterceptor {
         }
 
         token := strings.TrimPrefix(values[0], "Bearer ")
-        claims, valid, err := processor.ValidateToken(token)
+        claims, valid, err := processor.Validate(token)
         if err != nil || !valid {
             return nil, status.Error(codes.Unauthenticated, "Invalid token")
         }
@@ -690,7 +694,7 @@ func AuthMiddleware(processor *jwt.Processor, next http.Handler) http.Handler {
         authHeader := r.Header.Get("Authorization")
         if authHeader != "" {
             token := strings.TrimPrefix(authHeader, "Bearer ")
-            claims, valid, _ := processor.ValidateToken(token)
+            claims, valid, _ := processor.Validate(token)
             if valid {
                 ctx := context.WithValue(r.Context(), claimsKey, claims)
                 r = r.WithContext(ctx)
@@ -750,7 +754,7 @@ func wsHandler(processor *jwt.Processor) http.HandlerFunc {
             return
         }
 
-        claims, valid, err := processor.ValidateToken(token)
+        claims, valid, err := processor.Validate(token)
         if err != nil || !valid {
             http.Error(w, "Invalid token", http.StatusUnauthorized)
             return

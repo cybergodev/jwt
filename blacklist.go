@@ -82,8 +82,8 @@ func (c *BlacklistConfig) Validate() error {
 	return nil
 }
 
-// CreateManager creates a Manager with the appropriate store based on the configuration.
-func (c *BlacklistConfig) CreateManager() *internal.Manager {
+// createManager creates a Manager with the appropriate store based on the configuration.
+func (c *BlacklistConfig) createManager() *internal.Manager {
 	if c.Store != nil {
 		return internal.NewManagerWithClock(c.Store, c.clock)
 	}
@@ -91,6 +91,7 @@ func (c *BlacklistConfig) CreateManager() *internal.Manager {
 		c.MaxSize,
 		c.CleanupInterval,
 		c.EnableAutoCleanup,
+		c.clock,
 	)
 	return internal.NewManagerWithClock(store, c.clock)
 }

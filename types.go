@@ -1,6 +1,7 @@
 package jwt
 
 import (
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"sync"
@@ -131,11 +132,37 @@ func (m SigningMethod) isValid() bool {
 type RegisteredClaims struct {
 	Issuer    string      `json:"iss,omitempty"`
 	Subject   string      `json:"sub,omitempty"`
-	Audience  []string    `json:"aud,omitempty"`
+	Audience  StringOrSlice `json:"aud,omitempty"`
 	ExpiresAt NumericDate `json:"exp"`
 	NotBefore NumericDate `json:"nbf"`
 	IssuedAt  NumericDate `json:"iat"`
 	ID        string      `json:"jti,omitempty"`
+}
+
+// StringOrSlice holds a []string that can be unmarshaled from either
+// a JSON string or a JSON array of strings, per RFC 7519 §4.1.3.
+type StringOrSlice []string
+
+// UnmarshalJSON implements json.Unmarshaler for StringOrSlice.
+func (s *StringOrSlice) UnmarshalJSON(b []byte) error {
+	if len(b) == 0 {
+		*s = nil
+		return nil
+	}
+	if b[0] == '"' {
+		var single string
+		if err := json.Unmarshal(b, &single); err != nil {
+			return err
+		}
+		*s = []string{single}
+		return nil
+	}
+	var multi []string
+	if err := json.Unmarshal(b, &multi); err != nil {
+		return err
+	}
+	*s = multi
+	return nil
 }
 
 func (c *RegisteredClaims) reset() {
@@ -180,14 +207,7 @@ func (c *Claims) reset() {
 
 var claimsPool = sync.Pool{
 	New: func() any {
-		return &Claims{
-			Permissions: make([]string, 0, 8),
-			Scopes:      make([]string, 0, 8),
-			Extra:       make(map[string]any, 4),
-			RegisteredClaims: RegisteredClaims{
-				Audience: make([]string, 0, 2),
-			},
-		}
+		return new(Claims)
 	},
 }
 

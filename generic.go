@@ -8,7 +8,7 @@ import (
 )
 
 // CustomClaims defines the interface for custom claims types.
-// Types implementing this interface can be used with generic token functions.
+// Types implementing this interface can be used with Processor methods that accept CustomClaims.
 //
 // Validation contract:
 // For types other than *Claims, the Processor calls Validate() followed by
@@ -63,15 +63,19 @@ type RateLimitKeyer interface {
 // registered claims string sanitization for other types.
 func validateCustomClaims(claims CustomClaims) error {
 	if c, ok := claims.(*Claims); ok {
+		// validateClaims covers all fields including registered claims strings
 		if err := validateClaims(c); err != nil {
-			return err
-		}
-	} else {
-		if err := claims.Validate(); err != nil {
 			return fmt.Errorf("%w: %w", ErrInvalidClaims, err)
 		}
+		return nil
 	}
-	return validateRegisteredClaimsStrings(claims.GetRegisteredClaims())
+	if err := claims.Validate(); err != nil {
+		return fmt.Errorf("%w: %w", ErrInvalidClaims, err)
+	}
+	if err := validateRegisteredClaimsStrings(claims.GetRegisteredClaims()); err != nil {
+		return fmt.Errorf("%w: %w", ErrInvalidClaims, err)
+	}
+	return nil
 }
 
 // createTokenWithCustomClaims creates a signed token from custom claims.
@@ -118,33 +122,16 @@ func createTokenWithCustomClaims(p *Processor, claims CustomClaims, ttl time.Dur
 func validateTokenIntoCustomClaims(p *Processor, tokenString string, claims CustomClaims) error {
 	token, err := p.parseToken(tokenString, claims)
 	if err != nil {
-		return fmt.Errorf("%w: %v", ErrInvalidToken, err)
+		return fmt.Errorf("%w: %w", ErrInvalidToken, err)
 	}
+
+	defer internal.ReleaseCore(token)
 
 	if !token.Valid {
 		return ErrInvalidToken
 	}
 
 	return p.validateRegistered(claims.GetRegisteredClaims())
-}
-
-// ParseUnverified parses a token without verifying the signature.
-// This is useful for extracting claims from a token when you don't have the key.
-// WARNING: The returned claims are NOT validated and should NOT be trusted.
-func (p *Processor) ParseUnverified(tokenString string, claims any) error {
-	if err := p.checkActive(); err != nil {
-		return err
-	}
-	if err := requireToken(tokenString); err != nil {
-		return err
-	}
-
-	_, _, err := internal.ParseUnverified(tokenString, claims)
-	if err != nil {
-		return fmt.Errorf("failed to parse token: %w", err)
-	}
-
-	return nil
 }
 
 // Ensure Claims implements CustomClaims interface.

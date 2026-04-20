@@ -1,6 +1,6 @@
 # JWT Library - High-Performance Go JWT Solution
 
-[![Go Version](https://img.shields.io/badge/Go-1.22+-blue.svg)](https://golang.org)
+[![Go Version](https://img.shields.io/badge/Go-1.25+-blue.svg)](https://golang.org)
 [![pkg.go.dev](https://pkg.go.dev/badge/github.com/cybergodev/jwt.svg)](https://pkg.go.dev/github.com/cybergodev/jwt)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Security](https://img.shields.io/badge/Security-Production%20Ready-green.svg)](docs/SECURITY.md)
@@ -12,22 +12,24 @@ A **production-ready Go JWT library** with a focus on security, performance, and
 
 ---
 
-## 🎯 Key Features
+## Key Features
 
-- ⚡ **Simple API** - Create, validate, and revoke tokens with minimal code
-- 🛡️ **Security Focused** - Input validation, rate limiting, token revocation, and secure key handling
-- 🚀 **Performance Optimized** - Object pooling and efficient memory management
-- 📦 **Zero Dependencies** - Built entirely on Go standard library
-- 🔧 **Production Ready** - Thread-safe operations, configurable blacklist, and comprehensive error handling
-- 🔐 **Multiple Algorithms** - HMAC, RSA, and ECDSA signing methods supported
+- **Simple API** - Create, validate, and revoke tokens with minimal code
+- **Security Focused** - Input validation, rate limiting, token revocation, and secure key handling
+- **Performance Optimized** - Object pooling and efficient memory management
+- **Zero Dependencies** - Built entirely on Go standard library
+- **Production Ready** - Thread-safe operations, configurable blacklist, and comprehensive error handling
+- **Multiple Algorithms** - HMAC, RSA, and ECDSA signing methods supported
 
-## 📦 Installation
+## Installation
+
+Requires **Go 1.25** or later.
 
 ```bash
 go get github.com/cybergodev/jwt
 ```
 
-## ⚡ 5-Minute Quick Start
+## Quick Start
 
 ### Minimal Configuration (HMAC)
 
@@ -64,15 +66,15 @@ func main() {
         Permissions: []string{"read", "write"},
     }
 
-    // Create token
-    token, err := processor.CreateToken(claims)
+    // Create token (pass pointer - Claims implements CustomClaims via pointer receiver)
+    token, err := processor.Create(&claims)
     if err != nil {
         log.Fatal(err)
     }
     fmt.Println("Token:", token)
 
     // Validate token
-    parsedClaims, valid, err := processor.ValidateToken(token)
+    parsedClaims, valid, err := processor.Validate(token)
     if err != nil {
         log.Fatal(err)
     }
@@ -82,7 +84,7 @@ func main() {
     fmt.Printf("User: %s, Role: %s\n", parsedClaims.Username, parsedClaims.Role)
 
     // Revoke token (add to blacklist)
-    err = processor.RevokeToken(token)
+    err = processor.Revoke(token)
     if err != nil {
         log.Printf("Revocation failed: %v", err)
     }
@@ -120,7 +122,7 @@ func main() {
 
     // Optional: Configure blacklist
     cfg.Blacklist = jwt.BlacklistConfig{
-        MaxSize:           10000,
+        MaxSize:           100000,
         CleanupInterval:   5 * time.Minute,
         EnableAutoCleanup: true,
     }
@@ -137,40 +139,40 @@ func main() {
         Role:     "admin",
     }
 
-    // Create access token
-    accessToken, err := processor.CreateToken(claims)
+    // Create access token (pass pointer)
+    accessToken, err := processor.Create(&claims)
     if err != nil {
         log.Fatal(err)
     }
 
     // Create refresh token (longer TTL)
-    refreshToken, err := processor.CreateRefreshToken(claims)
+    refreshToken, err := processor.CreateRefresh(&claims)
     if err != nil {
         log.Fatal(err)
     }
 
     // Validate token
-    parsedClaims, valid, err := processor.ValidateToken(accessToken)
+    parsedClaims, valid, err := processor.Validate(accessToken)
     if err != nil || !valid {
         log.Fatal("Invalid token")
     }
     fmt.Printf("User: %s\n", parsedClaims.Username)
 
     // Refresh access token using refresh token
-    newAccessToken, err := processor.RefreshToken(refreshToken)
+    newAccessToken, err := processor.Refresh(refreshToken)
     if err != nil {
         log.Fatal(err)
     }
     fmt.Println("New access token:", newAccessToken[:50]+"...")
 
     // Revoke token
-    err = processor.RevokeToken(accessToken)
+    err = processor.Revoke(accessToken)
     if err != nil {
         log.Printf("Revocation failed: %v", err)
     }
 
     // Check if token is revoked
-    isRevoked, err := processor.IsTokenRevoked(accessToken)
+    isRevoked, err := processor.IsRevoked(accessToken)
     if err != nil {
         log.Printf("Check failed: %v", err)
     }
@@ -186,8 +188,6 @@ For distributed systems requiring public/private key separation:
 package main
 
 import (
-    "crypto/ecdsa"
-    "crypto/elliptic"
     "crypto/rand"
     "crypto/rsa"
     "fmt"
@@ -221,20 +221,33 @@ func main() {
         Role:     "admin",
     }
 
-    token, err := processor.CreateToken(claims)
+    token, err := processor.Create(&claims)
     if err != nil {
         log.Fatal(err)
     }
     fmt.Println("RSA Token:", token[:50]+"...")
 
     // Validate token
-    parsedClaims, valid, err := processor.ValidateToken(token)
+    parsedClaims, valid, err := processor.Validate(token)
     if err != nil || !valid {
         log.Fatal("Invalid token")
     }
     fmt.Printf("User: %s\n", parsedClaims.Username)
 }
 ```
+
+For ECDSA, replace the key generation and method:
+
+```go
+import "crypto/ecdsa"
+import "crypto/elliptic"
+
+privateKey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+cfg.SigningKey = privateKey
+cfg.SigningMethod = jwt.SigningMethodES256
+```
+
+> **VerificationKey**: For verification-only services, set `cfg.VerificationKey` to the public key. When set, verification uses `VerificationKey` instead of deriving the public key from `SigningKey`. See [Asymmetric Example](examples/5_asymmetric.go) for a complete demonstration.
 
 ### Custom Claims
 
@@ -272,9 +285,8 @@ func (c *MyClaims) Validate() error {
 }
 
 func main() {
-    cfg := jwt.Config{
-        SecretKey: "your-super-secret-key-at-least-32-bytes-long!",
-    }
+    cfg := jwt.DefaultConfig()
+    cfg.SecretKey = "your-super-secret-key-at-least-32-bytes-long!"
 
     processor, err := jwt.New(cfg)
     if err != nil {
@@ -289,7 +301,7 @@ func main() {
         Roles:  []string{"admin", "developer"},
     }
 
-    token, err := processor.CreateTokenWith(claims)
+    token, err := processor.Create(claims)
     if err != nil {
         log.Fatal(err)
     }
@@ -297,7 +309,7 @@ func main() {
 
     // Validate token with custom claims
     parsedClaims := &MyClaims{}
-    result, valid, err := processor.ValidateTokenWith(token, parsedClaims)
+    result, valid, err := processor.ValidateInto(token, parsedClaims)
     if err != nil || !valid {
         log.Fatal("Invalid token")
     }
@@ -305,7 +317,7 @@ func main() {
 }
 ```
 
-## 🎛️ Configuration
+## Configuration
 
 ### Configuration Options
 
@@ -322,23 +334,27 @@ cfg.SigningMethod = jwt.SigningMethodHS256                   // See table below
 cfg.AccessTokenTTL = 15 * time.Minute
 cfg.RefreshTokenTTL = 7 * 24 * time.Hour
 cfg.Issuer = "my-app"
+cfg.ExpectedAudience = "my-api"                              // Optional: reject tokens without matching aud
 
 // === Blacklist settings (embedded in Config) ===
 cfg.Blacklist = jwt.BlacklistConfig{
-    MaxSize:           10000,
-    CleanupInterval:   5 * time.Minute,
-    EnableAutoCleanup: true,
-    Store:             nil,  // Optional: custom BlacklistStore implementation
+    MaxSize:           100000,        // Default: 100000
+    CleanupInterval:   5 * time.Minute,  // Default: 5 * time.Minute
+    EnableAutoCleanup: true,          // Default: true
+    Store:             nil,           // Optional: custom BlacklistStore implementation
 }
 
 // === Rate limiting ===
 cfg.EnableRateLimit = true
-cfg.RateLimitRate = 100            // Max requests per window
-cfg.RateLimitWindow = time.Minute  // Per-user rate limit window
+cfg.RateLimitRate = 100            // Max requests per window (Default: 100)
+cfg.RateLimitWindow = time.Minute  // Per-user rate limit window (Default: 1 * time.Minute)
+
+// === Clock provider (optional, for testing) ===
+cfg.Clock = jwt.FixedClock{T: time.Now()}  // Defaults to SystemClock
 
 processor, err := jwt.New(cfg)
 if err != nil {
-    panic(err)
+    log.Fatal(err)
 }
 defer processor.Close()
 ```
@@ -347,7 +363,7 @@ defer processor.Close()
 
 | Method | Type | Description |
 |--------|------|-------------|
-| `SigningMethodHS256` | HMAC | SHA-256 (recommended for HMAC) |
+| `SigningMethodHS256` | HMAC | SHA-256 (default, recommended for HMAC) |
 | `SigningMethodHS384` | HMAC | SHA-384 |
 | `SigningMethodHS512` | HMAC | SHA-512 |
 | `SigningMethodRS256` | RSA | SHA-256 (2048+ bit key) |
@@ -357,7 +373,7 @@ defer processor.Close()
 | `SigningMethodES384` | ECDSA | SHA-384 (P-384 curve) |
 | `SigningMethodES512` | ECDSA | SHA-512 (P-521 curve) |
 
-## 🎛️ Claims Structure
+## Claims Structure
 
 ### Built-in Claims
 
@@ -383,19 +399,21 @@ claims := jwt.Claims{
 }
 ```
 
+> **Extra field restrictions**: Values in the `Extra` map support `string` and `[]string` types only. Nested maps and other types are rejected during validation. Maximum 50 keys per map.
+
 ### Registered Claims (Standard JWT)
 
 | Field | JSON Key | Description |
 |-------|----------|-------------|
 | `Issuer` | `iss` | Token issuer |
 | `Subject` | `sub` | Token subject |
-| `Audience` | `aud` | Intended audience |
+| `Audience` | `aud` | Intended audience (accepts string or array) |
 | `ExpiresAt` | `exp` | Expiration time |
 | `NotBefore` | `nbf` | Not valid before |
 | `IssuedAt` | `iat` | Issued at time |
 | `ID` | `jti` | Unique token ID |
 
-## 🔗 HTTP Server Integration
+## HTTP Server Integration
 
 ### Gin Framework
 
@@ -405,7 +423,7 @@ func JWTMiddleware(processor *jwt.Processor) gin.HandlerFunc {
         token := c.GetHeader("Authorization")
         token = strings.TrimPrefix(token, "Bearer ")
 
-        claims, valid, err := processor.ValidateToken(token)
+        claims, valid, err := processor.Validate(token)
         if err != nil || !valid {
             c.JSON(401, gin.H{"error": "Invalid token"})
             c.Abort()
@@ -429,7 +447,7 @@ func loginHandler(processor *jwt.Processor) http.HandlerFunc {
             Role:     "admin",
         }
 
-        token, err := processor.CreateToken(claims)
+        token, err := processor.Create(&claims)
         if err != nil {
             http.Error(w, err.Error(), http.StatusInternalServerError)
             return
@@ -447,7 +465,7 @@ func protectedHandler(processor *jwt.Processor) http.HandlerFunc {
         authHeader := r.Header.Get("Authorization")
         tokenString := strings.TrimPrefix(authHeader, "Bearer ")
 
-        claims, valid, err := processor.ValidateToken(tokenString)
+        claims, valid, err := processor.Validate(tokenString)
         if err != nil || !valid {
             http.Error(w, "Invalid token", http.StatusUnauthorized)
             return
@@ -462,19 +480,19 @@ func protectedHandler(processor *jwt.Processor) http.HandlerFunc {
 }
 ```
 
-## 🛡️ Security Features
+## Security Features
 
 ### Input Validation
 - **Secret Key Requirements**: Minimum 32 bytes with entropy validation
 - **Claims Validation**: String length limits, array size limits, control character filtering
 - **Pattern Detection**: Blocks suspicious patterns (XSS, SQL injection, path traversal)
-- **Size Limits**: Maximum 256 bytes per string field, 100 items per array
+- **Size Limits**: Maximum 256 bytes per string field, 100 items per array, 50 keys in Extra
 
 ### Token Security
 - **Algorithm Verification**: Strict signing method validation (prevents algorithm confusion attacks)
 - **Token Revocation**: Blacklist support with configurable cleanup
 - **Expiration Enforcement**: Automatic validation of `exp`, `nbf`, and `iat` claims
-- **Issuer Validation**: Optional issuer claim verification
+- **Issuer/Audience Validation**: Optional issuer and audience claim verification
 
 ### Operational Security
 - **Rate Limiting**: Token bucket algorithm with per-user limits
@@ -482,10 +500,12 @@ func protectedHandler(processor *jwt.Processor) http.HandlerFunc {
 - **Secure Cleanup**: Secret keys are zeroed on processor close
 - **Resource Limits**: Configurable blacklist size
 
-## 📚 Error Handling
+## Error Handling
+
+### Error Checking Pattern
 
 ```go
-claims, valid, err := processor.ValidateToken(token)
+claims, valid, err := processor.Validate(token)
 if err != nil {
     switch {
     case errors.Is(err, jwt.ErrTokenExpired):
@@ -500,6 +520,8 @@ if err != nil {
         // Token nbf claim is in the future
     case errors.Is(err, jwt.ErrTokenInvalidIssuer):
         // Token issuer does not match
+    case errors.Is(err, jwt.ErrTokenInvalidAudience):
+        // Token audience does not match
     case errors.Is(err, jwt.ErrInvalidClaims):
         // Claims validation failed
     default:
@@ -521,42 +543,131 @@ if err != nil {
 | `ErrTokenExpired` | Token has expired |
 | `ErrTokenNotValidYet` | Token nbf claim is in the future |
 | `ErrTokenInvalidIssuer` | Token issuer does not match |
+| `ErrTokenInvalidAudience` | Token audience does not match |
 | `ErrTokenMissingID` | Token missing jti claim |
 | `ErrInvalidClaims` | Claims validation failed |
 | `ErrRateLimitExceeded` | Rate limit exceeded |
+| `ErrBlacklistNotConfigured` | Blacklist operation without configuration |
 | `ErrProcessorClosed` | Processor has been closed |
+| `ErrStoreClosed` | Store has been closed |
 
-## 📖 API Reference
+### Structured Error Types
 
-### Processor Methods
+For applications needing programmatic access to error details:
 
 ```go
-// Create processor
-cfg := jwt.Config{SecretKey: "your-secret-key"}
-processor, err := jwt.New(cfg)
+// ValidationError - field-level validation failures (from claims deep validation)
+var verr *jwt.ValidationError
+if errors.As(err, &verr) {
+    fmt.Println("Field:", verr.Field, "Issue:", verr.Message)
+}
 
-// Or with full configuration
+// TokenError - token-related errors with context
+var terr *jwt.TokenError
+if errors.As(err, &terr) {
+    fmt.Println("Token ID:", terr.TokenID, "ExpiresAt:", terr.ExpiresAt)
+}
+
+// SigningError - signing algorithm errors
+var serr *jwt.SigningError
+if errors.As(err, &serr) {
+    fmt.Println("Algorithm:", serr.Algorithm)
+}
+```
+
+## API Reference
+
+### Creating a Processor
+
+```go
+// Minimal - with default config
 cfg := jwt.DefaultConfig()
 cfg.SecretKey = "your-secret-key"
 processor, err := jwt.New(cfg)
+
+// Full configuration
+cfg := jwt.DefaultConfig()
+cfg.SecretKey = "your-secret-key"
+cfg.Issuer = "my-app"
+cfg.SigningMethod = jwt.SigningMethodHS512
+processor, err := jwt.New(cfg)
 ```
+
+### Processor Methods
 
 | Method | Description |
 |--------|-------------|
-| `CreateToken(claims Claims) (string, error)` | Create access token |
-| `ValidateToken(token string) (Claims, bool, error)` | Validate token |
-| `CreateRefreshToken(claims Claims) (string, error)` | Create refresh token |
-| `RefreshToken(refreshToken string) (string, error)` | Refresh access token |
-| `RevokeToken(token string) error` | Add token to blacklist |
-| `IsTokenRevoked(token string) (bool, error)` | Check if token is revoked |
-| `CreateTokenWith(claims CustomClaims) (string, error)` | Create token with custom claims |
-| `ValidateTokenWith(token string, claims CustomClaims) (CustomClaims, bool, error)` | Validate with custom claims |
-| `CreateRefreshTokenWith(claims CustomClaims) (string, error)` | Create refresh token with custom claims |
+| `Create(claims CustomClaims) (string, error)` | Create access token |
+| `Validate(token string) (Claims, bool, error)` | Validate token and return built-in Claims |
+| `CreateRefresh(claims CustomClaims) (string, error)` | Create refresh token |
+| `Refresh(refreshToken string) (string, error)` | Refresh access token |
+| `ValidateInto(token string, claims CustomClaims) (CustomClaims, bool, error)` | Validate with custom claims type |
+| `RefreshInto(refreshToken string, claims CustomClaims) (string, error)` | Refresh with custom claims type |
+| `Revoke(token string) error` | Add token to blacklist |
+| `IsRevoked(token string) (bool, error)` | Check if token is revoked |
 | `ParseUnverified(token string, claims any) error` | Parse token without verification |
 | `Close() error` | Release resources |
 | `IsClosed() bool` | Check if processor is closed |
 
-## 📚 Detailed Documentation
+> **Deprecated**: `CreateFor`, `ValidateFor`, `CreateRefreshFor`, `RefreshFor` — use `Create`, `ValidateInto`, `CreateRefresh`, `RefreshInto` instead.
+
+### CustomClaims Interface
+
+```go
+type CustomClaims interface {
+    GetRegisteredClaims() *RegisteredClaims
+    Validate() error
+}
+```
+
+`*Claims` implements `CustomClaims` automatically. Pass `&claims` to methods accepting `CustomClaims`.
+
+### Optional Interfaces
+
+Custom claims types may implement `RateLimitKeyer` to provide a rate limit key when `Subject` is empty:
+
+```go
+type RateLimitKeyer interface {
+    RateLimitKey() string
+}
+```
+
+### Extensibility Interfaces
+
+| Interface | Purpose |
+|-----------|---------|
+| `TokenManager` | Core token operations (implemented by `*Processor`) |
+| `BlacklistStore` | Custom blacklist storage backend (e.g., Redis) |
+| `RateLimitProvider` | Custom rate limiting implementation |
+| `ClockProvider` | Time injection (use `SystemClock` or `FixedClock` for testing) |
+
+#### Custom Blacklist Store Example
+
+```go
+// Implement BlacklistStore for Redis or other backends
+type RedisStore struct {
+    client *redis.Client
+}
+
+func (s *RedisStore) Add(tokenID string, expiresAt time.Time) error {
+    return s.client.Set(ctx, "blacklist:"+tokenID, "1", time.Until(expiresAt)).Err()
+}
+
+func (s *RedisStore) Contains(tokenID string) (bool, error) {
+    return s.client.Exists(ctx, "blacklist:"+tokenID).Result()
+}
+
+func (s *RedisStore) Close() error {
+    return s.client.Close()
+}
+
+// Use in config
+cfg.Blacklist = jwt.BlacklistConfig{
+    Store: &RedisStore{client: rdb},
+}
+```
+
+## Detailed Documentation
 
 | Documentation | Content | Use Case |
 |---------------|---------|----------|
@@ -568,14 +679,14 @@ processor, err := jwt.New(cfg)
 | [Troubleshooting](docs/TROUBLESHOOTING.md) | Common problem solutions | Issue diagnosis |
 | [Concurrency Guide](docs/CONCURRENCY.md) | Thread safety and patterns | Concurrent applications |
 
-## 🤝 Contributing
+## Contributing
 
 Contributions, issue reports, and suggestions are welcome!
 
-## 📄 License
+## License
 
 MIT License - See [LICENSE](LICENSE) file for details.
 
 ---
 
-**Crafted with care for the Go community** | If this project helps you, please give it a ⭐ Star!
+**Crafted with care for the Go community** | If this project helps you, please give it a Star!

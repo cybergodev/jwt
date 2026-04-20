@@ -197,7 +197,7 @@ func loginHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Generate access token
-	accessToken, err := processor.CreateToken(claims)
+	accessToken, err := processor.Create(&claims)
 	if err != nil {
 		log.Printf("Token creation failed: %v", err)
 		sendError(w, http.StatusInternalServerError, "token_generation_failed", "Failed to generate token")
@@ -205,7 +205,7 @@ func loginHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Generate refresh token
-	refreshToken, err := processor.CreateRefreshToken(claims)
+	refreshToken, err := processor.CreateRefresh(&claims)
 	if err != nil {
 		log.Printf("Refresh token creation failed: %v", err)
 		sendError(w, http.StatusInternalServerError, "token_generation_failed", "Failed to generate refresh token")
@@ -282,7 +282,7 @@ func refreshHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Refresh token
-	newAccessToken, err := processor.RefreshToken(req.RefreshToken)
+	newAccessToken, err := processor.Refresh(req.RefreshToken)
 	if err != nil {
 		sendError(w, http.StatusUnauthorized, "invalid_token", "Invalid or expired refresh token")
 		return
@@ -310,7 +310,7 @@ func logoutHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Revoke token
-	if err := processor.RevokeToken(token); err != nil {
+	if err := processor.Revoke(token); err != nil {
 		log.Printf("Token revocation failed: %v", err)
 		sendError(w, http.StatusInternalServerError, "logout_failed", "Failed to logout")
 		return
@@ -332,7 +332,7 @@ func authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 
-		claims, valid, err := processor.ValidateToken(token)
+		claims, valid, err := processor.Validate(token)
 		if err != nil || !valid {
 			sendError(w, http.StatusUnauthorized, "invalid_token", "Invalid or expired token")
 			return

@@ -82,6 +82,9 @@ func normalizeConfig(c Config) Config {
 		if c.Blacklist.CleanupInterval == 0 {
 			c.Blacklist.CleanupInterval = defaults.Blacklist.CleanupInterval
 		}
+		// bool zero-value is false — indistinguishable from "not set".
+		// Always enable for built-in store to prevent unbounded growth.
+		c.Blacklist.EnableAutoCleanup = true
 	}
 
 	return c
@@ -136,6 +139,9 @@ func (c *Config) validateSigningKey() error {
 		if err := validateAsymmetricSigningKey(c.SigningMethod, c.SigningKey); err != nil {
 			return err
 		}
+		if err := validateVerificationKey(c.SigningMethod, c.VerificationKey); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -172,4 +178,31 @@ func validateAsymmetricSigningKey(method SigningMethod, key any) error {
 // isAsymmetric returns true if the signing method uses asymmetric keys.
 func (c *Config) isAsymmetric() bool {
 	return c.SigningMethod.isAsymmetric()
+}
+
+// validateVerificationKey validates the optional verification key for asymmetric methods.
+// When nil, the SigningKey is used for both signing and verification.
+func validateVerificationKey(method SigningMethod, key any) error {
+	if key == nil {
+		return nil
+	}
+	switch method {
+	case SigningMethodRS256, SigningMethodRS384, SigningMethodRS512:
+		rsaKey, ok := key.(*rsa.PublicKey)
+		if !ok {
+			return fmt.Errorf("%w: VerificationKey must be *rsa.PublicKey for RSA, got %T", ErrInvalidSecretKey, key)
+		}
+		if rsaKey == nil {
+			return fmt.Errorf("%w: RSA VerificationKey cannot be nil", ErrInvalidSecretKey)
+		}
+	case SigningMethodES256, SigningMethodES384, SigningMethodES512:
+		ecdsaKey, ok := key.(*ecdsa.PublicKey)
+		if !ok {
+			return fmt.Errorf("%w: VerificationKey must be *ecdsa.PublicKey for ECDSA, got %T", ErrInvalidSecretKey, key)
+		}
+		if ecdsaKey == nil {
+			return fmt.Errorf("%w: ECDSA VerificationKey cannot be nil", ErrInvalidSecretKey)
+		}
+	}
+	return nil
 }

@@ -199,7 +199,7 @@ func TestGetInternalSigningMethod(t *testing.T) {
 // Core Token Tests
 // =============================================================================
 
-func TestNewTokenWithClaims(t *testing.T) {
+func TestSignTokenRoundTrip(t *testing.T) {
 	method, err := GetInternalSigningMethod("HS256")
 	if err != nil {
 		t.Fatalf("GetInternalSigningMethod failed: %v", err)
@@ -208,51 +208,15 @@ func TestNewTokenWithClaims(t *testing.T) {
 		"sub": "user123",
 		"exp": 1234567890,
 	}
-
-	token := NewTokenWithClaims(method, claims)
-	if token == nil {
-		t.Fatal("NewTokenWithClaims returned nil")
-	}
-
-	if token.Header["typ"] != "JWT" {
-		t.Errorf("Expected typ=JWT, got %v", token.Header["typ"])
-	}
-
-	if token.Header["alg"] != "HS256" {
-		t.Errorf("Expected alg=HS256, got %v", token.Header["alg"])
-	}
-
-	if token.Claims == nil {
-		t.Error("Claims not set correctly")
-	}
-
-	if token.Method != method {
-		t.Error("Method not set correctly")
-	}
-}
-
-func TestCoreSignedString(t *testing.T) {
-	method, err := GetInternalSigningMethod("HS256")
-	if err != nil {
-		t.Fatalf("GetInternalSigningMethod failed: %v", err)
-	}
-	claims := map[string]any{
-		"sub": "user123",
-		"exp": 1234567890,
-	}
-
-	token := NewTokenWithClaims(method, claims)
 	key := []byte("test-secret-key-with-sufficient-length-32bytes")
 
-	tokenString, err := token.SignedString(key)
+	tokenString, err := SignToken("HS256", claims, method, key)
 	if err != nil {
-		t.Fatalf("SignedString failed: %v", err)
+		t.Fatalf("SignToken failed: %v", err)
 	}
-
 	if tokenString == "" {
-		t.Error("SignedString returned empty string")
+		t.Error("SignToken returned empty string")
 	}
-
 	parts := strings.Split(tokenString, ".")
 	if len(parts) != 3 {
 		t.Errorf("Expected 3 parts, got %d", len(parts))
@@ -484,9 +448,8 @@ func TestParseWithClaimsKeyFuncError(t *testing.T) {
 	claims := map[string]any{
 		"user_id": "test",
 	}
-	token := NewTokenWithClaims(method, claims)
 	key := []byte("test-secret-key-with-sufficient-length-32bytes")
-	tokenString, err := token.SignedString(key)
+	tokenString, err := SignToken("HS256", claims, method, key)
 	if err != nil {
 		t.Fatalf("Failed to create token: %v", err)
 	}
@@ -515,9 +478,8 @@ func TestParseWithClaimsInvalidSignature(t *testing.T) {
 	claims := map[string]any{
 		"user_id": "test",
 	}
-	token := NewTokenWithClaims(method, claims)
 	key := []byte("test-secret-key-with-sufficient-length-32bytes")
-	tokenString, err := token.SignedString(key)
+	tokenString, err := SignToken("HS256", claims, method, key)
 	if err != nil {
 		t.Fatalf("Failed to create token: %v", err)
 	}
@@ -689,7 +651,7 @@ func TestZeroBytes(t *testing.T) {
 // =============================================================================
 
 func TestMemoryStoreBasicOperations(t *testing.T) {
-	store := NewMemoryStore(100, time.Minute, false)
+	store := NewMemoryStore(100, time.Minute, false, nil)
 	defer store.Close()
 
 	tokenID := "test-token-123"
@@ -721,7 +683,7 @@ func TestMemoryStoreBasicOperations(t *testing.T) {
 }
 
 func TestMemoryStoreExpiration(t *testing.T) {
-	store := NewMemoryStore(100, time.Minute, false)
+	store := NewMemoryStore(100, time.Minute, false, nil)
 	defer store.Close()
 
 	tokenID := "expired-token"
@@ -743,7 +705,7 @@ func TestMemoryStoreExpiration(t *testing.T) {
 }
 
 func TestMemoryStoreCleanup(t *testing.T) {
-	store := NewMemoryStore(100, time.Minute, false)
+	store := NewMemoryStore(100, time.Minute, false, nil)
 	defer store.Close()
 
 	// Add expired tokens
@@ -773,7 +735,7 @@ func TestMemoryStoreCleanup(t *testing.T) {
 
 func TestMemoryStoreMaxSize(t *testing.T) {
 	maxSize := 10
-	store := NewMemoryStore(maxSize, time.Minute, false)
+	store := NewMemoryStore(maxSize, time.Minute, false, nil)
 	defer store.Close()
 
 	// Add more tokens than max size
@@ -798,7 +760,7 @@ func TestMemoryStoreMaxSize(t *testing.T) {
 }
 
 func TestMemoryStoreAutoCleanup(t *testing.T) {
-	store := NewMemoryStore(100, 50*time.Millisecond, true)
+	store := NewMemoryStore(100, 50*time.Millisecond, true, nil)
 	defer store.Close()
 
 	// Add expired token
@@ -821,7 +783,7 @@ func TestMemoryStoreAutoCleanup(t *testing.T) {
 }
 
 func TestMemoryStoreClose(t *testing.T) {
-	store := NewMemoryStore(100, time.Minute, true)
+	store := NewMemoryStore(100, time.Minute, true, nil)
 
 	tokenID := "test-token"
 	expiresAt := time.Now().Add(time.Hour)
@@ -857,7 +819,7 @@ func TestMemoryStoreClose(t *testing.T) {
 }
 
 func TestMemoryStoreConcurrency(t *testing.T) {
-	store := NewMemoryStore(1000, time.Minute, false)
+	store := NewMemoryStore(1000, time.Minute, false, nil)
 	defer store.Close()
 
 	done := make(chan bool)
@@ -895,7 +857,7 @@ func TestMemoryStoreConcurrency(t *testing.T) {
 // =============================================================================
 
 func TestManagerBlacklistToken(t *testing.T) {
-	store := NewMemoryStore(1000, 5*time.Minute, false)
+	store := NewMemoryStore(1000, 5*time.Minute, false, nil)
 	defer store.Close()
 
 	manager := NewManager(store)
@@ -928,7 +890,7 @@ func TestManagerBlacklistToken(t *testing.T) {
 }
 
 func TestManagerIsBlacklisted(t *testing.T) {
-	store := NewMemoryStore(1000, 5*time.Minute, false)
+	store := NewMemoryStore(1000, 5*time.Minute, false, nil)
 	manager := NewManager(store)
 	defer manager.Close()
 
@@ -952,7 +914,7 @@ func TestManagerIsBlacklisted(t *testing.T) {
 }
 
 func TestManagerBlacklistTokenString(t *testing.T) {
-	store := NewMemoryStore(1000, 5*time.Minute, false)
+	store := NewMemoryStore(1000, 5*time.Minute, false, nil)
 	manager := NewManager(store)
 	defer manager.Close()
 
@@ -1009,7 +971,7 @@ func TestManagerBlacklistTokenString(t *testing.T) {
 }
 
 func TestManagerClose(t *testing.T) {
-	store := NewMemoryStore(1000, 5*time.Minute, false)
+	store := NewMemoryStore(1000, 5*time.Minute, false, nil)
 	manager := NewManager(store)
 
 	// Add some tokens
@@ -1309,7 +1271,7 @@ func TestSigningMethodHash(t *testing.T) {
 // =============================================================================
 
 func TestNewManagerWithClock(t *testing.T) {
-	store := NewMemoryStore(100, time.Minute, false)
+	store := NewMemoryStore(100, time.Minute, false, nil)
 	defer store.Close()
 
 	// With custom clock
@@ -1328,7 +1290,7 @@ func TestNewManagerWithClock(t *testing.T) {
 	}
 
 	// With nil clock (should use time.Now)
-	store2 := NewMemoryStore(100, time.Minute, false)
+	store2 := NewMemoryStore(100, time.Minute, false, nil)
 	defer store2.Close()
 	manager2 := NewManagerWithClock(store2, nil)
 	if manager2 == nil {

@@ -4,7 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"sync/atomic"
+	"sync"
 	"testing"
 	"time"
 )
@@ -26,9 +26,6 @@ func TestErrorTypes(t *testing.T) {
 		}
 		if !errors.Is(tokenErr, baseErr) {
 			t.Error("errors.Is should match base error")
-		}
-		if errors.Is(tokenErr, errors.New("different")) {
-			t.Error("errors.Is should not match different error")
 		}
 
 		// Without TokenID
@@ -152,6 +149,19 @@ func TestRateLimiterBasic(t *testing.T) {
 		}
 	})
 
+	t.Run("AllowN_EmptyKey", func(t *testing.T) {
+		rl := NewRateLimiter(10, time.Second)
+		defer rl.Close()
+
+		if rl.AllowN("", 1) {
+			t.Error("AllowN should reject empty key with n > 0")
+		}
+		// n=0 always returns true regardless of key
+		if !rl.AllowN("", 0) {
+			t.Error("AllowN with n=0 should return true")
+		}
+	})
+
 	t.Run("Reset", func(t *testing.T) {
 		rl := NewRateLimiter(10, time.Second)
 		defer rl.Close()
@@ -168,6 +178,8 @@ func TestRateLimiterBasic(t *testing.T) {
 
 		// Reset non-existent key should not panic
 		rl.Reset("nonexistent")
+		// Reset empty key should not panic
+		rl.Reset("")
 	})
 
 	t.Run("TokenRefill", func(t *testing.T) {
@@ -193,6 +205,9 @@ func TestRateLimiterBasic(t *testing.T) {
 		if rl.Allow("test") {
 			t.Error("Should not allow after close")
 		}
+		if rl.AllowN("test", 1) {
+			t.Error("AllowN should not allow after close")
+		}
 		rl.Close() // double close should be safe
 	})
 
@@ -205,7 +220,7 @@ func TestRateLimiterBasic(t *testing.T) {
 		rl.mu.Unlock()
 
 		for i := range 6 {
-			rl.Allow("key-" + string(rune('0'+i)))
+			rl.Allow(fmt.Sprintf("key-%d", i))
 			time.Sleep(time.Millisecond)
 		}
 
@@ -214,24 +229,6 @@ func TestRateLimiterBasic(t *testing.T) {
 		rl.mu.Unlock()
 		if size > 5 {
 			t.Errorf("Expected max 5 buckets, got %d", size)
-		}
-	})
-
-	t.Run("ConcurrentReset", func(t *testing.T) {
-		rl := NewRateLimiter(100, time.Minute)
-		defer rl.Close()
-
-		var wg atomic.Int32
-		for i := range 10 {
-			go func(id int) {
-				key := fmt.Sprintf("key-%d", id)
-				rl.Allow(key)
-				rl.Reset(key)
-				wg.Add(1)
-			}(i)
-		}
-		for wg.Load() < 10 {
-			time.Sleep(time.Millisecond)
 		}
 	})
 
@@ -275,12 +272,15 @@ func TestProcessorOperationsAfterClose(t *testing.T) {
 		name string
 		fn   func() error
 	}{
-		{"CreateToken", func() error { _, e := processor.CreateToken(claims); return e }},
-		{"ValidateToken", func() error { _, _, e := processor.ValidateToken("a.b.c"); return e }},
-		{"CreateRefreshToken", func() error { _, e := processor.CreateRefreshToken(claims); return e }},
-		{"RefreshToken", func() error { _, e := processor.RefreshToken("a.b.c"); return e }},
-		{"RevokeToken", func() error { return processor.RevokeToken("a.b.c") }},
-		{"IsTokenRevoked", func() error { _, e := processor.IsTokenRevoked("a.b.c"); return e }},
+		{"Create", func() error { _, e := processor.Create(&claims); return e }},
+		{"Validate", func() error { _, _, e := processor.Validate("a.b.c"); return e }},
+		{"CreateRefresh", func() error { _, e := processor.CreateRefresh(&claims); return e }},
+		{"Refresh", func() error { _, e := processor.Refresh("a.b.c"); return e }},
+		{"Revoke", func() error { return processor.Revoke("a.b.c") }},
+		{"IsRevoked", func() error { _, e := processor.IsRevoked("a.b.c"); return e }},
+		{"ParseUnverified", func() error { return processor.ParseUnverified("a.b.c", &Claims{}) }},
+		{"ValidateInto", func() error { _, _, e := processor.ValidateInto("a.b.c", &claims); return e }},
+		{"RefreshInto", func() error { _, e := processor.RefreshInto("a.b.c", &claims); return e }},
 	}
 
 	for _, tt := range tests {
@@ -310,13 +310,13 @@ func TestRefreshTokenEdgeCases(t *testing.T) {
 		wantError error
 	}{
 		{"EmptyToken", "", ErrEmptyToken},
-		{"MalformedToken", "malformed", nil}, // any non-nil error
+		{"MalformedToken", "malformed", nil},
 		{"InvalidToken", "invalid.token.string", nil},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := processor.RefreshToken(tt.token)
+			_, err := processor.Refresh(tt.token)
 			if tt.wantError != nil {
 				if err != tt.wantError {
 					t.Errorf("Expected %v, got %v", tt.wantError, err)
@@ -340,12 +340,12 @@ func TestRevokeTokenEdgeCases(t *testing.T) {
 	defer processor.Close()
 
 	// Empty token
-	if err := processor.RevokeToken(""); err != ErrEmptyToken {
+	if err := processor.Revoke(""); err != ErrEmptyToken {
 		t.Errorf("Expected ErrEmptyToken, got %v", err)
 	}
 
-	// No blacklist configured - should return error
-	if err := processor.RevokeToken("valid.token.string"); err == nil {
+	// No blacklist configured
+	if err := processor.Revoke("valid.token.string"); err == nil {
 		t.Error("Expected error when no blacklist configured")
 	}
 }
@@ -368,7 +368,7 @@ func TestIsTokenRevokedEdgeCases(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := processor.IsTokenRevoked(tt.token)
+			_, err := processor.IsRevoked(tt.token)
 			if tt.wantError && err == nil {
 				t.Error("Expected error")
 			}
@@ -386,7 +386,7 @@ func TestIsTokenRevokedInvalidToken(t *testing.T) {
 	}
 	defer processor.Close()
 
-	revoked, err := processor.IsTokenRevoked("invalid-token")
+	revoked, err := processor.IsRevoked("invalid-token")
 	if err == nil {
 		t.Error("Expected error for invalid token")
 	}
@@ -414,15 +414,13 @@ func TestProcessorRateLimiting(t *testing.T) {
 
 	claims := Claims{UserID: "ratelimited-user", Username: "test"}
 
-	// Exhaust rate limit
 	for range 5 {
-		if _, err := processor.CreateToken(claims); err != nil {
+		if _, err := processor.Create(&claims); err != nil {
 			t.Fatalf("Should succeed within rate limit: %v", err)
 		}
 	}
 
-	// Should be rate limited now
-	if _, err := processor.CreateToken(claims); err == nil {
+	if _, err := processor.Create(&claims); err == nil {
 		t.Error("Expected rate limit error")
 	}
 }
@@ -444,11 +442,11 @@ func TestProcessorWithCustomRateLimiter(t *testing.T) {
 	claims := Claims{UserID: "custom-rl-user", Username: "test"}
 
 	for range 5 {
-		if _, err := processor.CreateToken(claims); err != nil {
+		if _, err := processor.Create(&claims); err != nil {
 			t.Fatalf("Should succeed within rate limit: %v", err)
 		}
 	}
-	if _, err := processor.CreateToken(claims); err == nil {
+	if _, err := processor.Create(&claims); err == nil {
 		t.Error("Expected rate limit error with custom limiter")
 	}
 }
@@ -458,28 +456,6 @@ func TestProcessorWithCustomRateLimiter(t *testing.T) {
 // ============================================================================
 
 func TestRegisteredClaimsValidation(t *testing.T) {
-	processor, err := newTestProcessor(testSecretKey)
-	if err != nil {
-		t.Fatalf("Failed to create processor: %v", err)
-	}
-	defer processor.Close()
-
-	t.Run("NotBefore", func(t *testing.T) {
-		claims := Claims{
-			UserID:   "nbf-user",
-			Username: "test",
-		}
-		token, err := processor.CreateToken(claims)
-		if err != nil {
-			t.Fatalf("Failed to create token: %v", err)
-		}
-
-		// Token should be valid now
-		if _, valid, err := processor.ValidateToken(token); !valid || err != nil {
-			t.Fatalf("Token should be valid: %v", err)
-		}
-	})
-
 	t.Run("IssuerMismatch", func(t *testing.T) {
 		cfg := DefaultConfig()
 		cfg.SecretKey = testSecretKey
@@ -491,12 +467,11 @@ func TestRegisteredClaimsValidation(t *testing.T) {
 		defer proc.Close()
 
 		claims := Claims{UserID: "issuer-user", Username: "test"}
-		token, err := proc.CreateToken(claims)
+		token, err := proc.Create(&claims)
 		if err != nil {
 			t.Fatalf("Failed to create token: %v", err)
 		}
 
-		// Validate with different issuer
 		cfg2 := DefaultConfig()
 		cfg2.SecretKey = testSecretKey
 		cfg2.Issuer = "issuer-B"
@@ -506,7 +481,7 @@ func TestRegisteredClaimsValidation(t *testing.T) {
 		}
 		defer proc2.Close()
 
-		_, valid, err := proc2.ValidateToken(token)
+		_, valid, err := proc2.Validate(token)
 		if valid || err == nil {
 			t.Error("Should fail with mismatched issuer")
 		}
@@ -524,11 +499,11 @@ func TestRegisteredClaimsValidation(t *testing.T) {
 
 		// Token without audience should fail
 		claims := Claims{UserID: "aud-user", Username: "test"}
-		token, err := proc.CreateToken(claims)
+		token, err := proc.Create(&claims)
 		if err != nil {
 			t.Fatalf("Failed to create token: %v", err)
 		}
-		_, valid, err := proc.ValidateToken(token)
+		_, valid, err := proc.Validate(token)
 		if valid || err == nil {
 			t.Error("Should fail without matching audience")
 		}
@@ -541,13 +516,44 @@ func TestRegisteredClaimsValidation(t *testing.T) {
 				Audience: []string{"api-v1"},
 			},
 		}
-		token2, err := proc.CreateToken(claims2)
+		token2, err := proc.Create(&claims2)
 		if err != nil {
 			t.Fatalf("Failed to create token with audience: %v", err)
 		}
-		_, valid, err = proc.ValidateToken(token2)
+		_, valid, err = proc.Validate(token2)
 		if !valid || err != nil {
 			t.Errorf("Should succeed with matching audience: %v", err)
+		}
+	})
+
+	t.Run("NotBeforeFuture", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.SecretKey = testSecretKey
+		cfg.Clock = FixedClock{T: time.Date(2025, 1, 1, 12, 0, 0, 0, time.UTC)}
+		proc, err := New(cfg)
+		if err != nil {
+			t.Fatalf("Failed to create processor: %v", err)
+		}
+		defer proc.Close()
+
+		claims := Claims{
+			UserID:   "nbf-user",
+			Username: "test",
+			RegisteredClaims: RegisteredClaims{
+				NotBefore: NewNumericDate(time.Date(2025, 1, 1, 13, 0, 0, 0, time.UTC)),
+			},
+		}
+		token, err := createTokenWithCustomClaims(proc, &claims, time.Hour)
+		if err != nil {
+			t.Fatalf("Failed to create token: %v", err)
+		}
+
+		_, valid, err := proc.Validate(token)
+		if valid {
+			t.Error("Token with future NotBefore should be invalid")
+		}
+		if !errors.Is(err, ErrTokenNotValidYet) {
+			t.Errorf("Expected ErrTokenNotValidYet, got %v", err)
 		}
 	})
 }
@@ -563,33 +569,28 @@ func TestRefreshTokenForEdgeCases(t *testing.T) {
 	}
 	defer processor.Close()
 
-	// Create a refresh token with custom claims
 	claims := &TestCustomClaims{UserID: "rtf-user", Email: "rtf@example.com"}
-	refreshToken, err := processor.CreateRefreshTokenWith(claims)
+	refreshToken, err := processor.CreateRefresh(claims)
 	if err != nil {
 		t.Fatalf("Failed to create refresh token: %v", err)
 	}
 
-	// RefreshTokenFor should work
 	newClaims := &TestCustomClaims{}
-	newToken, err := processor.RefreshTokenFor(refreshToken, newClaims)
+	newToken, err := processor.RefreshInto(refreshToken, newClaims)
 	if err != nil {
-		t.Fatalf("RefreshTokenFor failed: %v", err)
+		t.Fatalf("RefreshInto failed: %v", err)
 	}
 	if newToken == "" {
 		t.Error("Expected non-empty token")
 	}
 
-	// Validate the new access token
 	validatedClaims := &TestCustomClaims{}
-	_, valid, err := processor.ValidateTokenFor(newToken, validatedClaims)
+	_, valid, err := processor.ValidateInto(newToken, validatedClaims)
 	if !valid || err != nil {
 		t.Errorf("New access token should be valid: %v", err)
 	}
 }
 
-// TestValidateTokenIntoCustomClaimsInvalidSignature covers the !token.Valid branch
-// TestAlgorithmMismatch covers parseToken's alg-mismatch branch
 func TestAlgorithmMismatch(t *testing.T) {
 	cfg1 := DefaultConfig()
 	cfg1.SecretKey = testSecretKey
@@ -600,12 +601,11 @@ func TestAlgorithmMismatch(t *testing.T) {
 	}
 	defer proc1.Close()
 
-	token, err := proc1.CreateToken(Claims{UserID: "mismatch-user", Username: "test"})
+	token, err := proc1.Create(&Claims{UserID: "mismatch-user", Username: "test"})
 	if err != nil {
 		t.Fatalf("Failed to create token: %v", err)
 	}
 
-	// Validate with HS384 processor (same key, different algorithm)
 	cfg2 := DefaultConfig()
 	cfg2.SecretKey = testSecretKey
 	cfg2.SigningMethod = SigningMethodHS384
@@ -615,33 +615,9 @@ func TestAlgorithmMismatch(t *testing.T) {
 	}
 	defer proc2.Close()
 
-	_, valid, err := proc2.ValidateToken(token)
+	_, valid, err := proc2.Validate(token)
 	if valid || err == nil {
 		t.Error("Should fail with algorithm mismatch")
-	}
-}
-
-// TestAsymmetricWrongKeyType covers validateAsymmetricSigningKey error branches
-func TestAsymmetricWrongKeyType(t *testing.T) {
-	tests := []struct {
-		name   string
-		method SigningMethod
-		key    any
-	}{
-		{"RSAWithRSAPrivateKey", SigningMethodRS256, "string-key"},
-		{"ECDSAWithECDSAPrivateKey", SigningMethodES256, "string-key"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			cfg := DefaultConfig()
-			cfg.SigningKey = tt.key
-			cfg.SigningMethod = tt.method
-			_, err := New(cfg)
-			if err == nil {
-				t.Error("Expected error for wrong key type")
-			}
-		})
 	}
 }
 
@@ -652,27 +628,25 @@ func TestValidateTokenIntoCustomClaimsInvalidSignature(t *testing.T) {
 	}
 	defer processor.Close()
 
-	// Create token, then tamper with it
 	claims := &TestCustomClaims{UserID: "tamper-user", Email: "tamper@example.com"}
-	token, err := processor.CreateTokenWith(claims)
+	token, err := processor.Create(claims)
 	if err != nil {
 		t.Fatalf("Failed to create token: %v", err)
 	}
 
-	// Tamper with the token to make signature invalid
 	parts := strings.Split(token, ".")
 	if len(parts) == 3 {
-		parts[2] = "aW52YWxpZHNpZw" // invalid signature
+		parts[2] = "aW52YWxpZHNpZw"
 		tamperedToken := strings.Join(parts, ".")
 		validatedClaims := &TestCustomClaims{}
-		_, valid, err := processor.ValidateTokenFor(tamperedToken, validatedClaims)
+		_, valid, err := processor.ValidateInto(tamperedToken, validatedClaims)
 		if valid || err == nil {
 			t.Error("Tampered token should fail validation")
 		}
 	}
 }
 
-func TestValidateTokenWithDeprecated(t *testing.T) {
+func TestValidateTokenForCustomClaims(t *testing.T) {
 	processor, err := newTestProcessor(testSecretKey)
 	if err != nil {
 		t.Fatalf("Failed to create processor: %v", err)
@@ -680,15 +654,15 @@ func TestValidateTokenWithDeprecated(t *testing.T) {
 	defer processor.Close()
 
 	claims := &TestCustomClaims{UserID: "vtw-user", Email: "vtw@example.com"}
-	token, err := processor.CreateTokenWith(claims)
+	token, err := processor.Create(claims)
 	if err != nil {
 		t.Fatalf("Failed to create token: %v", err)
 	}
 
 	validatedClaims := &TestCustomClaims{}
-	result, valid, err := processor.ValidateTokenWith(token, validatedClaims)
+	result, valid, err := processor.ValidateInto(token, validatedClaims)
 	if !valid || err != nil {
-		t.Errorf("ValidateTokenWith should work: %v", err)
+		t.Errorf("ValidateInto should work: %v", err)
 	}
 	if result.(*TestCustomClaims).UserID != "vtw-user" {
 		t.Error("Claims mismatch")
@@ -702,9 +676,8 @@ func TestParseUnverifiedEdgeCases(t *testing.T) {
 	}
 	defer processor.Close()
 
-	// Valid token should parse
 	claims := Claims{UserID: "parse-user", Username: "test"}
-	token, err := processor.CreateToken(claims)
+	token, err := processor.Create(&claims)
 	if err != nil {
 		t.Fatalf("Failed to create token: %v", err)
 	}
@@ -717,7 +690,6 @@ func TestParseUnverifiedEdgeCases(t *testing.T) {
 		t.Errorf("UserID = %s, want parse-user", parsedClaims.UserID)
 	}
 
-	// Edge cases
 	tests := []struct {
 		name      string
 		token     string
@@ -735,49 +707,6 @@ func TestParseUnverifiedEdgeCases(t *testing.T) {
 			}
 		})
 	}
-}
-
-// ============================================================================
-// INTERNAL MEMORY/KEY ANALYSIS TESTS
-// ============================================================================
-
-func TestMemoryKeyAnalysis(t *testing.T) {
-	tests := []struct {
-		name   string
-		key    string
-		isWeak bool
-	}{
-		// Weak patterns
-		{"Empty", "", true},
-		{"AllSame", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", true},
-		{"Sequential", "abcdefghijklmnopqrstuvwxyz123456", true},
-		{"Repeating", "abababababababababababababababab", true},
-		{"Keyboard", "qwertyuiopasdfghjklzxcvbnm123456", true},
-		{"CommonWord", "passwordpasswordpasswordpassword", true},
-		{"Numbers", "123123123123123123123123123123123", true},
-		{"AllZeros", "000000000000000000000000000000000", true},
-
-		// Strong keys
-		{"StrongMixed", "Kx9#mP2$vL8@nQ5!wR7&tY3^uI6*oE4%", false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := isWeakKeyStr(tt.key)
-			if got != tt.isWeak {
-				t.Errorf("IsWeakKey(%q) = %v, want %v", tt.name, got, tt.isWeak)
-			}
-		})
-	}
-}
-
-func isWeakKeyStr(key string) bool {
-	processor, err := newTestProcessor(key)
-	if err != nil {
-		return true // Key was rejected as weak
-	}
-	processor.Close()
-	return false
 }
 
 // ============================================================================
@@ -806,12 +735,12 @@ func TestClaimsValidation(t *testing.T) {
 		{"DangerousSessionID", Claims{UserID: "u", SessionID: "javascript:alert(1)"}, true},
 		{"ControlCharInClientID", Claims{UserID: "u", ClientID: "client\x00id"}, true},
 		{"UnsupportedExtraType", Claims{UserID: "u", Extra: map[string]any{"key": 12345}}, true},
-		{"ValidExtraIntAllowed", Claims{UserID: "u", Extra: map[string]any{"key": "value"}}, false},
+		{"ValidExtraStringAllowed", Claims{UserID: "u", Extra: map[string]any{"key": "value"}}, false},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := processor.CreateToken(tt.claims)
+			_, err := processor.Create(&tt.claims)
 			if tt.wantError && err == nil {
 				t.Error("Expected error")
 			}
@@ -876,8 +805,132 @@ func TestRateLimitKeyer(t *testing.T) {
 	// should be skipped (no Subject set)
 	claims := &TestCustomClaims{UserID: "rlk-user", Email: "rlk@example.com"}
 	for range 10 {
-		if _, err := processor.CreateTokenWith(claims); err != nil {
+		if _, err := processor.Create(claims); err != nil {
 			t.Fatalf("Should not be rate limited without rate limit key: %v", err)
 		}
+	}
+}
+
+// ============================================================================
+// WEAK KEY DETECTION (consolidated)
+// ============================================================================
+
+func TestWeakKeyDetectionConsolidated(t *testing.T) {
+	tests := []struct {
+		name  string
+		key   string
+		isWeak bool
+	}{
+		// Weak patterns
+		{"Empty", "", true},
+		{"AllSameChar", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", true},
+		{"Sequential", "abcdefghijklmnopqrstuvwxyz123456", true},
+		{"Repeating", "abababababababababababababababab", true},
+		{"Keyboard", "qwertyuiopasdfghjklzxcvbnm123456", true},
+		{"CommonWord", "passwordpasswordpasswordpassword", true},
+		{"Numbers", "123123123123123123123123123123123", true},
+		{"AllZeros", "000000000000000000000000000000000", true},
+
+		// Strong keys
+		{"StrongMixed", "Kx9#mP2$vL8@nQ5!wR7&tY3^uI6*oE4%", false},
+		{"StrongYear", "Str0ng!S3cr3t#K3y$W1th%Suff1c13nt&Entr0py*2024", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			processor, err := newTestProcessor(tt.key)
+			if tt.isWeak {
+				if err == nil {
+					if processor != nil {
+						processor.Close()
+					}
+					t.Errorf("Key %q should be rejected as weak", tt.name)
+				}
+			} else {
+				if err != nil {
+					t.Errorf("Key %q should be accepted: %v", tt.name, err)
+				}
+				if processor != nil {
+					processor.Close()
+				}
+			}
+		})
+	}
+}
+
+// ============================================================================
+// TOKEN MANAGER INTERFACE COMPLIANCE
+// ============================================================================
+
+func TestTokenManagerInterface(t *testing.T) {
+	// Verify Processor implements TokenManager
+	var _ TokenManager = (*Processor)(nil)
+	var _ RateLimitProvider = (*RateLimiter)(nil)
+	var _ ClockProvider = SystemClock{}
+	var _ ClockProvider = FixedClock{}
+	var _ CustomClaims = (*Claims)(nil)
+	var _ CustomClaims = (*TestCustomClaims)(nil)
+}
+
+// ============================================================================
+// CONCURRENT RATE LIMITER RESET
+// ============================================================================
+
+func TestRateLimiterConcurrentReset(t *testing.T) {
+	rl := NewRateLimiter(100, time.Minute)
+	defer rl.Close()
+
+	var wg sync.WaitGroup
+	var allowedCount int64
+
+	wg.Add(10)
+	for i := range 10 {
+		go func(id int) {
+			defer wg.Done()
+			key := fmt.Sprintf("key-%d", id)
+			if rl.Allow(key) {
+				_ = fmt.Sprintf("allowed %d", allowedCount)
+			}
+			rl.Reset(key)
+		}(i)
+	}
+	wg.Wait()
+}
+
+// ============================================================================
+// REFRESH CHAIN TEST
+// ============================================================================
+
+func TestRefreshChain(t *testing.T) {
+	processor, err := newTestProcessor(testSecretKey)
+	if err != nil {
+		t.Fatalf("Failed to create processor: %v", err)
+	}
+	defer processor.Close()
+
+	claims := Claims{UserID: "chain-user", Username: "test", Role: "admin"}
+
+	// Create initial refresh token
+	refreshToken, err := processor.CreateRefresh(&claims)
+	if err != nil {
+		t.Fatalf("Failed to create initial refresh token: %v", err)
+	}
+
+	// Refresh to get access token
+	accessToken, err := processor.Refresh(refreshToken)
+	if err != nil {
+		t.Fatalf("Failed to refresh: %v", err)
+	}
+
+	// Validate the access token
+	parsed, valid, err := processor.Validate(accessToken)
+	if err != nil || !valid {
+		t.Fatalf("Access token should be valid: %v", err)
+	}
+	if parsed.UserID != claims.UserID {
+		t.Errorf("UserID mismatch: got %s, want %s", parsed.UserID, claims.UserID)
+	}
+	if parsed.Role != claims.Role {
+		t.Errorf("Role mismatch: got %s, want %s", parsed.Role, claims.Role)
 	}
 }

@@ -21,13 +21,17 @@ var (
 	ErrTokenMissingID     = errors.New("token missing ID")
 	ErrTokenExpired       = errors.New("token expired")
 	ErrTokenNotValidYet   = errors.New("token not valid yet")
-	ErrTokenInvalidIssuer = errors.New("token invalid issuer")
+	ErrTokenInvalidIssuer   = errors.New("token invalid issuer")
+	ErrTokenInvalidAudience = errors.New("token invalid audience")
 
 	// Claims errors
 	ErrInvalidClaims = errors.New("invalid claims")
 
 	// Rate limiting errors
 	ErrRateLimitExceeded = errors.New("rate limit exceeded")
+
+	// Blacklist errors
+	ErrBlacklistNotConfigured = errors.New("blacklist not configured")
 
 	// Lifecycle errors
 	ErrProcessorClosed = errors.New("processor closed")

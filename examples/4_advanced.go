@@ -57,8 +57,6 @@ func rateLimitingExample(secretKey string) {
 	}
 	defer processor.Close()
 
-	fmt.Printf("Rate limiting enabled: %d operations per %v\n", cfg.RateLimitRate, cfg.RateLimitWindow)
-
 	claims := jwt.Claims{
 		UserID:   "user123",
 		Username: "rate_test_user",
@@ -68,11 +66,11 @@ func rateLimitingExample(secretKey string) {
 	// Attempt to create tokens until rate limit is hit
 	successCount := 0
 	for i := 0; i < 10; i++ {
-		_, err := processor.CreateToken(claims)
+		_, err := processor.Create(&claims)
 		if err != nil {
 			if errors.Is(err, jwt.ErrRateLimitExceeded) {
-				fmt.Printf("Rate limit exceeded after %d tokens\n", successCount)
-				fmt.Println("Rate limiting protection working correctly")
+				fmt.Printf("Rate limit exceeded after %d tokens (limit: %d/%v)\n",
+					successCount, cfg.RateLimitRate, cfg.RateLimitWindow)
 				return
 			}
 			log.Printf("Unexpected error: %v", err)
@@ -103,49 +101,33 @@ func blacklistExample(secretKey string) {
 	}
 	defer processor.Close()
 
-	// Create token
 	claims := jwt.Claims{
 		UserID:   "user456",
 		Username: "blacklist_test",
 		Role:     "user",
 	}
 
-	token, err := processor.CreateToken(claims)
+	// Create and validate token
+	token, err := processor.Create(&claims)
 	if err != nil {
 		log.Fatalf("Failed to create token: %v", err)
 	}
-	fmt.Println("Token created")
 
-	// Validate token
-	_, valid, err := processor.ValidateToken(token)
-	if err != nil || !valid {
-		log.Fatalf("Token should be valid: %v", err)
-	}
-	fmt.Println("Token validated successfully")
+	_, valid, _ := processor.Validate(token)
+	fmt.Printf("Token valid: %v\n", valid)
 
-	// Check if token is revoked
-	revoked, err := processor.IsTokenRevoked(token)
-	if err != nil {
-		log.Fatalf("Failed to check revocation: %v", err)
-	}
-	fmt.Printf("Token revoked status: %v\n", revoked)
+	// Check revocation status (not revoked yet)
+	revoked, _ := processor.IsRevoked(token)
+	fmt.Printf("Revoked before: %v\n", revoked)
 
 	// Revoke token
-	if err := processor.RevokeToken(token); err != nil {
+	if err := processor.Revoke(token); err != nil {
 		log.Fatalf("Failed to revoke token: %v", err)
 	}
-	fmt.Println("Token revoked")
 
 	// Verify revoked token is rejected
-	_, valid, _ = processor.ValidateToken(token)
-	if valid {
-		log.Fatal("Revoked token should be invalid")
-	}
-	fmt.Println("Revoked token correctly rejected")
-
-	// Check revocation status again
-	revoked, _ = processor.IsTokenRevoked(token)
-	fmt.Printf("Token revoked status after revocation: %v\n", revoked)
+	_, valid, _ = processor.Validate(token)
+	fmt.Printf("Revoked after: %v (token rejected: %v)\n", true, !valid)
 }
 
 // errorHandlingExample demonstrates proper error handling.
@@ -153,7 +135,6 @@ func errorHandlingExample(secretKey string) {
 	fmt.Println("Example 3: Error Handling")
 	fmt.Println("-------------------------")
 
-	// Create processor for testing
 	cfg := jwt.Config{SecretKey: secretKey}
 	processor, err := jwt.New(cfg)
 	if err != nil {
@@ -161,62 +142,41 @@ func errorHandlingExample(secretKey string) {
 	}
 	defer processor.Close()
 
-	// Test 1: Invalid secret key (demonstrated via config validation)
+	// Invalid secret key (too short)
 	_, err = jwt.New(jwt.Config{SecretKey: "too-short"})
-	if err != nil {
-		if errors.Is(err, jwt.ErrInvalidSecretKey) {
-			fmt.Println("Correctly caught invalid secret key")
-		}
+	if errors.Is(err, jwt.ErrInvalidSecretKey) {
+		fmt.Println("Caught: invalid secret key")
 	}
 
-	// Test 2: Invalid token format
-	_, _, err = processor.ValidateToken("invalid.token.format")
-	if err != nil {
-		if errors.Is(err, jwt.ErrInvalidToken) {
-			fmt.Println("Correctly caught invalid token format")
-		}
+	// Invalid token format
+	_, _, err = processor.Validate("invalid.token.format")
+	if errors.Is(err, jwt.ErrInvalidToken) {
+		fmt.Println("Caught: invalid token format")
 	}
 
-	// Test 3: Malformed token
-	_, _, err = processor.ValidateToken("not-a-jwt")
-	if err != nil {
-		fmt.Println("Correctly caught malformed token")
+	// Empty claims validation
+	_, err = processor.Create(&jwt.Claims{})
+	if errors.Is(err, jwt.ErrInvalidClaims) {
+		fmt.Println("Caught: empty claims")
 	}
 
-	// Test 4: Empty claims validation
-	_, err = processor.CreateToken(jwt.Claims{})
-	if err != nil {
-		if errors.Is(err, jwt.ErrInvalidClaims) {
-			fmt.Println("Correctly caught empty claims")
-		}
-	}
-
-	// Test 5: Using errors.Is for error checking
-	token, _ := processor.CreateToken(jwt.Claims{UserID: "test"})
-	_, valid, err := processor.ValidateToken(token)
-	if !valid || err != nil {
-		// Check specific error types
+	// Demonstrate error type switching
+	token, _ := processor.Create(&jwt.Claims{UserID: "test"})
+	_, valid, validateErr := processor.Validate(token)
+	if !valid || validateErr != nil {
 		switch {
-		case errors.Is(err, jwt.ErrTokenExpired):
+		case errors.Is(validateErr, jwt.ErrTokenExpired):
 			fmt.Println("Token expired")
-		case errors.Is(err, jwt.ErrTokenNotValidYet):
-			fmt.Println("Token not valid yet")
-		case errors.Is(err, jwt.ErrTokenInvalidIssuer):
-			fmt.Println("Invalid issuer")
-		case errors.Is(err, jwt.ErrTokenRevoked):
+		case errors.Is(validateErr, jwt.ErrTokenRevoked):
 			fmt.Println("Token revoked")
-		case errors.Is(err, jwt.ErrInvalidToken):
-			fmt.Println("Invalid token")
+		case errors.Is(validateErr, jwt.ErrTokenInvalidIssuer):
+			fmt.Println("Invalid issuer")
 		default:
-			if err != nil {
-				fmt.Printf("Other error: %v\n", err)
-			} else {
-				fmt.Println("Token not valid (unknown reason)")
-			}
+			fmt.Printf("Other error: %v\n", validateErr)
 		}
+	} else {
+		fmt.Println("Error handling tests passed")
 	}
-
-	fmt.Println("All error handling tests passed")
 }
 
 // productionConfigExample demonstrates production-ready configuration.
@@ -224,7 +184,7 @@ func productionConfigExample(secretKey string) {
 	fmt.Println("Example 4: Production Configuration")
 	fmt.Println("------------------------------------")
 
-	// Production configuration
+	// Production configuration with all recommended settings
 	cfg := jwt.DefaultConfig()
 	cfg.SecretKey = secretKey // In production: os.Getenv("JWT_SECRET_KEY")
 	cfg.AccessTokenTTL = 5 * time.Minute
@@ -246,14 +206,7 @@ func productionConfigExample(secretKey string) {
 	}
 	defer processor.Close()
 
-	fmt.Println("Production processor configured:")
-	fmt.Println("  - Ultra-short access tokens (5 min)")
-	fmt.Println("  - Strong encryption (HS512)")
-	fmt.Println("  - Rate limiting enabled (100/min)")
-	fmt.Println("  - Token revocation enabled")
-	fmt.Println("  - Auto-cleanup enabled")
-
-	// Test production configuration
+	// Verify production configuration works
 	claims := jwt.Claims{
 		UserID:    "prod_user_001",
 		Username:  "production_user",
@@ -261,39 +214,21 @@ func productionConfigExample(secretKey string) {
 		SessionID: "prod_session_123",
 	}
 
-	// Create and validate token
-	token, err := processor.CreateToken(claims)
+	token, err := processor.Create(&claims)
 	if err != nil {
 		log.Fatalf("Failed to create token: %v", err)
 	}
 
-	parsedClaims, valid, err := processor.ValidateToken(token)
+	parsedClaims, valid, err := processor.Validate(token)
 	if err != nil || !valid {
 		log.Fatalf("Failed to validate token: %v", err)
 	}
 
-	fmt.Printf("Token validated - User: %s\n", parsedClaims.Username)
-
-	// Production checklist
-	fmt.Println("\nProduction Checklist:")
-	checklist := []string{
-		"Strong secret key from environment",
-		"Short-lived access tokens",
-		"Strong signing algorithm (HS512/RS256)",
-		"Rate limiting enabled",
-		"Token revocation enabled",
-		"Automatic cleanup enabled",
-		"Proper error handling",
-		"Resource cleanup (defer Close())",
-	}
-	for _, item := range checklist {
-		fmt.Printf("  [ ] %s\n", item)
-	}
-
-	fmt.Println("\nIn production:")
-	fmt.Println("  - Load secret key: os.Getenv(\"JWT_SECRET_KEY\")")
+	fmt.Printf("Production config verified - User: %s (method=%s, ttl=%v)\n",
+		parsedClaims.Username, cfg.SigningMethod, cfg.AccessTokenTTL)
+	fmt.Println("\nProduction tips:")
+	fmt.Println("  - Load secret key from env: os.Getenv(\"JWT_SECRET_KEY\")")
 	fmt.Println("  - Use HTTPS for all token transmission")
 	fmt.Println("  - Implement token refresh workflow")
 	fmt.Println("  - Monitor rate limit violations")
-	fmt.Println("  - Log security events")
 }

@@ -9,25 +9,38 @@ import (
 //
 // This interface allows for dependency injection and easier testing.
 // The default implementation is Processor.
+//
+// Methods are organized into three groups:
+//   - Token Operations: Create, CreateRefresh (both accept CustomClaims)
+//   - Validation & Refresh: Validate, ValidateInto, Refresh, RefreshInto
+//   - Common: Revoke, IsRevoked, ParseUnverified, Close, IsClosed
 type TokenManager interface {
-	// CreateToken creates a new JWT token with the given claims.
-	CreateToken(claims Claims) (string, error)
+	// Create creates a new JWT access token with the given claims.
+	// Accepts any type implementing CustomClaims, including *Claims.
+	Create(claims CustomClaims) (string, error)
 
-	// ValidateToken validates a JWT token and returns the claims.
-	// Returns the claims, whether the token is valid, and any error.
-	ValidateToken(tokenString string) (Claims, bool, error)
+	// Validate validates a JWT access token and returns the parsed Claims.
+	// Returns a value copy of the claims, whether the token is valid, and any error.
+	Validate(tokenString string) (Claims, bool, error)
 
-	// CreateRefreshToken creates a refresh token with the given claims.
-	CreateRefreshToken(claims Claims) (string, error)
+	// CreateRefresh creates a refresh token with the given claims.
+	// Accepts any type implementing CustomClaims, including *Claims.
+	CreateRefresh(claims CustomClaims) (string, error)
 
-	// RefreshToken refreshes an existing refresh token and returns a new access token.
-	RefreshToken(refreshTokenString string) (string, error)
+	// Refresh refreshes an existing refresh token and returns a new access token.
+	Refresh(refreshTokenString string) (string, error)
 
-	// RevokeToken adds a token to the blacklist.
-	RevokeToken(tokenString string) error
+	// ValidateInto validates a token and populates the provided custom claims.
+	ValidateInto(tokenString string, claims CustomClaims) (CustomClaims, bool, error)
 
-	// IsTokenRevoked checks if a token has been revoked.
-	IsTokenRevoked(tokenString string) (bool, error)
+	// RefreshInto refreshes a custom-claims refresh token into a new access token.
+	RefreshInto(refreshTokenString string, claims CustomClaims) (string, error)
+
+	// Revoke adds a token to the blacklist.
+	Revoke(tokenString string) error
+
+	// IsRevoked checks if a token has been revoked.
+	IsRevoked(tokenString string) (bool, error)
 
 	// ParseUnverified parses a token without verifying the signature.
 	// WARNING: The returned claims are NOT validated and should NOT be trusted.
@@ -84,27 +97,6 @@ func (c FixedClock) Now() time.Time {
 
 // Ensure Processor implements TokenManager.
 var _ TokenManager = (*Processor)(nil)
-
-// ExtendedTokenManager extends TokenManager with custom claims support.
-// Use this interface when you need custom claims types beyond the built-in Claims.
-type ExtendedTokenManager interface {
-	TokenManager
-
-	// CreateTokenWith creates a token with custom claims type.
-	CreateTokenWith(claims CustomClaims) (string, error)
-
-	// ValidateTokenFor validates a token and populates the provided custom claims.
-	ValidateTokenFor(tokenString string, claims CustomClaims) (CustomClaims, bool, error)
-
-	// CreateRefreshTokenWith creates a refresh token with custom claims type.
-	CreateRefreshTokenWith(claims CustomClaims) (string, error)
-
-	// RefreshTokenFor refreshes a custom-claims refresh token into a new access token.
-	RefreshTokenFor(refreshTokenString string, claims CustomClaims) (string, error)
-}
-
-// Ensure Processor implements ExtendedTokenManager.
-var _ ExtendedTokenManager = (*Processor)(nil)
 
 // Ensure RateLimiter implements RateLimitProvider.
 var _ RateLimitProvider = (*RateLimiter)(nil)

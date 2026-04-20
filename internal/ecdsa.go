@@ -11,10 +11,9 @@ import (
 )
 
 type ecdsaSigningMethod struct {
-	Name      string
-	HashFunc  crypto.Hash
-	KeySize   int
-	CurveBits int
+	Name     string
+	HashFunc crypto.Hash
+	KeySize  int
 }
 
 func (e *ecdsaSigningMethod) Alg() string {
@@ -29,6 +28,9 @@ func (e *ecdsaSigningMethod) Sign(signingString string, key any) (string, error)
 	ecdsaKey, ok := key.(*ecdsa.PrivateKey)
 	if !ok {
 		return "", fmt.Errorf("ECDSA key must be *ecdsa.PrivateKey, got %T", key)
+	}
+	if ecdsaKey == nil {
+		return "", fmt.Errorf("ECDSA key cannot be nil")
 	}
 
 	if !e.HashFunc.Available() {
@@ -58,14 +60,16 @@ func (e *ecdsaSigningMethod) Verify(signingString string, signature string, key 
 	ecdsaKey, ok := key.(*ecdsa.PublicKey)
 	if !ok {
 		// Support *ecdsa.PrivateKey for verification (extract public key)
-		if privKey, ok := key.(*ecdsa.PrivateKey); ok {
-			ecdsaKey = &privKey.PublicKey
-		} else {
+		privKey, ok := key.(*ecdsa.PrivateKey)
+		if !ok {
 			return fmt.Errorf("ECDSA key must be *ecdsa.PublicKey or *ecdsa.PrivateKey, got %T", key)
 		}
+		if privKey == nil {
+			return fmt.Errorf("ECDSA key cannot be nil")
+		}
+		ecdsaKey = &privKey.PublicKey
 	}
 
-	// Check for typed nil (e.g., (*ecdsa.PublicKey)(nil))
 	if ecdsaKey == nil {
 		return fmt.Errorf("ECDSA key cannot be nil")
 	}
@@ -100,7 +104,7 @@ func (e *ecdsaSigningMethod) Verify(signingString string, signature string, key 
 }
 
 var (
-	ecdsaES256 = &ecdsaSigningMethod{"ES256", crypto.SHA256, 32, 256}
-	ecdsaES384 = &ecdsaSigningMethod{"ES384", crypto.SHA384, 48, 384}
-	ecdsaES512 = &ecdsaSigningMethod{"ES512", crypto.SHA512, 66, 521}
+	ecdsaES256 = &ecdsaSigningMethod{"ES256", crypto.SHA256, 32}
+	ecdsaES384 = &ecdsaSigningMethod{"ES384", crypto.SHA384, 48}
+	ecdsaES512 = &ecdsaSigningMethod{"ES512", crypto.SHA512, 66}
 )
