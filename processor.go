@@ -63,7 +63,11 @@ func New(cfg Config) (*Processor, error) {
 	if config.RateLimiter != nil {
 		rateLimiter = config.RateLimiter
 	} else if config.EnableRateLimit {
-		rateLimiter = NewRateLimiter(config.RateLimitRate, config.RateLimitWindow)
+		rl := NewRateLimiter(config.RateLimitRate, config.RateLimitWindow)
+		if config.Clock != nil {
+			rl.nowFunc = config.Clock.Now
+		}
+		rateLimiter = rl
 	}
 
 	clock := config.Clock
@@ -147,23 +151,12 @@ func (p *Processor) Validate(tokenString string) (Claims, bool, error) {
 		return Claims{}, false, err
 	}
 
-	claims, err := p.validateTokenInternal(tokenString)
+	claims, err := p.validateTokenFully(tokenString)
 	if err != nil {
-		putClaims(claims)
-		return Claims{}, false, err
-	}
-	defer putClaims(claims)
-
-	if err := p.checkBlacklist(claims.ID); err != nil {
 		return Claims{}, false, err
 	}
 
-	if err := claims.Validate(); err != nil {
-		return Claims{}, false, err
-	}
-
-	result := *claims
-	return result, true, nil
+	return claims, true, nil
 }
 
 // CreateRefresh creates a refresh token with the given claims.
@@ -192,6 +185,11 @@ func (p *Processor) CreateRefresh(claims CustomClaims) (string, error) {
 // a new access token is created. The original refresh token's claims are copied;
 // IssuedAt, ExpiresAt, and ID are reset and regenerated for the new token.
 //
+// Security note: Claims from the refresh token are validated for standard
+// JWT fields (exp, nbf, iss, aud, blacklist) and basic structural validity
+// (UserID or Username must be present). Deep field constraints (length limits,
+// injection patterns) are not re-checked, trusting they were validated at creation.
+//
 // Example:
 //
 //	newAccessToken, err := processor.Refresh(refreshTokenString)
@@ -203,27 +201,16 @@ func (p *Processor) Refresh(refreshTokenString string) (string, error) {
 		return "", err
 	}
 
-	claims, err := p.validateTokenInternal(refreshTokenString)
+	claims, err := p.validateTokenFully(refreshTokenString)
 	if err != nil {
-		putClaims(claims)
-		return "", err
-	}
-	defer putClaims(claims)
-
-	if err := p.checkBlacklist(claims.ID); err != nil {
 		return "", err
 	}
 
-	if err := claims.Validate(); err != nil {
-		return "", err
-	}
+	claims.IssuedAt = NumericDate{}
+	claims.ExpiresAt = NumericDate{}
+	claims.ID = ""
 
-	newClaims := *claims
-	newClaims.IssuedAt = NumericDate{}
-	newClaims.ExpiresAt = NumericDate{}
-	newClaims.ID = ""
-
-	return createTokenWithCustomClaims(p, &newClaims, p.accessTokenTTL)
+	return createTokenWithCustomClaims(p, &claims, p.accessTokenTTL)
 }
 
 // RefreshInto refreshes a custom-claims refresh token into a new access token.
@@ -231,6 +218,11 @@ func (p *Processor) Refresh(refreshTokenString string) (string, error) {
 // The original claims object is not modified; timing fields (IssuedAt, ExpiresAt, ID)
 // are temporarily reset during token creation and restored afterward,
 // even if an error or panic occurs.
+//
+// Security note: Claims from the refresh token are validated for standard
+// JWT fields (exp, nbf, iss, aud, blacklist) and basic structural validity.
+// Deep field constraints (length limits, injection patterns) are not re-checked,
+// trusting they were validated at creation.
 //
 // Example:
 //
@@ -244,15 +236,7 @@ func (p *Processor) RefreshInto(refreshTokenString string, claims CustomClaims) 
 		return "", err
 	}
 
-	if err := validateTokenIntoCustomClaims(p, refreshTokenString, claims); err != nil {
-		return "", err
-	}
-
-	if err := p.checkBlacklist(claims.GetRegisteredClaims().ID); err != nil {
-		return "", err
-	}
-
-	if err := claims.Validate(); err != nil {
+	if err := p.validateCustomTokenFully(refreshTokenString, claims); err != nil {
 		return "", err
 	}
 
@@ -350,15 +334,7 @@ func (p *Processor) ValidateInto(tokenString string, claims CustomClaims) (Custo
 		return nil, false, err
 	}
 
-	if err := validateTokenIntoCustomClaims(p, tokenString, claims); err != nil {
-		return nil, false, err
-	}
-
-	if err := p.checkBlacklist(claims.GetRegisteredClaims().ID); err != nil {
-		return nil, false, err
-	}
-
-	if err := claims.Validate(); err != nil {
+	if err := p.validateCustomTokenFully(tokenString, claims); err != nil {
 		return nil, false, err
 	}
 
@@ -444,12 +420,16 @@ func (p *Processor) signClaims(claims any) (string, error) {
 }
 
 func (p *Processor) parseToken(tokenString string, claims any) (*internal.Core, error) {
-	return internal.ParseWithClaims(tokenString, claims, func(token *internal.Core) (any, error) {
-		if alg, ok := token.Header["alg"].(string); !ok || alg != string(p.signingMethod) {
-			return nil, ErrInvalidToken
-		}
-		return p.getVerificationKey(), nil
-	})
+	return internal.ParseWithClaims(tokenString, claims, p.keyFunc)
+}
+
+// keyFunc validates the algorithm header and returns the verification key.
+func (p *Processor) keyFunc(token *internal.Core) (any, error) {
+	alg, ok := token.Header["alg"].(string)
+	if !ok || alg != string(p.signingMethod) {
+		return nil, ErrInvalidToken
+	}
+	return p.getVerificationKey(), nil
 }
 
 func (p *Processor) validateRegistered(rc *RegisteredClaims) error {
@@ -485,13 +465,25 @@ func (p *Processor) checkBlacklist(tokenID string) error {
 
 func copyClaims(dst, src *Claims) {
 	*dst = *src
-	// Use [:0:0] to force new backing array allocation.
-	// After *dst = *src, slices share the same backing array.
-	// Plain append([:0], ...) would reuse that shared array;
-	// setting cap=0 via [:0:0] forces append to allocate independently.
-	dst.Permissions = append(dst.Permissions[:0:0], src.Permissions...)
-	dst.Scopes = append(dst.Scopes[:0:0], src.Scopes...)
-	dst.Audience = append(dst.Audience[:0:0], src.Audience...)
+	// Pre-allocate with known capacity for independent backing arrays.
+	if n := len(src.Permissions); n > 0 {
+		dst.Permissions = make([]string, n)
+		copy(dst.Permissions, src.Permissions)
+	} else {
+		dst.Permissions = nil
+	}
+	if n := len(src.Scopes); n > 0 {
+		dst.Scopes = make([]string, n)
+		copy(dst.Scopes, src.Scopes)
+	} else {
+		dst.Scopes = nil
+	}
+	if n := len(src.Audience); n > 0 {
+		dst.Audience = make([]string, n)
+		copy(dst.Audience, src.Audience)
+	} else {
+		dst.Audience = nil
+	}
 
 	// Always allocate a new map to avoid sharing with src after *dst = *src.
 	if len(src.Extra) > 0 {
@@ -502,21 +494,63 @@ func copyClaims(dst, src *Claims) {
 	}
 }
 
-func (p *Processor) validateTokenInternal(tokenString string) (*Claims, error) {
+func (p *Processor) validateTokenInternal(tokenString string) (Claims, error) {
 	claims := getClaims()
+	defer putClaims(claims)
 
 	token, err := p.parseToken(tokenString, claims)
 	if err != nil {
-		return claims, fmt.Errorf("%w: %w", ErrInvalidToken, err)
+		return Claims{}, fmt.Errorf("%w: %w", ErrInvalidToken, err)
 	}
 
 	defer internal.ReleaseCore(token)
 
 	if !token.Valid {
-		return claims, ErrInvalidToken
+		return Claims{}, ErrInvalidToken
 	}
 
-	return claims, p.validateRegistered(&claims.RegisteredClaims)
+	if err := p.validateRegistered(&claims.RegisteredClaims); err != nil {
+		return Claims{}, err
+	}
+
+	var result Claims
+	copyClaims(&result, claims)
+	return result, nil
+}
+
+// validateTokenFully performs complete token validation: parse, verify signature,
+// validate registered claims, check blacklist, and validate custom claims.
+// Returns a deep-copied Claims value with no pool obligations for the caller.
+func (p *Processor) validateTokenFully(tokenString string) (Claims, error) {
+	claims, err := p.validateTokenInternal(tokenString)
+	if err != nil {
+		return Claims{}, err
+	}
+
+	if err := p.checkBlacklist(claims.ID); err != nil {
+		return Claims{}, err
+	}
+
+	if err := claims.Validate(); err != nil {
+		return Claims{}, err
+	}
+
+	return claims, nil
+}
+
+// validateCustomTokenFully performs complete validation for custom claims types:
+// parse, verify signature, validate registered claims, check blacklist,
+// and call the custom Validate method.
+func (p *Processor) validateCustomTokenFully(tokenString string, claims CustomClaims) error {
+	if err := validateTokenIntoCustomClaims(p, tokenString, claims); err != nil {
+		return err
+	}
+
+	if err := p.checkBlacklist(claims.GetRegisteredClaims().ID); err != nil {
+		return err
+	}
+
+	return claims.Validate()
 }
 
 // Revoke adds a token to the blacklist by its string representation.

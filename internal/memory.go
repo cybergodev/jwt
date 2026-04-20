@@ -3,7 +3,6 @@ package internal
 import (
 	"bytes"
 	"runtime"
-	"strings"
 )
 
 // Key validation constants
@@ -139,10 +138,29 @@ func isAllSameChar(key []byte) bool {
 	return true
 }
 
-func containsWeakPattern(key []byte) bool {
-	keyStr := strings.ToLower(string(key))
+// weakPatternBytes holds pre-converted lowercase byte slices for weak pattern matching.
+// Avoids repeated []byte(pattern) allocations per call.
+var weakPatternBytes [][]byte
+
+func init() {
 	for pattern := range weakPatterns {
-		if strings.Contains(keyStr, pattern) {
+		weakPatternBytes = append(weakPatternBytes, []byte(pattern))
+	}
+}
+
+func containsWeakPattern(key []byte) bool {
+	keyLower := make([]byte, len(key))
+	for i, b := range key {
+		if b >= 'A' && b <= 'Z' {
+			keyLower[i] = b + 32
+		} else {
+			keyLower[i] = b
+		}
+	}
+	defer clear(keyLower)
+
+	for _, pattern := range weakPatternBytes {
+		if bytes.Contains(keyLower, pattern) {
 			return true
 		}
 	}

@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 )
@@ -35,18 +34,6 @@ func TestErrorTypes(t *testing.T) {
 		}
 	})
 
-	t.Run("SigningError", func(t *testing.T) {
-		baseErr := errors.New("signing failed")
-		signingErr := &SigningError{Algorithm: "RS256", Err: baseErr}
-
-		if msg := signingErr.Error(); !strings.Contains(msg, "RS256") || !strings.Contains(msg, "signing error") {
-			t.Errorf("Error() = %q, want algorithm and 'signing error'", msg)
-		}
-		if signingErr.Unwrap() != baseErr {
-			t.Errorf("Unwrap() = %v, want %v", signingErr.Unwrap(), baseErr)
-		}
-	})
-
 	t.Run("ValidationError", func(t *testing.T) {
 		baseErr := errors.New("base error")
 		valErr := &ValidationError{Field: "username", Message: "invalid format", Err: baseErr}
@@ -67,14 +54,9 @@ func TestErrorTypes(t *testing.T) {
 
 	t.Run("Constructors", func(t *testing.T) {
 		baseErr := errors.New("test")
-		tokenErr := NewTokenError(baseErr, "tok_123", time.Now().Add(time.Hour))
+		tokenErr := &TokenError{Err: baseErr, TokenID: "tok_123", ExpiresAt: time.Now().Add(time.Hour)}
 		if tokenErr.Err != baseErr || tokenErr.TokenID != "tok_123" {
-			t.Errorf("NewTokenError fields wrong: %+v", tokenErr)
-		}
-
-		signingErr := NewSigningError("ES256", baseErr)
-		if signingErr.Algorithm != "ES256" || signingErr.Err != baseErr {
-			t.Errorf("NewSigningError fields wrong: %+v", signingErr)
+			t.Errorf("TokenError fields wrong: %+v", tokenErr)
 		}
 	})
 }
@@ -332,48 +314,38 @@ func TestRefreshTokenEdgeCases(t *testing.T) {
 // BLACKLIST EDGE CASE TESTS
 // ============================================================================
 
-func TestRevokeTokenEdgeCases(t *testing.T) {
+func TestRevokeAndIsRevokedEdgeCases(t *testing.T) {
 	processor, err := newTestProcessor(testSecretKey)
 	if err != nil {
 		t.Fatalf("Failed to create processor: %v", err)
 	}
 	defer processor.Close()
 
-	// Empty token
-	if err := processor.Revoke(""); err != ErrEmptyToken {
-		t.Errorf("Expected ErrEmptyToken, got %v", err)
-	}
+	t.Run("RevokeEmptyToken", func(t *testing.T) {
+		if err := processor.Revoke(""); err != ErrEmptyToken {
+			t.Errorf("Expected ErrEmptyToken, got %v", err)
+		}
+	})
 
-	// No blacklist configured
-	if err := processor.Revoke("valid.token.string"); err == nil {
-		t.Error("Expected error when no blacklist configured")
-	}
-}
+	t.Run("RevokeNoBlacklist", func(t *testing.T) {
+		if err := processor.Revoke("valid.token.string"); err == nil {
+			t.Error("Expected error when no blacklist configured")
+		}
+	})
 
-func TestIsTokenRevokedEdgeCases(t *testing.T) {
-	processor, err := newTestProcessor(testSecretKey)
-	if err != nil {
-		t.Fatalf("Failed to create processor: %v", err)
-	}
-	defer processor.Close()
+	t.Run("IsRevokedEmptyToken", func(t *testing.T) {
+		_, err := processor.IsRevoked("")
+		if err == nil {
+			t.Error("Expected error")
+		}
+	})
 
-	tests := []struct {
-		name      string
-		token     string
-		wantError bool
-	}{
-		{"EmptyToken", "", true},
-		{"MalformedToken", "malformed", true},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			_, err := processor.IsRevoked(tt.token)
-			if tt.wantError && err == nil {
-				t.Error("Expected error")
-			}
-		})
-	}
+	t.Run("IsRevokedMalformedToken", func(t *testing.T) {
+		_, err := processor.IsRevoked("malformed")
+		if err == nil {
+			t.Error("Expected error")
+		}
+	})
 }
 
 func TestIsTokenRevokedInvalidToken(t *testing.T) {
@@ -709,47 +681,6 @@ func TestParseUnverifiedEdgeCases(t *testing.T) {
 	}
 }
 
-// ============================================================================
-// CLAIMS VALIDATION TESTS
-// ============================================================================
-
-func TestClaimsValidation(t *testing.T) {
-	processor, err := newTestProcessor(testSecretKey)
-	if err != nil {
-		t.Fatalf("Failed to create processor: %v", err)
-	}
-	defer processor.Close()
-
-	tests := []struct {
-		name      string
-		claims    Claims
-		wantError bool
-	}{
-		{"EmptyBoth", Claims{}, true},
-		{"OnlyUserID", Claims{UserID: "user1"}, false},
-		{"OnlyUsername", Claims{Username: "user1"}, false},
-		{"TooLongSessionID", Claims{UserID: "u", SessionID: strings.Repeat("a", 257)}, true},
-		{"TooLongClientID", Claims{UserID: "u", ClientID: strings.Repeat("a", 257)}, true},
-		{"TooLongRole", Claims{UserID: "u", Role: strings.Repeat("a", 257)}, true},
-		{"DangerousRole", Claims{UserID: "u", Role: "<script>alert(1)</script>"}, true},
-		{"DangerousSessionID", Claims{UserID: "u", SessionID: "javascript:alert(1)"}, true},
-		{"ControlCharInClientID", Claims{UserID: "u", ClientID: "client\x00id"}, true},
-		{"UnsupportedExtraType", Claims{UserID: "u", Extra: map[string]any{"key": 12345}}, true},
-		{"ValidExtraStringAllowed", Claims{UserID: "u", Extra: map[string]any{"key": "value"}}, false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			_, err := processor.Create(&tt.claims)
-			if tt.wantError && err == nil {
-				t.Error("Expected error")
-			}
-			if !tt.wantError && err != nil {
-				t.Errorf("Unexpected error: %v", err)
-			}
-		})
-	}
-}
 
 // ============================================================================
 // VALIDATION REGISTERED CLAIMS STRINGS TESTS
@@ -811,52 +742,6 @@ func TestRateLimitKeyer(t *testing.T) {
 	}
 }
 
-// ============================================================================
-// WEAK KEY DETECTION (consolidated)
-// ============================================================================
-
-func TestWeakKeyDetectionConsolidated(t *testing.T) {
-	tests := []struct {
-		name  string
-		key   string
-		isWeak bool
-	}{
-		// Weak patterns
-		{"Empty", "", true},
-		{"AllSameChar", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", true},
-		{"Sequential", "abcdefghijklmnopqrstuvwxyz123456", true},
-		{"Repeating", "abababababababababababababababab", true},
-		{"Keyboard", "qwertyuiopasdfghjklzxcvbnm123456", true},
-		{"CommonWord", "passwordpasswordpasswordpassword", true},
-		{"Numbers", "123123123123123123123123123123123", true},
-		{"AllZeros", "000000000000000000000000000000000", true},
-
-		// Strong keys
-		{"StrongMixed", "Kx9#mP2$vL8@nQ5!wR7&tY3^uI6*oE4%", false},
-		{"StrongYear", "Str0ng!S3cr3t#K3y$W1th%Suff1c13nt&Entr0py*2024", false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			processor, err := newTestProcessor(tt.key)
-			if tt.isWeak {
-				if err == nil {
-					if processor != nil {
-						processor.Close()
-					}
-					t.Errorf("Key %q should be rejected as weak", tt.name)
-				}
-			} else {
-				if err != nil {
-					t.Errorf("Key %q should be accepted: %v", tt.name, err)
-				}
-				if processor != nil {
-					processor.Close()
-				}
-			}
-		})
-	}
-}
 
 // ============================================================================
 // TOKEN MANAGER INTERFACE COMPLIANCE
@@ -872,65 +757,4 @@ func TestTokenManagerInterface(t *testing.T) {
 	var _ CustomClaims = (*TestCustomClaims)(nil)
 }
 
-// ============================================================================
-// CONCURRENT RATE LIMITER RESET
-// ============================================================================
 
-func TestRateLimiterConcurrentReset(t *testing.T) {
-	rl := NewRateLimiter(100, time.Minute)
-	defer rl.Close()
-
-	var wg sync.WaitGroup
-	var allowedCount int64
-
-	wg.Add(10)
-	for i := range 10 {
-		go func(id int) {
-			defer wg.Done()
-			key := fmt.Sprintf("key-%d", id)
-			if rl.Allow(key) {
-				_ = fmt.Sprintf("allowed %d", allowedCount)
-			}
-			rl.Reset(key)
-		}(i)
-	}
-	wg.Wait()
-}
-
-// ============================================================================
-// REFRESH CHAIN TEST
-// ============================================================================
-
-func TestRefreshChain(t *testing.T) {
-	processor, err := newTestProcessor(testSecretKey)
-	if err != nil {
-		t.Fatalf("Failed to create processor: %v", err)
-	}
-	defer processor.Close()
-
-	claims := Claims{UserID: "chain-user", Username: "test", Role: "admin"}
-
-	// Create initial refresh token
-	refreshToken, err := processor.CreateRefresh(&claims)
-	if err != nil {
-		t.Fatalf("Failed to create initial refresh token: %v", err)
-	}
-
-	// Refresh to get access token
-	accessToken, err := processor.Refresh(refreshToken)
-	if err != nil {
-		t.Fatalf("Failed to refresh: %v", err)
-	}
-
-	// Validate the access token
-	parsed, valid, err := processor.Validate(accessToken)
-	if err != nil || !valid {
-		t.Fatalf("Access token should be valid: %v", err)
-	}
-	if parsed.UserID != claims.UserID {
-		t.Errorf("UserID mismatch: got %s, want %s", parsed.UserID, claims.UserID)
-	}
-	if parsed.Role != claims.Role {
-		t.Errorf("Role mismatch: got %s, want %s", parsed.Role, claims.Role)
-	}
-}

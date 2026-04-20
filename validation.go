@@ -156,7 +156,7 @@ var dangerousPatterns = []string{
 	"onkeydown", "drop table",
 	"onkeypress", "<script", "vbscript:",
 	"onmouseover", "union select",
-	"javascript:", "expression(",
+	"javascript:",
 	"/etc/passwd",
 }
 

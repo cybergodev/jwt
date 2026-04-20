@@ -5,7 +5,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"strings"
 	"sync"
 	"unsafe"
 )
@@ -79,61 +78,12 @@ func (r *methodRegistry) get(alg string) Method {
 	return r.methods[alg]
 }
 
-// isStandardHeader checks if the header is a standard JWT header with only typ and alg fields.
-// Returns the precomputed base64-encoded header if it matches, empty string otherwise.
-func isStandardHeader(header map[string]any, alg string) string {
-	if len(header) != 2 {
-		return ""
-	}
-	typ, hasTyp := header["typ"].(string)
-	if !hasTyp || typ != "JWT" {
-		return ""
-	}
-	headerAlg, hasAlg := header["alg"].(string)
-	if !hasAlg || headerAlg != alg {
-		return ""
-	}
-	return precomputedHeaders[alg]
-}
-
 // signingBufPool pools byte slices for signing string construction.
 var signingBufPool = sync.Pool{
 	New: func() any {
 		buf := make([]byte, 0, 512)
 		return &buf
 	},
-}
-
-func SignedString(header map[string]any, claims any, method Method, key any) (string, error) {
-	alg := method.Alg()
-
-	// Fast path: standard JWT header — delegate to SignToken
-	if encoded := isStandardHeader(header, alg); encoded != "" {
-		return SignToken(alg, claims, method, key)
-	}
-
-	// Slow path: non-standard header — encode manually
-	headerJSON, err := json.Marshal(header)
-	if err != nil {
-		return "", fmt.Errorf("failed to marshal header: %w", err)
-	}
-
-	claimsJSON, err := json.Marshal(claims)
-	if err != nil {
-		return "", fmt.Errorf("failed to marshal claims: %w", err)
-	}
-
-	headerEncoded := base64.RawURLEncoding.EncodeToString(headerJSON)
-	claimsEncoded := base64.RawURLEncoding.EncodeToString(claimsJSON)
-
-	signingString := headerEncoded + "." + claimsEncoded
-
-	signature, err := method.Sign(signingString, key)
-	if err != nil {
-		return "", fmt.Errorf("failed to sign token: %w", err)
-	}
-
-	return signingString + "." + signature, nil
 }
 
 // SignToken creates a signed JWT token string directly without allocating
@@ -176,16 +126,22 @@ func SignToken(alg string, claims any, method Method, key any) (string, error) {
 		return "", fmt.Errorf("failed to sign token: %w", err)
 	}
 
-	// Use strings.Builder to copy data out of pooled buffer.
-	// string(slice) shares the backing array — returning it while the defer
-	// puts the buffer back in the pool creates a data race.
-	var builder strings.Builder
-	builder.Grow(signingStringLen + 1 + len(signature))
-	builder.Write(signingStringBuf)
-	builder.WriteByte('.')
-	builder.WriteString(signature)
+	// Assemble the final token directly into the pooled buffer.
+	// Layout: [header.claims] + '.' + [signature]
+	totalLen := signingStringLen + 1 + len(signature)
 
-	return builder.String(), nil
+	// Grow buffer once if needed and copy signature in a single operation.
+	if cap(*bufPtr) < totalLen {
+		newBuf := make([]byte, totalLen)
+		copy(newBuf, signingStringBuf)
+		*bufPtr = newBuf
+	}
+	fullToken := (*bufPtr)[:totalLen]
+	fullToken[signingStringLen] = '.'
+	copy(fullToken[signingStringLen+1:], signature)
+
+	// string([]byte) allocates a new copy — safe to return after buffer goes back to pool.
+	return string(fullToken), nil
 }
 
 // GetInternalSigningMethod retrieves a signing method by algorithm name.

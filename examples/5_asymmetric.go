@@ -171,11 +171,6 @@ func keySeparationExample() {
 	}
 	fmt.Printf("API service verified token (VerificationKey) - User: %s\n", parsedClaims.Username)
 
-	fmt.Println("\nVerificationKey behavior:")
-	fmt.Println("  - When set, token verification uses VerificationKey")
-	fmt.Println("  - When nil, verification derives the public key from SigningKey")
-	fmt.Println("  - Note: SigningKey is required even for verification-only use")
-
 	fmt.Println("\nAlgorithm comparison:")
 	fmt.Println("  HMAC:  Simple, fast, single-service (HS256/384/512)")
 	fmt.Println("  RSA:   Widely supported, larger signatures (RS256/384/512)")

@@ -13,6 +13,7 @@ type RateLimiter struct {
 	window     time.Duration
 	maxBuckets int
 	closed     bool
+	nowFunc    func() time.Time
 }
 
 type bucket struct {
@@ -34,6 +35,7 @@ func NewRateLimiter(maxRate int, window time.Duration) *RateLimiter {
 		maxRate:    maxRate,
 		window:     window,
 		maxBuckets: 10000,
+		nowFunc:    time.Now,
 	}
 }
 
@@ -66,7 +68,7 @@ func (rl *RateLimiter) AllowN(key string, n int) bool {
 		return false
 	}
 
-	nowNano := time.Now().UnixNano()
+	nowNano := rl.nowFunc().UnixNano()
 	b, exists := rl.buckets[key]
 
 	if !exists {

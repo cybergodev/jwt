@@ -524,17 +524,6 @@ type TokenError struct {
 }
 ```
 
-### SigningError
-
-Signing-related error.
-
-```go
-type SigningError struct {
-    Algorithm string
-    Err       error
-}
-```
-
 ---
 
 ## Interfaces
@@ -666,22 +655,6 @@ Creates a new rate limiter with the specified parameters.
 
 ```go
 func NewRateLimiter(maxRate int, window time.Duration) *RateLimiter
-```
-
-### NewTokenError
-
-Creates a TokenError wrapping an error with token context.
-
-```go
-func NewTokenError(err error, tokenID string, expiresAt time.Time) *TokenError
-```
-
-### NewSigningError
-
-Creates a SigningError wrapping an error with algorithm context.
-
-```go
-func NewSigningError(algorithm string, err error) *SigningError
 ```
 
 ---

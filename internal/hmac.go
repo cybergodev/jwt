@@ -3,37 +3,41 @@ package internal
 import (
 	"crypto"
 	"crypto/hmac"
+	"crypto/subtle"
 	_ "crypto/sha256"
 	_ "crypto/sha512"
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"hash"
 	"sync"
 )
 
 type hmacSigningMethod struct {
 	Name     string
 	HashFunc crypto.Hash
+	pool     sync.Pool
 }
 
-// sigBufPool pools byte slices for signature operations.
-// HMAC signatures are at most 64 bytes (HS512), with base64 encoding ~88 bytes.
-var sigBufPool = sync.Pool{
-	New: func() any {
-		buf := make([]byte, 0, 256)
-		return &buf
-	},
+// hasherEntry wraps a pooled HMAC hasher with its associated key
+// for identity verification on retrieval.
+type hasherEntry struct {
+	key    []byte
+	hasher hash.Hash
 }
 
-func getSigBuf() *[]byte {
-	return sigBufPool.Get().(*[]byte)
-}
-
-func putSigBuf(buf *[]byte) {
-	if cap(*buf) <= 512 {
-		*buf = (*buf)[:0]
-		sigBufPool.Put(buf)
+func (h *hmacSigningMethod) getHasher(key []byte) hash.Hash {
+	if v := h.pool.Get(); v != nil {
+		entry := v.(*hasherEntry)
+		if len(entry.key) == len(key) && subtle.ConstantTimeCompare(entry.key, key) == 1 {
+			return entry.hasher
+		}
 	}
+	return hmac.New(h.HashFunc.New, key)
+}
+
+func (h *hmacSigningMethod) putHasher(hasher hash.Hash, key []byte) {
+	h.pool.Put(&hasherEntry{key: key, hasher: hasher})
 }
 
 func (h *hmacSigningMethod) Verify(signingString string, signature string, key any) error {
@@ -46,33 +50,28 @@ func (h *hmacSigningMethod) Verify(signingString string, signature string, key a
 		return fmt.Errorf("hash function %v not available", h.HashFunc)
 	}
 
-	bufPtr := getSigBuf()
-	defer putSigBuf(bufPtr)
-
-	sigLen := base64.RawURLEncoding.DecodedLen(len(signature))
-	if cap(*bufPtr) < sigLen {
-		*bufPtr = make([]byte, 0, sigLen)
-	}
-
-	sigBytes := (*bufPtr)[:sigLen]
+	// Stack-allocated decode buffer for signature (max HMAC sig: 64 bytes for SHA512)
+	var sigBuf [64]byte
+	decodedLen := base64.RawURLEncoding.DecodedLen(len(signature))
+	sigBytes := sigBuf[:decodedLen]
 	n, err := base64.RawURLEncoding.Decode(sigBytes, stringToBytes(signature))
 	if err != nil {
 		return fmt.Errorf("failed to decode signature: %w", err)
 	}
 	sigBytes = sigBytes[:n]
 
-	// Validate signature length matches hash output size
-	// This provides early failure and consistent timing
-	expectedSigLen := h.HashFunc.Size()
-	if len(sigBytes) != expectedSigLen {
+	if len(sigBytes) != h.HashFunc.Size() {
 		return errors.New("signature verification failed")
 	}
 
-	hasher := hmac.New(h.HashFunc.New, keyBytes)
+	hasher := h.getHasher(keyBytes)
+	defer h.putHasher(hasher, keyBytes)
+	hasher.Reset()
 	hasher.Write(stringToBytes(signingString))
-	expectedSigBytes := hasher.Sum(nil)
 
-	if !hmac.Equal(sigBytes, expectedSigBytes) {
+	// Stack-allocated hash output buffer
+	var hashBuf [64]byte
+	if !hmac.Equal(sigBytes, hasher.Sum(hashBuf[:0])) {
 		return errors.New("signature verification failed")
 	}
 
@@ -89,31 +88,14 @@ func (h *hmacSigningMethod) Sign(signingString string, key any) (string, error) 
 		return "", fmt.Errorf("hash function %v not available", h.HashFunc)
 	}
 
-	hasher := hmac.New(h.HashFunc.New, keyBytes)
+	hasher := h.getHasher(keyBytes)
+	defer h.putHasher(hasher, keyBytes)
+	hasher.Reset()
 	hasher.Write(stringToBytes(signingString))
 
-	bufPtr := getSigBuf()
-	defer putSigBuf(bufPtr)
-
-	hashSize := h.HashFunc.Size()
-	encodedLen := base64.RawURLEncoding.EncodedLen(hashSize)
-	totalLen := hashSize + encodedLen
-
-	if cap(*bufPtr) < totalLen {
-		*bufPtr = make([]byte, 0, totalLen)
-	}
-
-	// Use buffer for both hash and encoded result
-	buf := (*bufPtr)[:totalLen]
-	signature := buf[:hashSize]
-	hasher.Sum(signature[:0])
-
-	// Encode to base64 in the same buffer's remaining space
-	encoded := buf[hashSize : hashSize+encodedLen]
-	base64.RawURLEncoding.Encode(encoded, signature)
-
-	// Must copy for external return (buffer will be returned to pool)
-	return string(encoded), nil
+	// Stack-allocated hash output buffer
+	var hashBuf [64]byte
+	return base64.RawURLEncoding.EncodeToString(hasher.Sum(hashBuf[:0])), nil
 }
 
 func (h *hmacSigningMethod) Alg() string {
@@ -125,7 +107,7 @@ func (h *hmacSigningMethod) Hash() crypto.Hash {
 }
 
 var (
-	hmacHS256 = &hmacSigningMethod{"HS256", crypto.SHA256}
-	hmacHS384 = &hmacSigningMethod{"HS384", crypto.SHA384}
-	hmacHS512 = &hmacSigningMethod{"HS512", crypto.SHA512}
+	hmacHS256 = &hmacSigningMethod{"HS256", crypto.SHA256, sync.Pool{}}
+	hmacHS384 = &hmacSigningMethod{"HS384", crypto.SHA384, sync.Pool{}}
+	hmacHS512 = &hmacSigningMethod{"HS512", crypto.SHA512, sync.Pool{}}
 )

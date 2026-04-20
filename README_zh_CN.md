@@ -182,15 +182,14 @@ func main() {
 
 ### 非对称签名（RSA/ECDSA）
 
-使用非对称密钥实现公钥/私钥分离：
+适用于需要公钥/私钥分离的分布式系统：
 
 ```go
 package main
 
 import (
-    "crypto/ecdsa"
-    "crypto/elliptic"
     "crypto/rand"
+    "crypto/rsa"
     "fmt"
     "log"
 
@@ -198,17 +197,17 @@ import (
 )
 
 func main() {
-    // 生成 ECDSA 私钥
-    privateKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+    // 生成 RSA 密钥对（生产环境请使用 2048+ 位密钥）
+    privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
     if err != nil {
         log.Fatal(err)
     }
 
-    // 使用非对称密钥配置
+    // 使用 RSA 私钥创建处理器
     cfg := jwt.DefaultConfig()
-    cfg.SigningKey = privateKey
-    cfg.SigningMethod = jwt.SigningMethodES256
-    cfg.Issuer = "ecdsa-service"
+    cfg.SigningKey = privateKey           // *rsa.PrivateKey 或 *ecdsa.PrivateKey
+    cfg.SigningMethod = jwt.SigningMethodRS256
+    cfg.Issuer = "my-secure-service"
 
     processor, err := jwt.New(cfg)
     if err != nil {
@@ -218,7 +217,7 @@ func main() {
 
     claims := jwt.Claims{
         UserID:   "user123",
-        Username: "alice",
+        Username: "john_doe",
         Role:     "admin",
     }
 
@@ -226,24 +225,26 @@ func main() {
     if err != nil {
         log.Fatal(err)
     }
-    fmt.Printf("ECDSA 令牌: %s...\n", token[:50])
+    fmt.Println("RSA 令牌:", token[:50]+"...")
 
+    // 验证令牌
     parsedClaims, valid, err := processor.Validate(token)
     if err != nil || !valid {
-        log.Fatal("令牌验证失败")
+        log.Fatal("令牌无效")
     }
-    fmt.Printf("ECDSA 令牌已验证 - 用户: %s\n", parsedClaims.Username)
+    fmt.Printf("用户: %s\n", parsedClaims.Username)
 }
 ```
 
-使用 RSA 时，替换密钥生成和方法：
+使用 ECDSA 时，替换密钥生成和方法：
 
 ```go
-import "crypto/rsa"
+import "crypto/ecdsa"
+import "crypto/elliptic"
 
-privateKey, _ := rsa.GenerateKey(rand.Reader, 2048)
+privateKey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 cfg.SigningKey = privateKey
-cfg.SigningMethod = jwt.SigningMethodRS256
+cfg.SigningMethod = jwt.SigningMethodES256
 ```
 
 > **VerificationKey**：对于仅验证的服务，可将 `cfg.VerificationKey` 设置为公钥。设置后，验证使用 `VerificationKey` 而非从 `SigningKey` 派生公钥。完整示例参见 [非对称签名示例](examples/5_asymmetric.go)。
@@ -348,6 +349,7 @@ cfg.Blacklist = jwt.BlacklistConfig{
 cfg.EnableRateLimit = true
 cfg.RateLimitRate = 100            // 每个窗口最大请求数（默认：100）
 cfg.RateLimitWindow = time.Minute  // 每用户速率限制窗口（默认：1 * time.Minute）
+cfg.RateLimiter = nil              // 可选：自定义 RateLimitProvider 实现
 
 // === 时钟提供器（可选，用于测试）===
 cfg.Clock = jwt.FixedClock{T: time.Now()}  // 默认使用 SystemClock
@@ -514,6 +516,8 @@ if err != nil {
         // 令牌已被撤销
     case errors.Is(err, jwt.ErrInvalidToken):
         // 令牌格式错误或签名无效
+    case errors.Is(err, jwt.ErrRateLimitExceeded):
+        // 超过速率限制
     case errors.Is(err, jwt.ErrTokenNotValidYet):
         // 令牌 nbf 声明在未来
     case errors.Is(err, jwt.ErrTokenInvalidIssuer):
@@ -522,8 +526,6 @@ if err != nil {
         // 令牌受众不匹配
     case errors.Is(err, jwt.ErrInvalidClaims):
         // 声明验证失败
-    case errors.Is(err, jwt.ErrRateLimitExceeded):
-        // 超过速率限制
     default:
         // 其他错误
     }
@@ -567,12 +569,6 @@ var terr *jwt.TokenError
 if errors.As(err, &terr) {
     fmt.Println("令牌 ID:", terr.TokenID, "过期时间:", terr.ExpiresAt)
 }
-
-// SigningError - 签名算法错误
-var serr *jwt.SigningError
-if errors.As(err, &serr) {
-    fmt.Println("算法:", serr.Algorithm)
-}
 ```
 
 ## API 参考
@@ -608,8 +604,6 @@ processor, err := jwt.New(cfg)
 | `ParseUnverified(token string, claims any) error` | 解析令牌但不验证签名 |
 | `Close() error` | 释放资源 |
 | `IsClosed() bool` | 检查处理器是否已关闭 |
-
-> **已弃用**：`CreateFor`、`ValidateFor`、`CreateRefreshFor`、`RefreshFor` — 请改用 `Create`、`ValidateInto`、`CreateRefresh`、`RefreshInto`。
 
 ### CustomClaims 接口
 
@@ -667,6 +661,34 @@ cfg.Blacklist = jwt.BlacklistConfig{
 }
 ```
 
+## 辅助类型与函数
+
+| 符号 | 描述 |
+|------|------|
+| `NumericDate` | JSON 数值日期（Unix 时间戳），用于 JWT 时间声明 |
+| `NewNumericDate(t time.Time) NumericDate` | 从 time.Time 创建 NumericDate |
+| `StringOrSlice` | 受众声明类型 — 符合 RFC 7519，接受字符串或数组 |
+| `RateLimiter` | 内置令牌桶速率限制器（实现 `RateLimitProvider`） |
+| `NewRateLimiter(maxRate int, window time.Duration) *RateLimiter` | 创建新的速率限制器 |
+| `DefaultBlacklistConfig() BlacklistConfig` | 返回具有合理默认值的黑名单配置 |
+
+```go
+// NumericDate 用于 JWT 时间声明
+expiresAt := jwt.NewNumericDate(time.Now().Add(time.Hour))
+
+// StringOrSlice 用于受众声明
+claims.Audience = jwt.StringOrSlice{"api-v1", "api-v2"}
+
+// 独立速率限制器
+rl := jwt.NewRateLimiter(100, time.Minute)
+rl.Allow("user:123")  // true/false
+rl.Close()
+
+// 默认黑名单配置
+blCfg := jwt.DefaultBlacklistConfig()
+// MaxSize: 100000, CleanupInterval: 5 * time.Minute, EnableAutoCleanup: true
+```
+
 ## 详细文档
 
 | 文档 | 内容 | 使用场景 |
@@ -679,14 +701,10 @@ cfg.Blacklist = jwt.BlacklistConfig{
 | [故障排除](docs/TROUBLESHOOTING.md) | 常见问题解决方案 | 问题诊断 |
 | [并发指南](docs/CONCURRENCY.md) | 线程安全和模式 | 并发应用 |
 
-## 贡献
-
-欢迎贡献、问题报告和建议！
-
 ## 许可证
 
 MIT 许可证 - 详见 [LICENSE](LICENSE) 文件。
 
 ---
 
-**为 Go 社区精心打造** | 如果这个项目对您有帮助，请给它一个 Star！
+如果这个项目对您有帮助，请给它一个 Star！

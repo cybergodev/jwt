@@ -348,6 +348,7 @@ cfg.Blacklist = jwt.BlacklistConfig{
 cfg.EnableRateLimit = true
 cfg.RateLimitRate = 100            // Max requests per window (Default: 100)
 cfg.RateLimitWindow = time.Minute  // Per-user rate limit window (Default: 1 * time.Minute)
+cfg.RateLimiter = nil              // Optional: custom RateLimitProvider implementation
 
 // === Clock provider (optional, for testing) ===
 cfg.Clock = jwt.FixedClock{T: time.Now()}  // Defaults to SystemClock
@@ -567,12 +568,6 @@ var terr *jwt.TokenError
 if errors.As(err, &terr) {
     fmt.Println("Token ID:", terr.TokenID, "ExpiresAt:", terr.ExpiresAt)
 }
-
-// SigningError - signing algorithm errors
-var serr *jwt.SigningError
-if errors.As(err, &serr) {
-    fmt.Println("Algorithm:", serr.Algorithm)
-}
 ```
 
 ## API Reference
@@ -608,8 +603,6 @@ processor, err := jwt.New(cfg)
 | `ParseUnverified(token string, claims any) error` | Parse token without verification |
 | `Close() error` | Release resources |
 | `IsClosed() bool` | Check if processor is closed |
-
-> **Deprecated**: `CreateFor`, `ValidateFor`, `CreateRefreshFor`, `RefreshFor` — use `Create`, `ValidateInto`, `CreateRefresh`, `RefreshInto` instead.
 
 ### CustomClaims Interface
 
@@ -667,6 +660,34 @@ cfg.Blacklist = jwt.BlacklistConfig{
 }
 ```
 
+## Helper Types & Functions
+
+| Symbol | Description |
+|--------|-------------|
+| `NumericDate` | JSON numeric date (Unix timestamp) for JWT time claims |
+| `NewNumericDate(t time.Time) NumericDate` | Create NumericDate from time.Time |
+| `StringOrSlice` | Audience claim type — accepts string or array per RFC 7519 |
+| `RateLimiter` | Built-in token bucket rate limiter (implements `RateLimitProvider`) |
+| `NewRateLimiter(maxRate int, window time.Duration) *RateLimiter` | Create a new rate limiter |
+| `DefaultBlacklistConfig() BlacklistConfig` | Returns blacklist config with sensible defaults |
+
+```go
+// NumericDate for JWT time claims
+expiresAt := jwt.NewNumericDate(time.Now().Add(time.Hour))
+
+// StringOrSlice for audience claims
+claims.Audience = jwt.StringOrSlice{"api-v1", "api-v2"}
+
+// Standalone rate limiter
+rl := jwt.NewRateLimiter(100, time.Minute)
+rl.Allow("user:123")  // true/false
+rl.Close()
+
+// Default blacklist config
+blCfg := jwt.DefaultBlacklistConfig()
+// MaxSize: 100000, CleanupInterval: 5 * time.Minute, EnableAutoCleanup: true
+```
+
 ## Detailed Documentation
 
 | Documentation | Content | Use Case |
@@ -679,14 +700,10 @@ cfg.Blacklist = jwt.BlacklistConfig{
 | [Troubleshooting](docs/TROUBLESHOOTING.md) | Common problem solutions | Issue diagnosis |
 | [Concurrency Guide](docs/CONCURRENCY.md) | Thread safety and patterns | Concurrent applications |
 
-## Contributing
-
-Contributions, issue reports, and suggestions are welcome!
-
 ## License
 
 MIT License - See [LICENSE](LICENSE) file for details.
 
 ---
 
-**Crafted with care for the Go community** | If this project helps you, please give it a Star!
+If this project helps you, please give it a Star!

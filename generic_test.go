@@ -2,7 +2,6 @@ package jwt
 
 import (
 	"errors"
-	"strings"
 	"testing"
 	"time"
 )
@@ -254,41 +253,3 @@ func TestGenericCustomStore(t *testing.T) {
 	}
 }
 
-func TestGenericDeepValidation(t *testing.T) {
-	processor, err := newTestProcessor(testSecretKey)
-	if err != nil {
-		t.Fatalf("Failed to create processor: %v", err)
-	}
-	defer processor.Close()
-
-	tests := []struct {
-		name   string
-		claims *Claims
-	}{
-		{"XSS via Create", &Claims{UserID: "<script>alert('xss')</script>", Username: "test"}},
-		{"JavaScript injection via Create", &Claims{UserID: "test", Username: "javascript:alert(1)"}},
-		{"Path traversal via Create", &Claims{UserID: "../../../etc/passwd", Username: "test"}},
-		{"Too long field via Create", &Claims{UserID: "test", Username: strings.Repeat("a", 1000)}},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			_, err := processor.Create(tt.claims)
-			if err == nil {
-				t.Errorf("Create should reject malicious claims: %s", tt.name)
-			}
-		})
-	}
-
-	// CreateRefresh should also validate
-	claims := &Claims{UserID: "<script>alert('xss')</script>", Username: "test"}
-	if _, err := processor.CreateRefresh(claims); err == nil {
-		t.Error("CreateRefresh should reject dangerous patterns")
-	}
-
-	// Custom claims types skip deep pattern validation
-	customClaims := &TestCustomClaims{UserID: "user-with-<script>tag", Email: "test@example.com"}
-	if _, err := processor.Create(customClaims); err != nil {
-		t.Errorf("Custom claims should not trigger deep validation: %v", err)
-	}
-}

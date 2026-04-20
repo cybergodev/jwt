@@ -160,23 +160,29 @@ func errorHandlingExample(secretKey string) {
 		fmt.Println("Caught: empty claims")
 	}
 
-	// Demonstrate error type switching
+	// Token revoked error: create, revoke, then validate
 	token, _ := processor.Create(&jwt.Claims{UserID: "test"})
-	_, valid, validateErr := processor.Validate(token)
-	if !valid || validateErr != nil {
-		switch {
-		case errors.Is(validateErr, jwt.ErrTokenExpired):
-			fmt.Println("Token expired")
-		case errors.Is(validateErr, jwt.ErrTokenRevoked):
-			fmt.Println("Token revoked")
-		case errors.Is(validateErr, jwt.ErrTokenInvalidIssuer):
-			fmt.Println("Invalid issuer")
-		default:
-			fmt.Printf("Other error: %v\n", validateErr)
-		}
-	} else {
-		fmt.Println("Error handling tests passed")
+	processor.Revoke(token)
+	_, valid, err := processor.Validate(token)
+	if !valid && errors.Is(err, jwt.ErrTokenRevoked) {
+		fmt.Println("Caught: token revoked")
 	}
+
+	// Issuer mismatch: processor expects different issuer than the token contains
+	mismatchCfg := jwt.Config{SecretKey: secretKey, Issuer: "issuer-A"}
+	mismatchProc, _ := jwt.New(mismatchCfg)
+	defer mismatchProc.Close()
+	mismatchToken, _ := mismatchProc.Create(&jwt.Claims{UserID: "test"})
+
+	checkCfg := jwt.Config{SecretKey: secretKey, Issuer: "issuer-B"}
+	checkProc, _ := jwt.New(checkCfg)
+	defer checkProc.Close()
+	_, valid, err = checkProc.Validate(mismatchToken)
+	if !valid && errors.Is(err, jwt.ErrTokenInvalidIssuer) {
+		fmt.Println("Caught: issuer mismatch")
+	}
+
+	fmt.Println("Error handling tests passed")
 }
 
 // productionConfigExample demonstrates production-ready configuration.

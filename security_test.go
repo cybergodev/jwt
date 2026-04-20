@@ -71,7 +71,7 @@ func TestSecurityWeakKeys(t *testing.T) {
 	}
 }
 
-func TestSecurityInputValidation(t *testing.T) {
+func TestSecurityMaliciousInput(t *testing.T) {
 	processor, err := newTestProcessor(testSecretKey)
 	if err != nil {
 		t.Fatalf("Failed to create processor: %v", err)
@@ -79,24 +79,44 @@ func TestSecurityInputValidation(t *testing.T) {
 	defer processor.Close()
 
 	tests := []struct {
-		name   string
-		claims Claims
+		name      string
+		pattern   string
+		wantError bool
 	}{
-		{"XSS script tag", Claims{UserID: "<script>alert('xss')</script>", Username: "test"}},
-		{"JavaScript injection", Claims{UserID: "test", Username: "javascript:alert(1)"}},
-		{"Too long field", Claims{UserID: "test", Username: strings.Repeat("a", 1000)}},
-		{"Null byte", Claims{UserID: "test\x00null", Username: "test"}},
-		{"Path traversal", Claims{UserID: "../../../etc/passwd", Username: "test"}},
-		{"Data URI", Claims{UserID: "data:text/html,<script>", Username: "test"}},
+		// Injection patterns — should be rejected
+		{"XSS script tag", "<script>alert('xss')</script>", true},
+		{"JavaScript URI", "javascript:alert(1)", true},
+		{"Data URI script", "data:text/html,<script>alert(1)</script>", true},
+		{"eval call", "eval('alert(1)')", true},
+		{"Path traversal", "../../../etc/passwd", true},
+		{"File URI", "file:///etc/passwd", true},
+		{"VBScript", "vbscript:msgbox(1)", true},
+		{"Null byte", "test\x00null", true},
+		{"Too long field", strings.Repeat("a", 1000), true},
+
+		// Acceptable patterns — should be allowed
+		{"Email address", "user@example.com", false},
+		{"HTTPS URL", "https://example.com/profile", false},
+		{"Name with apostrophe", "John O'Brien", false},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := processor.Create(&tt.claims)
-			if err == nil {
-				t.Errorf("Should reject malicious claims: %s", tt.name)
+			claims := Claims{UserID: "user123", Username: tt.pattern}
+			_, err := processor.Create(&claims)
+			if tt.wantError && err == nil {
+				t.Errorf("Should reject: %s", tt.name)
+			}
+			if !tt.wantError && err != nil {
+				t.Errorf("Should accept %s: %v", tt.name, err)
 			}
 		})
+	}
+
+	// CreateRefresh should also reject dangerous patterns
+	claims := &Claims{UserID: "<script>alert('xss')</script>", Username: "test"}
+	if _, err := processor.CreateRefresh(claims); err == nil {
+		t.Error("CreateRefresh should reject dangerous patterns")
 	}
 }
 
@@ -149,46 +169,6 @@ func TestSecurityDoSProtection(t *testing.T) {
 	}
 }
 
-func TestSecurityInjectionPatterns(t *testing.T) {
-	processor, err := newTestProcessor(testSecretKey)
-	if err != nil {
-		t.Fatalf("Failed to create processor: %v", err)
-	}
-	defer processor.Close()
-
-	tests := []struct {
-		name      string
-		pattern   string
-		wantError bool
-	}{
-		// Critical patterns that should be blocked
-		{"XSS script", "<script>alert('xss')</script>", true},
-		{"JavaScript URI", "javascript:alert(1)", true},
-		{"Data URI script", "data:text/html,<script>alert(1)</script>", true},
-		{"eval call", "eval('alert(1)')", true},
-		{"Path traversal", "../../../etc/passwd", true},
-		{"File URI", "file:///etc/passwd", true},
-		{"VBScript", "vbscript:msgbox(1)", true},
-
-		// Acceptable patterns (not security threats in JWT context)
-		{"Email address", "user@example.com", false},
-		{"HTTPS URL", "https://example.com/profile", false},
-		{"Name with apostrophe", "John O'Brien", false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			claims := Claims{UserID: "user123", Username: tt.pattern}
-			_, err := processor.Create(&claims)
-			if tt.wantError && err == nil {
-				t.Errorf("Should reject: %s", tt.name)
-			}
-			if !tt.wantError && err != nil {
-				t.Errorf("Should accept %s: %v", tt.name, err)
-			}
-		})
-	}
-}
 
 func TestSecurityTokenValidation(t *testing.T) {
 	processor, err := newTestProcessor(testSecretKey)

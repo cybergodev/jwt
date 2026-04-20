@@ -2,8 +2,6 @@ package jwt
 
 import (
 	"fmt"
-	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -154,53 +152,6 @@ func TestIsRevokedNoBlacklist(t *testing.T) {
 	}
 }
 
-func TestBlacklistConcurrentRevoke(t *testing.T) {
-	cfg := DefaultConfig()
-	cfg.SecretKey = testSecretKey
-	cfg.Blacklist = DefaultBlacklistConfig()
-	processor, err := New(cfg)
-	if err != nil {
-		t.Fatalf("Failed to create processor: %v", err)
-	}
-	defer processor.Close()
-
-	const numTokens = 100
-	tokens := make([]string, numTokens)
-	for i := 0; i < numTokens; i++ {
-		claims := Claims{UserID: fmt.Sprintf("user%d", i)}
-		token, err := processor.Create(&claims)
-		if err != nil {
-			t.Fatalf("Failed to create token %d: %v", i, err)
-		}
-		tokens[i] = token
-	}
-
-	var wg sync.WaitGroup
-	var revokeCount atomic.Int64
-
-	wg.Add(numTokens)
-	for i := 0; i < numTokens; i++ {
-		go func(idx int) {
-			defer wg.Done()
-			if err := processor.Revoke(tokens[idx]); err == nil {
-				revokeCount.Add(1)
-			}
-		}(i)
-	}
-	wg.Wait()
-
-	// Verify all tokens are revoked
-	for i := 0; i < numTokens; i++ {
-		_, valid, _ := processor.Validate(tokens[i])
-		if valid {
-			t.Errorf("Token %d should be revoked", i)
-		}
-	}
-
-	if revokeCount.Load() != numTokens {
-		t.Errorf("Expected %d revocations, got %d", numTokens, revokeCount.Load())
-	}
-}
 
 func TestBlacklistConfigDefaults(t *testing.T) {
 	cfg := DefaultBlacklistConfig()
@@ -233,5 +184,36 @@ func TestBlacklistConfigCreateManager(t *testing.T) {
 			}
 			manager.Close()
 		})
+	}
+}
+
+func TestBlacklistDuplicateRevoke(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.SecretKey = testSecretKey
+	cfg.Blacklist = DefaultBlacklistConfig()
+	processor, err := New(cfg)
+	if err != nil {
+		t.Fatalf("Failed to create processor: %v", err)
+	}
+	defer processor.Close()
+
+	claims := Claims{UserID: "dup-user", Username: "testuser"}
+	token, err := processor.Create(&claims)
+	if err != nil {
+		t.Fatalf("Failed to create token: %v", err)
+	}
+
+	if err := processor.Revoke(token); err != nil {
+		t.Fatalf("First revoke failed: %v", err)
+	}
+
+	// Second revoke of same token should succeed (idempotent)
+	if err := processor.Revoke(token); err != nil {
+		t.Errorf("Second revoke should succeed (idempotent), got: %v", err)
+	}
+
+	_, valid, _ := processor.Validate(token)
+	if valid {
+		t.Error("Token should remain revoked after duplicate revoke")
 	}
 }

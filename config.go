@@ -115,7 +115,7 @@ func (c *Config) Validate() error {
 	}
 
 	// Validate blacklist configuration
-	if err := c.Blacklist.Validate(); err != nil {
+	if err := c.Blacklist.validate(); err != nil {
 		return fmt.Errorf("%w: %v", ErrInvalidConfig, err)
 	}
 

@@ -15,14 +15,14 @@ var (
 	ErrInvalidSigningMethod = errors.New("invalid signing method")
 
 	// Token errors
-	ErrInvalidToken       = errors.New("invalid token")
-	ErrEmptyToken         = errors.New("empty token")
-	ErrTokenRevoked       = errors.New("token revoked")
-	ErrTokenMissingID     = errors.New("token missing ID")
-	ErrTokenExpired       = errors.New("token expired")
-	ErrTokenNotValidYet   = errors.New("token not valid yet")
-	ErrTokenInvalidIssuer   = errors.New("token invalid issuer")
-	ErrTokenInvalidAudience = errors.New("token invalid audience")
+	ErrInvalidToken          = errors.New("invalid token")
+	ErrEmptyToken            = errors.New("empty token")
+	ErrTokenRevoked          = errors.New("token revoked")
+	ErrTokenMissingID        = errors.New("token missing ID")
+	ErrTokenExpired          = errors.New("token expired")
+	ErrTokenNotValidYet      = errors.New("token not valid yet")
+	ErrTokenInvalidIssuer    = errors.New("token invalid issuer")
+	ErrTokenInvalidAudience  = errors.New("token invalid audience")
 
 	// Claims errors
 	ErrInvalidClaims = errors.New("invalid claims")
@@ -77,38 +77,4 @@ func (e *TokenError) Unwrap() error {
 // Is implements errors.Is interface for comparison.
 func (e *TokenError) Is(target error) bool {
 	return errors.Is(e.Err, target)
-}
-
-// SigningError represents a signing-related error.
-// This error type is provided for applications that need to handle
-// signing errors specifically. It can be used with custom signers
-// or when implementing custom error handling logic.
-type SigningError struct {
-	Algorithm string
-	Err       error
-}
-
-func (e *SigningError) Error() string {
-	return fmt.Sprintf("signing error (alg=%s): %v", e.Algorithm, e.Err)
-}
-
-func (e *SigningError) Unwrap() error {
-	return e.Err
-}
-
-// NewTokenError creates a new TokenError wrapping the given error.
-func NewTokenError(err error, tokenID string, expiresAt time.Time) *TokenError {
-	return &TokenError{
-		Err:       err,
-		TokenID:   tokenID,
-		ExpiresAt: expiresAt,
-	}
-}
-
-// NewSigningError creates a new SigningError for the given algorithm.
-func NewSigningError(algorithm string, err error) *SigningError {
-	return &SigningError{
-		Algorithm: algorithm,
-		Err:       err,
-	}
 }

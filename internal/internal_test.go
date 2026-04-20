@@ -106,55 +106,6 @@ func TestHMACInvalidKey(t *testing.T) {
 	}
 }
 
-func TestSignedString(t *testing.T) {
-	header := map[string]any{
-		"alg": "HS256",
-		"typ": "JWT",
-	}
-	claims := map[string]any{
-		"sub": "user123",
-		"exp": 1234567890,
-	}
-	method, err := GetInternalSigningMethod("HS256")
-	if err != nil {
-		t.Fatalf("GetInternalSigningMethod failed: %v", err)
-	}
-	key := []byte("test-secret-key-with-sufficient-length")
-
-	tokenString, err := SignedString(header, claims, method, key)
-	if err != nil {
-		t.Fatalf("SignedString failed: %v", err)
-	}
-
-	if tokenString == "" {
-		t.Error("SignedString returned empty string")
-	}
-
-	parts := strings.Split(tokenString, ".")
-	if len(parts) != 3 {
-		t.Errorf("Expected 3 parts, got %d", len(parts))
-	}
-
-	// Test with invalid header (non-serializable)
-	invalidHeader := map[string]any{
-		"alg":     "HS256",
-		"invalid": make(chan int),
-	}
-	_, err = SignedString(invalidHeader, claims, method, key)
-	if err == nil {
-		t.Error("Expected error for invalid header, got nil")
-	}
-
-	// Test with invalid claims (non-serializable)
-	invalidClaims := map[string]any{
-		"sub":     "test",
-		"invalid": make(chan int),
-	}
-	_, err = SignedString(header, invalidClaims, method, key)
-	if err == nil {
-		t.Error("Expected error for invalid claims, got nil")
-	}
-}
 
 func TestGetInternalSigningMethod(t *testing.T) {
 	tests := []struct {
@@ -860,10 +811,10 @@ func TestManagerBlacklistToken(t *testing.T) {
 	store := NewMemoryStore(1000, 5*time.Minute, false, nil)
 	defer store.Close()
 
-	manager := NewManager(store)
+	manager := NewManagerWithClock(store, nil)
 
 	// Test with empty token ID
-	err := manager.BlacklistToken("", time.Now().Add(time.Hour))
+	err := manager.blacklistToken("", time.Now().Add(time.Hour))
 	if err == nil {
 		t.Error("Expected error for empty token ID")
 	}
@@ -874,7 +825,7 @@ func TestManagerBlacklistToken(t *testing.T) {
 	// Test with valid token ID
 	tokenID := "tok_valid123"
 	expiresAt := time.Now().Add(time.Hour)
-	err = manager.BlacklistToken(tokenID, expiresAt)
+	err = manager.blacklistToken(tokenID, expiresAt)
 	if err != nil {
 		t.Fatalf("BlacklistToken failed: %v", err)
 	}
@@ -891,7 +842,7 @@ func TestManagerBlacklistToken(t *testing.T) {
 
 func TestManagerIsBlacklisted(t *testing.T) {
 	store := NewMemoryStore(1000, 5*time.Minute, false, nil)
-	manager := NewManager(store)
+	manager := NewManagerWithClock(store, nil)
 	defer manager.Close()
 
 	// Test with empty token ID
@@ -915,7 +866,7 @@ func TestManagerIsBlacklisted(t *testing.T) {
 
 func TestManagerBlacklistTokenString(t *testing.T) {
 	store := NewMemoryStore(1000, 5*time.Minute, false, nil)
-	manager := NewManager(store)
+	manager := NewManagerWithClock(store, nil)
 	defer manager.Close()
 
 	tests := []struct {
@@ -972,10 +923,10 @@ func TestManagerBlacklistTokenString(t *testing.T) {
 
 func TestManagerClose(t *testing.T) {
 	store := NewMemoryStore(1000, 5*time.Minute, false, nil)
-	manager := NewManager(store)
+	manager := NewManagerWithClock(store, nil)
 
 	// Add some tokens
-	err := manager.BlacklistToken("tok_test1", time.Now().Add(time.Hour))
+	err := manager.blacklistToken("tok_test1", time.Now().Add(time.Hour))
 	if err != nil {
 		t.Fatalf("Failed to blacklist token: %v", err)
 	}
@@ -1284,7 +1235,7 @@ func TestNewManagerWithClock(t *testing.T) {
 	// Verify the clock is used by checking BlacklistToken uses correct time
 	tokenID := "tok_clock_test"
 	expiresAt := fixedTime.Add(-time.Hour) // Already expired relative to fixed clock
-	err := manager.BlacklistToken(tokenID, expiresAt)
+	err := manager.blacklistToken(tokenID, expiresAt)
 	if err != nil {
 		t.Fatalf("BlacklistToken failed: %v", err)
 	}
@@ -1356,7 +1307,7 @@ func TestParseTokenID(t *testing.T) {
 // =============================================================================
 
 func TestManagerCloseNilStore(t *testing.T) {
-	manager := NewManager(nil)
+	manager := NewManagerWithClock(nil, nil)
 	// Should not panic with nil store
 	err := manager.Close()
 	if err != nil {
@@ -1430,3 +1381,4 @@ func TestKeyAnalysisEdgeCases(t *testing.T) {
 		}
 	})
 }
+

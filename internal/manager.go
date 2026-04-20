@@ -30,11 +30,6 @@ type Manager struct {
 	nowFunc func() time.Time
 }
 
-// NewManager creates a new Manager with the given store.
-func NewManager(s storeOps) *Manager {
-	return &Manager{store: s, nowFunc: time.Now}
-}
-
 // NewManagerWithClock creates a new Manager with the given store and clock function.
 // If nowFunc is nil, time.Now is used.
 func NewManagerWithClock(s storeOps, nowFunc func() time.Time) *Manager {
@@ -64,7 +59,7 @@ func parseTokenClaims(tokenString string) (*tokenClaims, error) {
 	return claims, nil
 }
 
-func (m *Manager) BlacklistToken(tokenID string, expiresAt time.Time) error {
+func (m *Manager) blacklistToken(tokenID string, expiresAt time.Time) error {
 	if tokenID == "" {
 		return fmt.Errorf("token ID cannot be empty")
 	}
@@ -100,7 +95,7 @@ func (m *Manager) BlacklistTokenString(tokenString string) error {
 		}
 	}
 
-	return m.BlacklistToken(claims.ID, expiresAt)
+	return m.blacklistToken(claims.ID, expiresAt)
 }
 
 func (m *Manager) Close() error {

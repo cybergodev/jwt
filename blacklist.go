@@ -66,9 +66,9 @@ func DefaultBlacklistConfig() BlacklistConfig {
 	}
 }
 
-// Validate validates the blacklist configuration.
+// validate validates the blacklist configuration.
 // Returns an error if the configuration is invalid.
-func (c *BlacklistConfig) Validate() error {
+func (c *BlacklistConfig) validate() error {
 	// Skip validation if custom store is provided
 	if c.Store != nil {
 		return nil

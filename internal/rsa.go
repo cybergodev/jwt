@@ -37,7 +37,10 @@ func (r *rsaSigningMethod) Sign(signingString string, key any) (string, error) {
 
 	hasher := r.HashFunc.New()
 	hasher.Write(stringToBytes(signingString))
-	hashed := hasher.Sum(nil)
+
+	// Stack-allocated hash output buffer
+	var hashBuf [64]byte
+	hashed := hasher.Sum(hashBuf[:0])
 
 	signature, err := rsa.SignPKCS1v15(rand.Reader, rsaKey, r.HashFunc, hashed)
 	if err != nil {
@@ -50,7 +53,6 @@ func (r *rsaSigningMethod) Sign(signingString string, key any) (string, error) {
 func (r *rsaSigningMethod) Verify(signingString string, signature string, key any) error {
 	rsaKey, ok := key.(*rsa.PublicKey)
 	if !ok {
-		// Support *rsa.PrivateKey for verification (extract public key)
 		privKey, ok := key.(*rsa.PrivateKey)
 		if !ok {
 			return fmt.Errorf("RSA key must be *rsa.PublicKey or *rsa.PrivateKey, got %T", key)
@@ -69,13 +71,16 @@ func (r *rsaSigningMethod) Verify(signingString string, signature string, key an
 		return fmt.Errorf("hash function %v not available", r.HashFunc)
 	}
 
-	sigBytes, err := base64.RawURLEncoding.DecodeString(signature)
+	// Stack-allocated decode buffer for signature (max RSA sig: 512 bytes for RSA-4096)
+	var sigBuf [512]byte
+	decodedLen := base64.RawURLEncoding.DecodedLen(len(signature))
+	sigBytes := sigBuf[:decodedLen]
+	n, err := base64.RawURLEncoding.Decode(sigBytes, stringToBytes(signature))
 	if err != nil {
 		return fmt.Errorf("failed to decode signature: %w", err)
 	}
+	sigBytes = sigBytes[:n]
 
-	// Validate signature length matches RSA key size
-	// RSA signature length must equal the modulus size in bytes
 	expectedSigLen := rsaKey.Size()
 	if len(sigBytes) != expectedSigLen {
 		return errors.New("RSA signature verification failed")
@@ -83,7 +88,9 @@ func (r *rsaSigningMethod) Verify(signingString string, signature string, key an
 
 	hasher := r.HashFunc.New()
 	hasher.Write(stringToBytes(signingString))
-	hashed := hasher.Sum(nil)
+
+	var hashBuf [64]byte
+	hashed := hasher.Sum(hashBuf[:0])
 
 	err = rsa.VerifyPKCS1v15(rsaKey, r.HashFunc, hashed, sigBytes)
 	if err != nil {

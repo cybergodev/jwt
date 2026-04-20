@@ -283,3 +283,62 @@ func TestAsymmetricAlgorithmConfusion(t *testing.T) {
 		t.Error("Should reject RSA-signed token with ECDSA processor (algorithm confusion)")
 	}
 }
+
+func TestECDSAWithPublicKeyVerification(t *testing.T) {
+	privateKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("Failed to generate ECDSA key: %v", err)
+	}
+
+	cfg := DefaultConfig()
+	cfg.SigningKey = privateKey
+	cfg.VerificationKey = &privateKey.PublicKey
+	cfg.SigningMethod = SigningMethodES256
+
+	processor, err := New(cfg)
+	if err != nil {
+		t.Fatalf("Failed to create processor: %v", err)
+	}
+	defer processor.Close()
+
+	claims := Claims{UserID: "ecdsa-pub-user", Username: "test"}
+	token, err := processor.Create(&claims)
+	if err != nil {
+		t.Fatalf("Failed to create token: %v", err)
+	}
+
+	_, valid, err := processor.Validate(token)
+	if err != nil || !valid {
+		t.Fatalf("Token should validate with ECDSA public key: %v", err)
+	}
+}
+
+func TestAsymmetricVerificationKeyValidation(t *testing.T) {
+	rsaKey, _ := rsa.GenerateKey(rand.Reader, 2048)
+	ecdsaKey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+
+	tests := []struct {
+		name    string
+		method  SigningMethod
+		signKey any
+		verKey  any
+	}{
+		{"RSA wrong VerificationKey type", SigningMethodRS256, rsaKey, "string-key"},
+		{"RSA nil typed VerificationKey", SigningMethodRS256, rsaKey, (*rsa.PublicKey)(nil)},
+		{"ECDSA wrong VerificationKey type", SigningMethodES256, ecdsaKey, 12345},
+		{"ECDSA nil typed VerificationKey", SigningMethodES256, ecdsaKey, (*ecdsa.PublicKey)(nil)},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := DefaultConfig()
+			cfg.SigningKey = tt.signKey
+			cfg.VerificationKey = tt.verKey
+			cfg.SigningMethod = tt.method
+			_, err := New(cfg)
+			if err == nil {
+				t.Error("Expected error for invalid verification key")
+			}
+		})
+	}
+}

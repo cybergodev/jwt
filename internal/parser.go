@@ -2,7 +2,6 @@ package internal
 
 import (
 	"fmt"
-	"strings"
 	"sync"
 	"unsafe"
 )
@@ -39,18 +38,12 @@ func putParseBuf(buf *[]byte) {
 }
 
 // corePool pools Core structs to reduce allocations during token parsing.
-
 var corePool = sync.Pool{
 	New: func() any {
 		return &Core{
 			Header: make(map[string]any, 2),
 		}
 	},
-}
-
-// GetCore retrieves a Core struct from the pool.
-func GetCore() *Core {
-	return corePool.Get().(*Core)
 }
 
 // ReleaseCore returns a Core struct to the pool after clearing its fields.
@@ -99,11 +92,57 @@ func ParseWithClaims(tokenString string, claims any, keyFunc func(*Core) (any, e
 		return nil, errInvalidTokenFormat
 	}
 
-	// Explicitly check for empty signature
 	if part3 == "" {
 		return nil, errEmptySignature
 	}
 
+	// Fast path: extract algorithm without full JSON decode of header.
+	// This avoids map[string]any allocation for the happy path since
+	// we only need alg for method lookup and keyFunc typically only reads alg.
+	alg := DecodeHeaderAlg(part1)
+	if alg != "" {
+		return parseFastPath(part1, part2, part3, tokenString, alg, claims, keyFunc)
+	}
+
+	// Slow path: full header decode for malformed/unusual headers
+	return parseSlowPath(part1, part2, part3, tokenString, claims, keyFunc)
+}
+
+func parseFastPath(part1, part2, part3, tokenString, alg string, claims any, keyFunc func(*Core) (any, error)) (*Core, error) {
+	if isInsecureAlgorithm(alg) {
+		return nil, fmt.Errorf("insecure algorithm not allowed: %s", alg)
+	}
+
+	method, err := GetInternalSigningMethod(alg)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := DecodeSegment(part2, claims); err != nil {
+		return nil, fmt.Errorf("failed to decode claims: %w", err)
+	}
+
+	token := corePool.Get().(*Core)
+	token.Raw = tokenString
+	token.Signature = part3
+	token.Claims = claims
+	token.Valid = false
+	token.Method = method
+
+	// Set only the "alg" field in the header map. keyFunc reads only "alg",
+	// so we skip full JSON decode to avoid interface boxing allocations.
+	token.Header["alg"] = alg
+
+	key, err := keyFunc(token)
+	if err != nil {
+		ReleaseCore(token)
+		return nil, fmt.Errorf("failed to get key: %w", err)
+	}
+
+	return verifyAndReturn(token, part1, part2, part3, method, key)
+}
+
+func parseSlowPath(part1, part2, part3, tokenString string, claims any, keyFunc func(*Core) (any, error)) (*Core, error) {
 	token := corePool.Get().(*Core)
 	token.Raw = tokenString
 	token.Signature = part3
@@ -121,17 +160,17 @@ func ParseWithClaims(tokenString string, claims any, keyFunc func(*Core) (any, e
 		return nil, errEmptyHeader
 	}
 
-	alg, ok := token.Header["alg"].(string)
-	if !ok || alg == "" {
+	algVal, ok := token.Header["alg"].(string)
+	if !ok || algVal == "" {
 		ReleaseCore(token)
 		return nil, fmt.Errorf("missing or invalid algorithm in header")
 	}
-	if isInsecureAlgorithm(alg) {
+	if isInsecureAlgorithm(algVal) {
 		ReleaseCore(token)
-		return nil, fmt.Errorf("insecure algorithm not allowed: %s", alg)
+		return nil, fmt.Errorf("insecure algorithm not allowed: %s", algVal)
 	}
 
-	method, err := GetInternalSigningMethod(alg)
+	method, err := GetInternalSigningMethod(algVal)
 	if err != nil {
 		ReleaseCore(token)
 		return nil, err
@@ -149,6 +188,10 @@ func ParseWithClaims(tokenString string, claims any, keyFunc func(*Core) (any, e
 		return nil, fmt.Errorf("failed to get key: %w", err)
 	}
 
+	return verifyAndReturn(token, part1, part2, part3, method, key)
+}
+
+func verifyAndReturn(token *Core, part1, part2, part3 string, method Method, key any) (*Core, error) {
 	signingStringLen := len(part1) + 1 + len(part2)
 
 	bufPtr := getParseBuf()
@@ -163,7 +206,6 @@ func ParseWithClaims(tokenString string, claims any, keyFunc func(*Core) (any, e
 	signingStringBuf[len(part1)] = '.'
 	copy(signingStringBuf[len(part1)+1:], part2)
 
-	// Use unsafe string for internal Verify call (safe: buffer not returned to pool until after Verify returns)
 	signingString := unsafe.String(&signingStringBuf[0], len(signingStringBuf))
 
 	if err := method.Verify(signingString, part3, key); err != nil {
@@ -230,7 +272,47 @@ var insecureAlgorithms = map[string]struct{}{
 }
 
 func isInsecureAlgorithm(alg string) bool {
-	normalized := strings.ToUpper(strings.TrimSpace(alg))
-	_, exists := insecureAlgorithms[normalized]
-	return exists
+	if _, ok := insecureAlgorithms[alg]; ok {
+		return true
+	}
+	// Slow path: byte-level case-insensitive comparison without allocation.
+	// Only reached for non-standard algorithm strings.
+	for insecure := range insecureAlgorithms {
+		if len(insecure) > 0 && equalFoldASCII(trimSpaceBytes(alg), insecure) {
+			return true
+		}
+	}
+	return false
+}
+
+// trimSpaceBytes trims leading and trailing ASCII spaces without allocation.
+func trimSpaceBytes(s string) string {
+	start, end := 0, len(s)
+	for start < end && s[start] == ' ' {
+		start++
+	}
+	for end > start && s[end-1] == ' ' {
+		end--
+	}
+	return s[start:end]
+}
+
+// equalFoldASCII reports whether a and b are equal under ASCII case-folding.
+func equalFoldASCII(a, b string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := 0; i < len(a); i++ {
+		ca, cb := a[i], b[i]
+		if ca >= 'A' && ca <= 'Z' {
+			ca += 32
+		}
+		if cb >= 'A' && cb <= 'Z' {
+			cb += 32
+		}
+		if ca != cb {
+			return false
+		}
+	}
+	return true
 }

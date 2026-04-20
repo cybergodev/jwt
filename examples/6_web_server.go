@@ -71,7 +71,6 @@ func init() {
 	cfg.AccessTokenTTL = 15 * time.Minute
 	cfg.RefreshTokenTTL = 7 * 24 * time.Hour
 	cfg.Issuer = "web-server-example"
-	cfg.SigningMethod = jwt.SigningMethodHS256
 	cfg.EnableRateLimit = true
 	cfg.RateLimitRate = 100
 	cfg.RateLimitWindow = time.Minute
@@ -101,7 +100,7 @@ func main() {
 	mux.HandleFunc("/profile", authMiddleware(profileHandler))
 	mux.HandleFunc("/admin", authMiddleware(requireRole("admin", adminHandler)))
 	mux.HandleFunc("/logout", authMiddleware(logoutHandler))
-	mux.HandleFunc("/refresh", authMiddleware(refreshHandler))
+	mux.HandleFunc("/refresh", refreshHandler)
 
 	// Create HTTP server
 	server := &http.Server{
@@ -289,10 +288,10 @@ func refreshHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{
+	json.NewEncoder(w).Encode(map[string]any{
 		"access_token": newAccessToken,
 		"token_type":   "Bearer",
-		"expires_in":   "900",
+		"expires_in":   900,
 	})
 }
 
@@ -339,7 +338,7 @@ func authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 		}
 
 		// Add claims to context
-		ctx := context.WithValue(r.Context(), claimsKey, claims)
+		ctx := context.WithValue(r.Context(), claimsKey, &claims)
 		next(w, r.WithContext(ctx))
 	}
 }

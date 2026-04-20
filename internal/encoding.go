@@ -75,3 +75,84 @@ func DecodeSegment(segment string, dest any) error {
 
 	return nil
 }
+
+// DecodeHeaderAlg extracts the "alg" field from a base64url-encoded JWT header
+// without fully decoding the header into a map. Returns empty string if alg is
+// not found or if the header is invalid.
+// This avoids map[string]any allocation and interface boxing for the common case
+// where only the algorithm is needed.
+func DecodeHeaderAlg(headerSegment string) string {
+	segLen := len(headerSegment)
+	if segLen == 0 || segLen > maxSegmentLength {
+		return ""
+	}
+
+	bufLen := base64.RawURLEncoding.DecodedLen(segLen)
+	if bufLen > maxDecodedSize {
+		return ""
+	}
+
+	bufPtr := getDecodeBuf()
+	defer putDecodeBuf(bufPtr)
+
+	if cap(*bufPtr) < bufLen {
+		*bufPtr = make([]byte, 0, bufLen)
+	}
+
+	buf := (*bufPtr)[:bufLen]
+	n, err := base64.RawURLEncoding.Decode(buf, stringToBytes(headerSegment))
+	if err != nil {
+		return ""
+	}
+
+	data := buf[:n]
+	// Fast scan for "alg":"<value>" pattern in the JSON
+	// JWT headers are small and simple: {"alg":"HS256","typ":"JWT"}
+	return extractAlgFromJSON(data)
+}
+
+// extractAlgFromJSON scans the JSON data for the "alg" field value.
+// Handles both {"alg":"HS256","typ":"JWT"} and {"typ":"JWT","alg":"HS256"}.
+func extractAlgFromJSON(data []byte) string {
+	// Find "alg" key
+	const algKey = `"alg"`
+	idx := 0
+	for idx < len(data)-len(algKey) {
+		if data[idx] == '"' {
+			// Check if this is "alg"
+			if string(data[idx:idx+len(algKey)]) == algKey {
+				// Skip past "alg" and find the colon
+				pos := idx + len(algKey)
+				for pos < len(data) && data[pos] != ':' {
+					pos++
+				}
+				if pos >= len(data) {
+					return ""
+				}
+				pos++ // skip colon
+
+				// Skip whitespace
+				for pos < len(data) && data[pos] == ' ' {
+					pos++
+				}
+
+				if pos >= len(data) || data[pos] != '"' {
+					return ""
+				}
+				pos++ // skip opening quote
+
+				// Read value until closing quote
+				start := pos
+				for pos < len(data) && data[pos] != '"' {
+					pos++
+				}
+				if pos >= len(data) {
+					return ""
+				}
+				return string(data[start:pos])
+			}
+		}
+		idx++
+	}
+	return ""
+}
