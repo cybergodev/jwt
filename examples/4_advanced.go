@@ -194,17 +194,25 @@ func errorHandlingExample(secretKey string) {
 	// Test 5: Using errors.Is for error checking
 	token, _ := processor.CreateToken(jwt.Claims{UserID: "test"})
 	_, valid, err := processor.ValidateToken(token)
-	if !valid && err != nil {
+	if !valid || err != nil {
 		// Check specific error types
 		switch {
 		case errors.Is(err, jwt.ErrTokenExpired):
 			fmt.Println("Token expired")
+		case errors.Is(err, jwt.ErrTokenNotValidYet):
+			fmt.Println("Token not valid yet")
+		case errors.Is(err, jwt.ErrTokenInvalidIssuer):
+			fmt.Println("Invalid issuer")
 		case errors.Is(err, jwt.ErrTokenRevoked):
 			fmt.Println("Token revoked")
 		case errors.Is(err, jwt.ErrInvalidToken):
 			fmt.Println("Invalid token")
 		default:
-			fmt.Printf("Other error: %v\n", err)
+			if err != nil {
+				fmt.Printf("Other error: %v\n", err)
+			} else {
+				fmt.Println("Token not valid (unknown reason)")
+			}
 		}
 	}
 

@@ -1,6 +1,8 @@
 package jwt
 
 import (
+	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -45,7 +47,7 @@ func TestGenericCreateAndValidateToken(t *testing.T) {
 	}
 
 	// Create token
-	token, err := CreateTokenWithClaims(processor, claims)
+	token, err := processor.CreateTokenWith(claims)
 	if err != nil {
 		t.Fatalf("Failed to create token: %v", err)
 	}
@@ -56,7 +58,7 @@ func TestGenericCreateAndValidateToken(t *testing.T) {
 
 	// Validate token
 	validatedClaims := &TestCustomClaims{}
-	result, valid, err := ValidateTokenWithClaims(processor, token, validatedClaims)
+	result, valid, err := processor.ValidateTokenFor(token, validatedClaims)
 	if err != nil {
 		t.Fatalf("Failed to validate token: %v", err)
 	}
@@ -99,7 +101,7 @@ func TestGenericCreateRefreshToken(t *testing.T) {
 		Email:  "test@example.com",
 	}
 
-	token, err := CreateRefreshTokenWithClaims(processor, claims)
+	token, err := processor.CreateRefreshTokenWith(claims)
 	if err != nil {
 		t.Fatalf("Failed to create refresh token: %v", err)
 	}
@@ -110,7 +112,7 @@ func TestGenericCreateRefreshToken(t *testing.T) {
 
 	// Validate the refresh token
 	validatedClaims := &TestCustomClaims{}
-	_, valid, err := ValidateTokenWithClaims(processor, token, validatedClaims)
+	_, valid, err := processor.ValidateTokenFor(token, validatedClaims)
 	if err != nil {
 		t.Fatalf("Failed to validate refresh token: %v", err)
 	}
@@ -133,7 +135,7 @@ func TestGenericInvalidClaims(t *testing.T) {
 		Email:  "", // Missing Email
 	}
 
-	_, err = CreateTokenWithClaims(processor, claims)
+	_, err = processor.CreateTokenWith(claims)
 	if err == nil {
 		t.Fatal("Expected error for invalid claims")
 	}
@@ -152,14 +154,14 @@ func TestGenericTokenRevocation(t *testing.T) {
 	}
 
 	// Create token
-	token, err := CreateTokenWithClaims(processor, claims)
+	token, err := processor.CreateTokenWith(claims)
 	if err != nil {
 		t.Fatalf("Failed to create token: %v", err)
 	}
 
 	// Validate should work
 	validatedClaims := &TestCustomClaims{}
-	_, valid, err := ValidateTokenWithClaims(processor, token, validatedClaims)
+	_, valid, err := processor.ValidateTokenFor(token, validatedClaims)
 	if err != nil {
 		t.Fatalf("Failed to validate token: %v", err)
 	}
@@ -175,7 +177,7 @@ func TestGenericTokenRevocation(t *testing.T) {
 
 	// Validate should fail now
 	validatedClaims2 := &TestCustomClaims{}
-	_, valid, err = ValidateTokenWithClaims(processor, token, validatedClaims2)
+	_, valid, err = processor.ValidateTokenFor(token, validatedClaims2)
 	if err != ErrTokenRevoked {
 		t.Fatalf("Expected ErrTokenRevoked, got: %v", err)
 	}
@@ -196,7 +198,7 @@ func TestGenericParseUnverified(t *testing.T) {
 		Email:  "parse@example.com",
 	}
 
-	token, err := CreateTokenWithClaims(processor, claims)
+	token, err := processor.CreateTokenWith(claims)
 	if err != nil {
 		t.Fatalf("Failed to create token: %v", err)
 	}
@@ -228,17 +230,17 @@ func TestGenericClosedProcessor(t *testing.T) {
 	}
 
 	// All operations should fail
-	_, err = CreateTokenWithClaims(processor, claims)
+	_, err = processor.CreateTokenWith(claims)
 	if err != ErrProcessorClosed {
 		t.Errorf("Expected ErrProcessorClosed, got: %v", err)
 	}
 
-	_, _, err = ValidateTokenWithClaims(processor, "some-token", claims)
+	_, _, err = processor.ValidateTokenFor("some-token", claims)
 	if err != ErrProcessorClosed {
 		t.Errorf("Expected ErrProcessorClosed, got: %v", err)
 	}
 
-	_, err = CreateRefreshTokenWithClaims(processor, claims)
+	_, err = processor.CreateRefreshTokenWith(claims)
 	if err != ErrProcessorClosed {
 		t.Errorf("Expected ErrProcessorClosed, got: %v", err)
 	}
@@ -261,13 +263,13 @@ func TestGenericClaimsImplementsInterface(t *testing.T) {
 		Role:     "admin",
 	}
 
-	token, err := CreateTokenWithClaims(processor, claims)
+	token, err := processor.CreateTokenWith(claims)
 	if err != nil {
 		t.Fatalf("Failed to create token with standard Claims: %v", err)
 	}
 
 	validatedClaims := &Claims{}
-	result, valid, err := ValidateTokenWithClaims(processor, token, validatedClaims)
+	result, valid, err := processor.ValidateTokenFor(token, validatedClaims)
 	if err != nil {
 		t.Fatalf("Failed to validate token: %v", err)
 	}
@@ -309,13 +311,13 @@ func TestGenericExpiredToken(t *testing.T) {
 
 	// Validate should fail
 	validatedClaims := &TestCustomClaims{}
-	_, valid, err := ValidateTokenWithClaims(processor, token, validatedClaims)
-	if err != nil {
-		t.Fatalf("Validation returned error: %v", err)
-	}
+	_, valid, err := processor.ValidateTokenFor(token, validatedClaims)
 
 	if valid {
 		t.Fatal("Expired token should not be valid")
+	}
+	if !errors.Is(err, ErrTokenExpired) {
+		t.Fatalf("Expected ErrTokenExpired, got %v", err)
 	}
 }
 
@@ -341,19 +343,78 @@ func TestGenericCustomStore(t *testing.T) {
 		Email:  "store@example.com",
 	}
 
-	token, err := CreateTokenWithClaims(processor, claims)
+	token, err := processor.CreateTokenWith(claims)
 	if err != nil {
 		t.Fatalf("Failed to create token: %v", err)
 	}
 
 	validatedClaims := &TestCustomClaims{}
-	_, valid, err := ValidateTokenWithClaims(processor, token, validatedClaims)
+	_, valid, err := processor.ValidateTokenFor(token, validatedClaims)
 	if err != nil {
 		t.Fatalf("Failed to validate token: %v", err)
 	}
 
 	if !valid {
 		t.Fatal("Token should be valid with custom store")
+	}
+}
+
+func TestCreateTokenWithDeepValidation(t *testing.T) {
+	processor, err := newTestProcessor(genericTestSecretKey)
+	if err != nil {
+		t.Fatalf("Failed to create processor: %v", err)
+	}
+	defer processor.Close()
+
+	maliciousClaims := []struct {
+		name   string
+		claims *Claims
+	}{
+		{"XSS via CreateTokenWith", &Claims{UserID: "<script>alert('xss')</script>", Username: "test"}},
+		{"JavaScript injection via CreateTokenWith", &Claims{UserID: "test", Username: "javascript:alert(1)"}},
+		{"Path traversal via CreateTokenWith", &Claims{UserID: "../../../etc/passwd", Username: "test"}},
+		{"Too long field via CreateTokenWith", &Claims{UserID: "test", Username: strings.Repeat("a", 1000)}},
+	}
+
+	for _, tt := range maliciousClaims {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := processor.CreateTokenWith(tt.claims)
+			if err == nil {
+				t.Errorf("CreateTokenWith should reject malicious claims: %s", tt.name)
+			}
+		})
+	}
+}
+
+func TestCreateRefreshTokenWithDeepValidation(t *testing.T) {
+	processor, err := newTestProcessor(genericTestSecretKey)
+	if err != nil {
+		t.Fatalf("Failed to create processor: %v", err)
+	}
+	defer processor.Close()
+
+	claims := &Claims{UserID: "<script>alert('xss')</script>", Username: "test"}
+	_, err = processor.CreateRefreshTokenWith(claims)
+	if err == nil {
+		t.Error("CreateRefreshTokenWith should reject dangerous patterns in *Claims")
+	}
+}
+
+func TestCreateTokenWithCustomClaimsNoDeepValidation(t *testing.T) {
+	processor, err := newTestProcessor(genericTestSecretKey)
+	if err != nil {
+		t.Fatalf("Failed to create processor: %v", err)
+	}
+	defer processor.Close()
+
+	// Custom claims types only run their own Validate() — no deep pattern check
+	claims := &TestCustomClaims{
+		UserID: "user-with-<script>tag",
+		Email:  "test@example.com",
+	}
+	_, err = processor.CreateTokenWith(claims)
+	if err != nil {
+		t.Errorf("Custom claims should not trigger deep validation: %v", err)
 	}
 }
 

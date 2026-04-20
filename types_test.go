@@ -152,22 +152,7 @@ func TestNumericDateEdgeCases(t *testing.T) {
 	}
 }
 
-// TestClaimsValidationBasic tests claims validation
-func TestClaimsValidationBasic(t *testing.T) {
-	secretKey := "Str0ng!S3cr3t#K3y$W1th%Suff1c13nt&Entr0py*2024"
-	processor, err := newTestProcessor(secretKey)
-	if err != nil {
-		t.Fatalf("Failed to create processor: %v", err)
-	}
-	defer processor.Close()
-
-	// Both UserID and Username empty should fail
-	claims := Claims{}
-	_, err = processor.CreateToken(claims)
-	if err == nil {
-		t.Error("Expected error for empty UserID and Username")
-	}
-}
+// Note: Claims validation tested in coverage_test.go and jwt_test.go
 
 // TestRegisteredClaimsFields tests RegisteredClaims fields
 func TestRegisteredClaimsFields(t *testing.T) {

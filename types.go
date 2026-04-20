@@ -1,11 +1,11 @@
 package jwt
 
 import (
-	"crypto"
 	"fmt"
 	"strconv"
 	"sync"
 	"time"
+	"unsafe"
 )
 
 // maxValidTimestamp is the maximum valid Unix timestamp (9999-12-31 23:59:59 UTC).
@@ -46,12 +46,20 @@ func (date *NumericDate) MarshalJSON() ([]byte, error) {
 // UnmarshalJSON implements json.Unmarshaler for NumericDate.
 // Parses a JSON number or string as a Unix timestamp.
 func (date *NumericDate) UnmarshalJSON(b []byte) error {
-	if len(b) == 0 || string(b) == "null" {
+	if len(b) == 0 {
 		date.Time = time.Time{}
 		return nil
 	}
 
-	s := string(b)
+	// Fast null check without allocation
+	if len(b) == 4 && b[0] == 'n' && b[1] == 'u' && b[2] == 'l' && b[3] == 'l' {
+		date.Time = time.Time{}
+		return nil
+	}
+
+	// Zero-allocation byte-to-string conversion (safe: b is from json decoder,
+	// string does not escape this function)
+	s := unsafe.String(unsafe.SliceData(b), len(b))
 	if len(s) >= 2 && s[0] == '"' && s[len(s)-1] == '"' {
 		s = s[1 : len(s)-1]
 	}
@@ -96,30 +104,28 @@ const (
 	SigningMethodES512 SigningMethod = "ES512"
 )
 
-// Signer defines the interface for custom signing algorithms.
-// Implementations must be safe for concurrent use.
-//
-// Example implementation:
-//
-//	type CustomSigner struct {
-//	    secretKey []byte
-//	}
-//
-//	func (s *CustomSigner) Alg() string { return "CUSTOM" }
-//	func (s *CustomSigner) Sign(data string) (string, error) { ... }
-//	func (s *CustomSigner) Verify(data, signature string) error { ... }
-type Signer interface {
-	// Alg returns the algorithm identifier (e.g., "HS256", "RS256").
-	Alg() string
+// isHMAC returns true if the signing method uses HMAC (symmetric) algorithms.
+func (m SigningMethod) isHMAC() bool {
+	switch m {
+	case SigningMethodHS256, SigningMethodHS384, SigningMethodHS512:
+		return true
+	}
+	return false
+}
 
-	// Sign creates a signature for the given data.
-	Sign(data string) (string, error)
+// isAsymmetric returns true if the signing method uses asymmetric algorithms (RSA/ECDSA).
+func (m SigningMethod) isAsymmetric() bool {
+	switch m {
+	case SigningMethodRS256, SigningMethodRS384, SigningMethodRS512,
+		SigningMethodES256, SigningMethodES384, SigningMethodES512:
+		return true
+	}
+	return false
+}
 
-	// Verify checks if the signature is valid for the given data.
-	Verify(data, signature string) error
-
-	// Hash returns the hash function used by this signer.
-	Hash() crypto.Hash
+// isValid returns true if the signing method is a recognized built-in algorithm.
+func (m SigningMethod) isValid() bool {
+	return m.isHMAC() || m.isAsymmetric()
 }
 
 type RegisteredClaims struct {
@@ -135,8 +141,7 @@ type RegisteredClaims struct {
 func (c *RegisteredClaims) reset() {
 	c.Issuer = ""
 	c.Subject = ""
-	// Reallocate slice to avoid data races with sync.Pool
-	c.Audience = make([]string, 0, cap(c.Audience))
+	c.Audience = nil
 	c.ExpiresAt = NumericDate{}
 	c.NotBefore = NumericDate{}
 	c.IssuedAt = NumericDate{}
@@ -163,22 +168,12 @@ func (c *Claims) reset() {
 	c.SessionID = ""
 	c.ClientID = ""
 
-	// Reallocate slices to avoid data races with sync.Pool
-	// When an object is returned to the pool, another goroutine might
-	// still be reading the old slice/map during JSON marshaling
-	c.Permissions = make([]string, 0, cap(c.Permissions))
-	c.Scopes = make([]string, 0, cap(c.Scopes))
-
-	// Reallocate Extra map to avoid data races
-	// clear() would modify the map that might be in use by another goroutine
-	extraCap := 4
-	if c.Extra != nil {
-		extraCap = len(c.Extra)
-		if extraCap < 4 {
-			extraCap = 4
-		}
-	}
-	c.Extra = make(map[string]any, extraCap)
+	// Set to nil instead of reallocating: copyClaims uses [:0:0] which
+	// forces independent backing arrays, and JSON unmarshal creates new
+	// allocations regardless. Avoids ~4 allocations per reset call.
+	c.Permissions = nil
+	c.Scopes = nil
+	c.Extra = nil
 
 	c.RegisteredClaims.reset()
 }

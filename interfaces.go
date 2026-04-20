@@ -85,6 +85,27 @@ func (c FixedClock) Now() time.Time {
 // Ensure Processor implements TokenManager.
 var _ TokenManager = (*Processor)(nil)
 
+// ExtendedTokenManager extends TokenManager with custom claims support.
+// Use this interface when you need custom claims types beyond the built-in Claims.
+type ExtendedTokenManager interface {
+	TokenManager
+
+	// CreateTokenWith creates a token with custom claims type.
+	CreateTokenWith(claims CustomClaims) (string, error)
+
+	// ValidateTokenFor validates a token and populates the provided custom claims.
+	ValidateTokenFor(tokenString string, claims CustomClaims) (CustomClaims, bool, error)
+
+	// CreateRefreshTokenWith creates a refresh token with custom claims type.
+	CreateRefreshTokenWith(claims CustomClaims) (string, error)
+
+	// RefreshTokenFor refreshes a custom-claims refresh token into a new access token.
+	RefreshTokenFor(refreshTokenString string, claims CustomClaims) (string, error)
+}
+
+// Ensure Processor implements ExtendedTokenManager.
+var _ ExtendedTokenManager = (*Processor)(nil)
+
 // Ensure RateLimiter implements RateLimitProvider.
 var _ RateLimitProvider = (*RateLimiter)(nil)
 

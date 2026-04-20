@@ -1,6 +1,7 @@
 package internal
 
 import (
+	"bytes"
 	"runtime"
 	"strings"
 )
@@ -94,7 +95,7 @@ func hasRepeatingPattern(key []byte, minPatternLen int) bool {
 
 		// Check how many times this pattern repeats
 		for i := patternLen; i+patternLen <= keyLen; i += patternLen {
-			if string(key[i:i+patternLen]) == string(pattern) {
+			if bytes.Equal(key[i:i+patternLen], pattern) {
 				repeats++
 				// Found at least 2 full repetitions
 				if repeats >= 2 {

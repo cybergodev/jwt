@@ -110,79 +110,7 @@ func TestConfigValidateBasic(t *testing.T) {
 	}
 }
 
-// TestConfigValidateAdditionalEdgeCases tests additional config validation scenarios
-func TestConfigValidateAdditionalEdgeCases(t *testing.T) {
-	tests := []struct {
-		name      string
-		config    Config
-		wantError bool
-	}{
-		{
-			name: "valid config with all fields",
-			config: Config{
-				SecretKey:       "Str0ng!S3cr3t#K3y$W1th%Suff1c13nt&Entr0py*2024",
-				AccessTokenTTL:  15 * time.Minute,
-				RefreshTokenTTL: 7 * 24 * time.Hour,
-				Issuer:          "test-issuer",
-				SigningMethod:   SigningMethodHS256,
-				EnableRateLimit: true,
-				RateLimitRate:   100,
-				RateLimitWindow: time.Minute,
-				Blacklist:       DefaultBlacklistConfig(),
-			},
-			wantError: false,
-		},
-		{
-			name: "zero access token TTL",
-			config: Config{
-				SecretKey:       "Str0ng!S3cr3t#K3y$W1th%Suff1c13nt&Entr0py*2024",
-				AccessTokenTTL:  0,
-				RefreshTokenTTL: 7 * 24 * time.Hour,
-			},
-			wantError: true,
-		},
-		{
-			name: "zero refresh token TTL",
-			config: Config{
-				SecretKey:       "Str0ng!S3cr3t#K3y$W1th%Suff1c13nt&Entr0py*2024",
-				AccessTokenTTL:  15 * time.Minute,
-				RefreshTokenTTL: 0,
-			},
-			wantError: true,
-		},
-		{
-			name: "negative access token TTL",
-			config: Config{
-				SecretKey:       "Str0ng!S3cr3t#K3y$W1th%Suff1c13nt&Entr0py*2024",
-				AccessTokenTTL:  -1 * time.Minute,
-				RefreshTokenTTL: 7 * 24 * time.Hour,
-			},
-			wantError: true,
-		},
-		{
-			name: "invalid signing method",
-			config: Config{
-				SecretKey:       "Str0ng!S3cr3t#K3y$W1th%Suff1c13nt&Entr0py*2024",
-				AccessTokenTTL:  15 * time.Minute,
-				RefreshTokenTTL: 7 * 24 * time.Hour,
-				SigningMethod:   "INVALID",
-			},
-			wantError: true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			err := tt.config.Validate()
-			if tt.wantError && err == nil {
-				t.Error("Expected validation error, got nil")
-			}
-			if !tt.wantError && err != nil {
-				t.Errorf("Expected no error, got %v", err)
-			}
-		})
-	}
-}
+// Note: Additional edge case tests consolidated into coverage_test.go
 
 // TestNormalizeConfigDefaults tests that normalizeConfig fills in default values
 func TestNormalizeConfigDefaults(t *testing.T) {
@@ -274,12 +202,12 @@ func TestBlacklistConfigValidate(t *testing.T) {
 		wantError       bool
 	}{
 		{
-			name: "zero max size",
+			name: "zero max size (normalized) (normalized)",
 			blacklistConfig: BlacklistConfig{
 				MaxSize:         0,
 				CleanupInterval: time.Minute,
 			},
-			wantError: true,
+			wantError: false,
 		},
 		{
 			name: "negative max size",
@@ -290,12 +218,12 @@ func TestBlacklistConfigValidate(t *testing.T) {
 			wantError: true,
 		},
 		{
-			name: "zero cleanup interval",
+			name: "zero cleanup interval (normalized)",
 			blacklistConfig: BlacklistConfig{
 				MaxSize:         1000,
 				CleanupInterval: 0,
 			},
-			wantError: true,
+			wantError: false,
 		},
 		{
 			name: "negative cleanup interval",

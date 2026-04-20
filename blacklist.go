@@ -51,6 +51,10 @@ type BlacklistConfig struct {
 	// If provided, CleanupInterval, MaxSize, and EnableAutoCleanup are ignored.
 	// The store must implement the BlacklistStore interface.
 	Store BlacklistStore
+
+	// clock is set internally from Config.Clock to maintain testability.
+	// When nil, time.Now is used (default behavior).
+	clock func() time.Time
 }
 
 // DefaultBlacklistConfig returns a BlacklistConfig with sensible defaults.
@@ -81,12 +85,12 @@ func (c *BlacklistConfig) Validate() error {
 // CreateManager creates a Manager with the appropriate store based on the configuration.
 func (c *BlacklistConfig) CreateManager() *internal.Manager {
 	if c.Store != nil {
-		return internal.NewManager(c.Store.Add, c.Store.Contains, c.Store.Close)
+		return internal.NewManagerWithClock(c.Store, c.clock)
 	}
 	store := internal.NewMemoryStore(
 		c.MaxSize,
 		c.CleanupInterval,
 		c.EnableAutoCleanup,
 	)
-	return internal.NewManager(store.Add, store.Contains, store.Close)
+	return internal.NewManagerWithClock(store, c.clock)
 }

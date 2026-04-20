@@ -78,6 +78,11 @@ func validateClaims(claims *Claims) error {
 				Field:   "extra." + key,
 				Message: "nested maps not allowed",
 			}
+		default:
+			return &ValidationError{
+				Field:   "extra." + key,
+				Message: fmt.Sprintf("unsupported type %T", value),
+			}
 		}
 	}
 
@@ -162,35 +167,21 @@ func isControlChar(c byte) bool {
 	return c < 32 && c != 9 && c != 10 && c != 13
 }
 
-// dangerousPatterns is a slice of patterns sorted by length for optimal search.
-// Using a slice instead of a map provides better cache locality.
-// Patterns are checked in order of increasing length for early exit optimization.
+// dangerousPatterns contains patterns that may indicate injection attacks.
+// Patterns are chosen to minimize false positives on legitimate data.
 var dangerousPatterns = []string{
-	// 3-char patterns (checked first for early exit)
 	"../",
-	// 4-char patterns
-	"sp_", "data", "eval", "<svg", "<img", "<map",
-	// 5-char patterns
-	"<math", "<link", "<meta", "<form", "<base", "exec(",
-	// 6-char patterns
-	"<body", "<html", "<embed", "<area", "mocha:",
-	// 7-char patterns
-	"ondrag", "ondrop", "<input", "<audio", "<style", "alert(",
-	// 8-char patterns
+	"<svg", "<img", "<map",
+	"<math", "<link", "<meta", "<form", "<base",
+	"<body", "<html", "<embed", "<area", "mocha:", "ondrag", "ondrop",
+	"<input", "<audio", "<style", "alert(",
 	"onfocus", "onblur", "<video", "<track", "<iframe", "<object", "<portal", "<source",
-	// 9-char patterns
 	"onclick", "onerror", "onload", "<textarea",
-	// 10+ char patterns
 	"onchange", "onsubmit", "onkeyup", "<!doctype", "file://",
-	// 11+ char patterns
 	"onkeydown", "drop table",
-	// 12+ char patterns
 	"onkeypress", "<script", "vbscript:",
-	// 13+ char patterns
 	"onmouseover", "union select",
-	// 15+ char patterns
 	"javascript:", "expression(",
-	// Long patterns
 	"/etc/passwd",
 }
 
@@ -215,6 +206,22 @@ func containsDangerousPattern(value string) bool {
 	return false
 }
 
+// validateRegisteredClaimsStrings validates string fields in RegisteredClaims
+// for length limits and injection patterns. Used for custom claims types
+// that don't go through the deep validateClaims path.
+func validateRegisteredClaimsStrings(rc *RegisteredClaims) error {
+	if err := validateString("Issuer", rc.Issuer, maxStringLength); err != nil {
+		return err
+	}
+	if err := validateString("Subject", rc.Subject, maxStringLength); err != nil {
+		return err
+	}
+	if err := validateString("ID", rc.ID, maxStringLength); err != nil {
+		return err
+	}
+	return validateStringArray("audience", rc.Audience)
+}
+
 // hasSubstringIgnoreCase performs case-insensitive substring search.
 // This avoids allocating a new string like strings.ToLower would.
 func hasSubstringIgnoreCase(s, substr string) bool {
@@ -226,14 +233,19 @@ func hasSubstringIgnoreCase(s, substr string) bool {
 		return false
 	}
 
-	// Quick check using first character
 	firstChar := substr[0]
-	firstLower := firstChar | 0x20 // Convert to lowercase if uppercase ASCII
+	firstLower := firstChar
+	if firstChar >= 'A' && firstChar <= 'Z' {
+		firstLower = firstChar + 32
+	}
 
 	end := len(s) - substrLen + 1
 	for i := 0; i < end; i++ {
-		// Check if first character matches (case-insensitive)
-		if s[i]|0x20 != firstLower {
+		c := s[i]
+		if c >= 'A' && c <= 'Z' {
+			c += 32
+		}
+		if c != firstLower {
 			continue
 		}
 

@@ -898,7 +898,7 @@ func TestManagerBlacklistToken(t *testing.T) {
 	store := NewMemoryStore(1000, 5*time.Minute, false)
 	defer store.Close()
 
-	manager := NewManager(store.Add, store.Contains, store.Close)
+	manager := NewManager(store)
 
 	// Test with empty token ID
 	err := manager.BlacklistToken("", time.Now().Add(time.Hour))
@@ -929,7 +929,7 @@ func TestManagerBlacklistToken(t *testing.T) {
 
 func TestManagerIsBlacklisted(t *testing.T) {
 	store := NewMemoryStore(1000, 5*time.Minute, false)
-	manager := NewManager(store.Add, store.Contains, store.Close)
+	manager := NewManager(store)
 	defer manager.Close()
 
 	// Test with empty token ID
@@ -953,7 +953,7 @@ func TestManagerIsBlacklisted(t *testing.T) {
 
 func TestManagerBlacklistTokenString(t *testing.T) {
 	store := NewMemoryStore(1000, 5*time.Minute, false)
-	manager := NewManager(store.Add, store.Contains, store.Close)
+	manager := NewManager(store)
 	defer manager.Close()
 
 	tests := []struct {
@@ -1010,7 +1010,7 @@ func TestManagerBlacklistTokenString(t *testing.T) {
 
 func TestManagerClose(t *testing.T) {
 	store := NewMemoryStore(1000, 5*time.Minute, false)
-	manager := NewManager(store.Add, store.Contains, store.Close)
+	manager := NewManager(store)
 
 	// Add some tokens
 	err := manager.BlacklistToken("tok_test1", time.Now().Add(time.Hour))
@@ -1274,4 +1274,197 @@ func TestECDSASignatureLength(t *testing.T) {
 	if err == nil {
 		t.Error("Expected error for wrong signature length, got nil")
 	}
+}
+
+// =============================================================================
+// Hash() Method Coverage Tests
+// =============================================================================
+
+func TestSigningMethodHash(t *testing.T) {
+	tests := []struct {
+		alg string
+	}{
+		{"HS256"}, {"HS384"}, {"HS512"},
+		{"RS256"}, {"RS384"}, {"RS512"},
+		{"ES256"}, {"ES384"}, {"ES512"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.alg, func(t *testing.T) {
+			method, err := GetInternalSigningMethod(tt.alg)
+			if err != nil {
+				t.Fatalf("GetInternalSigningMethod(%q) failed: %v", tt.alg, err)
+			}
+			// Call Hash() to cover the method
+			hash := method.Hash()
+			if !hash.Available() {
+				t.Errorf("Hash() for %s should be available", tt.alg)
+			}
+		})
+	}
+}
+
+// =============================================================================
+// NewManagerWithClock Tests
+// =============================================================================
+
+func TestNewManagerWithClock(t *testing.T) {
+	store := NewMemoryStore(100, time.Minute, false)
+	defer store.Close()
+
+	// With custom clock
+	fixedTime := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
+	manager := NewManagerWithClock(store, func() time.Time { return fixedTime })
+	if manager == nil {
+		t.Fatal("NewManagerWithClock returned nil")
+	}
+
+	// Verify the clock is used by checking BlacklistToken uses correct time
+	tokenID := "tok_clock_test"
+	expiresAt := fixedTime.Add(-time.Hour) // Already expired relative to fixed clock
+	err := manager.BlacklistToken(tokenID, expiresAt)
+	if err != nil {
+		t.Fatalf("BlacklistToken failed: %v", err)
+	}
+
+	// With nil clock (should use time.Now)
+	store2 := NewMemoryStore(100, time.Minute, false)
+	defer store2.Close()
+	manager2 := NewManagerWithClock(store2, nil)
+	if manager2 == nil {
+		t.Fatal("NewManagerWithClock with nil clock returned nil")
+	}
+	manager2.Close()
+}
+
+// =============================================================================
+// ParseTokenID Tests
+// =============================================================================
+
+func TestParseTokenID(t *testing.T) {
+	tests := []struct {
+		name       string
+		token      string
+		wantID     string
+		wantError  bool
+	}{
+		{
+			name:   "valid token with jti",
+			token:  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJqdGkiOiJ0b2tfMTIzNDU2In0.signature",
+			wantID: "tok_123456",
+		},
+		{
+			name:   "token without jti",
+			token:  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjoidGVzdCJ9.signature",
+			wantID: "",
+		},
+		{
+			name:      "malformed token",
+			token:     "malformed",
+			wantError: true,
+		},
+		{
+			name:      "empty token",
+			token:     "",
+			wantError: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			id, err := ParseTokenID(tt.token)
+			if tt.wantError {
+				if err == nil {
+					t.Error("Expected error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Unexpected error: %v", err)
+			}
+			if id != tt.wantID {
+				t.Errorf("ParseTokenID() = %q, want %q", id, tt.wantID)
+			}
+		})
+	}
+}
+
+// =============================================================================
+// Manager Close Edge Cases
+// =============================================================================
+
+func TestManagerCloseNilStore(t *testing.T) {
+	manager := NewManager(nil)
+	// Should not panic with nil store
+	err := manager.Close()
+	if err != nil {
+		t.Errorf("Close with nil store should not error: %v", err)
+	}
+}
+
+// =============================================================================
+// Key Analysis Edge Case Tests
+// =============================================================================
+
+func TestKeyAnalysisEdgeCases(t *testing.T) {
+	t.Run("ShortKey", func(t *testing.T) {
+		if !hasLowEntropy([]byte("abc")) {
+			t.Error("Short keys should be low entropy")
+		}
+	})
+
+		t.Run("OnlyOneClass", func(t *testing.T) {
+			// Only lowercase letters - should be weak (only 1 class)
+			if !hasLowEntropy([]byte("abcdefghijklmnopqrstuvwx")) {
+				t.Error("Single-class keys should be detected as low entropy")
+			}
+		})
+
+	t.Run("SequentialWindow", func(t *testing.T) {
+		// Key with sequential pattern in a window
+		key := []byte("abcdefghRANDOMSTUFF")
+		if !hasSequentialPattern(key, 8) {
+			t.Error("Should detect sequential pattern in window")
+		}
+	})
+
+	t.Run("NonSequentialWindow", func(t *testing.T) {
+		key := []byte("a1b2c3d4e5f6g7h8")
+		if hasSequentialPattern(key, 8) {
+			t.Error("Should not detect sequential pattern in random key")
+		}
+	})
+
+	t.Run("RepeatingPattern", func(t *testing.T) {
+		if !hasRepeatingPattern([]byte("abcabcabc"), 3) {
+			t.Error("Should detect 'abcabcabc' as repeating")
+		}
+	})
+
+	t.Run("NonRepeatingPattern", func(t *testing.T) {
+		if hasRepeatingPattern([]byte("aB3$fG7*k"), 3) {
+			t.Error("Should not detect random string as repeating")
+		}
+	})
+
+	t.Run("TooShortForRepeating", func(t *testing.T) {
+		if hasRepeatingPattern([]byte("abc"), 3) {
+			t.Error("Should not detect pattern when key is too short")
+		}
+	})
+
+	t.Run("IsSequential", func(t *testing.T) {
+		if !isSequential([]byte("abcdef")) {
+			t.Error("abcdef should be sequential")
+		}
+		if !isSequential([]byte("fedcba")) {
+			t.Error("fedcba should be sequential (descending)")
+		}
+		if isSequential([]byte("aB3$fG")) {
+			t.Error("aB3$fG should not be sequential")
+		}
+		if isSequential([]byte("a")) {
+			t.Error("Single byte should not be sequential")
+		}
+	})
 }

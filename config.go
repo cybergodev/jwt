@@ -19,9 +19,10 @@ type Config struct {
 	SigningMethod   SigningMethod // HS256, HS384, HS512, RS256, RS384, RS512, ES256, ES384, ES512
 
 	// Token configuration
-	AccessTokenTTL  time.Duration `yaml:"access_token_ttl" json:"access_token_ttl"`
-	RefreshTokenTTL time.Duration `yaml:"refresh_token_ttl" json:"refresh_token_ttl"`
-	Issuer          string        `yaml:"issuer" json:"issuer"`
+	AccessTokenTTL    time.Duration `yaml:"access_token_ttl" json:"access_token_ttl"`
+	RefreshTokenTTL   time.Duration `yaml:"refresh_token_ttl" json:"refresh_token_ttl"`
+	Issuer            string        `yaml:"issuer" json:"issuer"`
+	ExpectedAudience  string        `yaml:"expected_audience" json:"expected_audience"` // Optional: reject tokens without matching aud claim
 
 	// Blacklist configuration (embedded)
 	Blacklist BlacklistConfig `yaml:"blacklist" json:"blacklist"`
@@ -31,6 +32,9 @@ type Config struct {
 	RateLimitRate   int               `yaml:"rate_limit_rate" json:"rate_limit_rate"`
 	RateLimitWindow time.Duration     `yaml:"rate_limit_window" json:"rate_limit_window"`
 	RateLimiter     RateLimitProvider `yaml:"-" json:"-"`
+
+	// Clock provider for time operations (optional, defaults to SystemClock)
+	Clock ClockProvider `yaml:"-" json:"-"`
 }
 
 // DefaultConfig returns a Config with sensible defaults.
@@ -70,7 +74,15 @@ func normalizeConfig(c Config) Config {
 	if c.RateLimitWindow == 0 && c.EnableRateLimit {
 		c.RateLimitWindow = defaults.RateLimitWindow
 	}
-	// Blacklist uses its own Validate() to handle defaults
+	// Blacklist: apply per-field defaults when using built-in store
+	if c.Blacklist.Store == nil {
+		if c.Blacklist.MaxSize == 0 {
+			c.Blacklist.MaxSize = defaults.Blacklist.MaxSize
+		}
+		if c.Blacklist.CleanupInterval == 0 {
+			c.Blacklist.CleanupInterval = defaults.Blacklist.CleanupInterval
+		}
+	}
 
 	return c
 }
@@ -95,11 +107,7 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("%w: access token TTL must be less than refresh token TTL", ErrInvalidConfig)
 	}
 
-	switch c.SigningMethod {
-	case SigningMethodHS256, SigningMethodHS384, SigningMethodHS512,
-		SigningMethodRS256, SigningMethodRS384, SigningMethodRS512,
-		SigningMethodES256, SigningMethodES384, SigningMethodES512:
-	default:
+	if !c.SigningMethod.isValid() {
 		return ErrInvalidSigningMethod
 	}
 
@@ -113,8 +121,8 @@ func (c *Config) Validate() error {
 
 // validateSigningKey validates the signing key based on the signing method.
 func (c *Config) validateSigningKey() error {
-	switch c.SigningMethod {
-	case SigningMethodHS256, SigningMethodHS384, SigningMethodHS512:
+	switch {
+	case c.SigningMethod.isHMAC():
 		// HMAC requires SecretKey
 		keyLen := len(c.SecretKey)
 		if keyLen < 32 {
@@ -123,8 +131,7 @@ func (c *Config) validateSigningKey() error {
 		if internal.IsWeakKey([]byte(c.SecretKey)) {
 			return fmt.Errorf("%w: key must have sufficient entropy and complexity", ErrInvalidSecretKey)
 		}
-	case SigningMethodRS256, SigningMethodRS384, SigningMethodRS512,
-		SigningMethodES256, SigningMethodES384, SigningMethodES512:
+	case c.SigningMethod.isAsymmetric():
 		// Asymmetric methods use shared validation
 		if err := validateAsymmetricSigningKey(c.SigningMethod, c.SigningKey); err != nil {
 			return err
@@ -164,11 +171,5 @@ func validateAsymmetricSigningKey(method SigningMethod, key any) error {
 
 // isAsymmetric returns true if the signing method uses asymmetric keys.
 func (c *Config) isAsymmetric() bool {
-	switch c.SigningMethod {
-	case SigningMethodRS256, SigningMethodRS384, SigningMethodRS512,
-		SigningMethodES256, SigningMethodES384, SigningMethodES512:
-		return true
-	default:
-		return false
-	}
+	return c.SigningMethod.isAsymmetric()
 }

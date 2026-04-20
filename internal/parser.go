@@ -49,6 +49,31 @@ func NewTokenWithClaims(method Method, claims any) *Core {
 	}
 }
 
+// corePool pools Core structs to reduce allocations during token parsing.
+var corePool = sync.Pool{
+	New: func() any {
+		return &Core{
+			Header: make(map[string]any, 2),
+		}
+	},
+}
+
+// GetCore retrieves a Core struct from the pool.
+func GetCore() *Core {
+	return corePool.Get().(*Core)
+}
+
+// ReleaseCore returns a Core struct to the pool after clearing its fields.
+func ReleaseCore(c *Core) {
+	clear(c.Header)
+	c.Claims = nil
+	c.Method = nil
+	c.Signature = ""
+	c.Raw = ""
+	c.Valid = false
+	corePool.Put(c)
+}
+
 func fastSplit3(s string, sep byte) (string, string, string, bool) {
 	first := -1
 	second := -1
@@ -89,11 +114,12 @@ func ParseWithClaims(tokenString string, claims any, keyFunc func(*Core) (any, e
 		return nil, errEmptySignature
 	}
 
-	token := &Core{
-		Raw:       tokenString,
-		Signature: part3,
-		Claims:    claims,
-	}
+	token := corePool.Get().(*Core)
+	token.Raw = tokenString
+	token.Signature = part3
+	token.Claims = claims
+	token.Valid = false
+	token.Method = nil
 
 	if err := DecodeSegment(part1, &token.Header); err != nil {
 		return nil, fmt.Errorf("failed to decode header: %w", err)

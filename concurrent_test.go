@@ -3,6 +3,7 @@
 package jwt
 
 import (
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -392,7 +393,7 @@ func TestClaimsPoolConcurrentAccess(t *testing.T) {
 					Scopes:      []string{"api", "admin"},
 					Extra: map[string]any{
 						"department": "engineering",
-						"level":      id % 10,
+						"level":      fmt.Sprintf("%d", id%10),
 					},
 				}
 
