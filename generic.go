@@ -1,7 +1,6 @@
 package jwt
 
 import (
-	"encoding/json"
 	"fmt"
 	"time"
 
@@ -9,7 +8,14 @@ import (
 )
 
 // CustomClaims defines the interface for custom claims types.
-// Types implementing this interface can be used with generic token functions.
+// Types implementing this interface can be used with Processor methods that accept CustomClaims.
+//
+// Validation contract:
+// For types other than *Claims, the Processor calls Validate() followed by
+// registered claims string sanitization (length limits and injection pattern
+// checks on Issuer, Subject, ID, Audience). Custom struct fields are NOT
+// deeply validated — implementers are responsible for validating their own
+// fields in the Validate() method.
 //
 // Example:
 //
@@ -39,176 +45,93 @@ type CustomClaims interface {
 	Validate() error
 }
 
-// CreateTokenWithClaims creates a token with custom claims type.
-// The claims must implement the CustomClaims interface.
-// This is the generic version of Processor.CreateToken for custom claim types.
+// RateLimitKeyer is an optional interface that custom claims types can implement
+// to provide a rate limit key when the Subject field is empty.
+// If not implemented, rate limiting is skipped for requests with an empty Subject.
 //
 // Example:
 //
-//	claims := &MyClaims{UserID: "123"}
-//	token, err := jwt.CreateTokenWithClaims(processor, claims)
-func CreateTokenWithClaims(p *Processor, claims CustomClaims) (string, error) {
-	if p.closed.Load() {
-		return "", ErrProcessorClosed
-	}
-
-	return createTokenWithCustomClaims(p, claims, p.accessTokenTTL)
+//	func (c *MyClaims) RateLimitKey() string {
+//	    return c.UserID
+//	}
+type RateLimitKeyer interface {
+	RateLimitKey() string
 }
 
-// ValidateTokenWithClaims validates a token and populates the provided claims.
-// The claims parameter must be a pointer to a type implementing CustomClaims.
-// Returns the same claims pointer on success for convenience.
-//
-// Example:
-//
-//	claims := &MyClaims{}
-//	result, valid, err := jwt.ValidateTokenWithClaims(processor, token, claims)
-func ValidateTokenWithClaims(p *Processor, tokenString string, claims CustomClaims) (CustomClaims, bool, error) {
-	if p.closed.Load() {
-		return nil, false, ErrProcessorClosed
-	}
-
-	if tokenString == "" {
-		return nil, false, ErrEmptyToken
-	}
-
-	valid, err := validateTokenIntoCustomClaims(p, tokenString, claims)
-	if err != nil {
-		return nil, false, err
-	}
-
-	if !valid {
-		return nil, false, nil
-	}
-
-	// Check blacklist using the registered claims
-	regClaims := claims.GetRegisteredClaims()
-	if regClaims.ID != "" {
-		isBlacklisted, err := p.blacklistManager.IsBlacklisted(regClaims.ID)
-		if err != nil {
-			return nil, false, err
+// validateCustomClaims validates custom claims before token operations.
+// Uses deep validation for built-in Claims, standard Validate() plus
+// registered claims string sanitization for other types.
+func validateCustomClaims(claims CustomClaims) error {
+	if c, ok := claims.(*Claims); ok {
+		// validateClaims covers all fields including registered claims strings
+		if err := validateClaims(c); err != nil {
+			return fmt.Errorf("%w: %w", ErrInvalidClaims, err)
 		}
-		if isBlacklisted {
-			return nil, false, ErrTokenRevoked
-		}
+		return nil
 	}
-
-	// Run custom validation
 	if err := claims.Validate(); err != nil {
-		return nil, false, fmt.Errorf("%w: %v", ErrInvalidClaims, err)
+		return fmt.Errorf("%w: %w", ErrInvalidClaims, err)
 	}
-
-	return claims, true, nil
+	if err := validateRegisteredClaimsStrings(claims.GetRegisteredClaims()); err != nil {
+		return fmt.Errorf("%w: %w", ErrInvalidClaims, err)
+	}
+	return nil
 }
 
-// CreateRefreshTokenWithClaims creates a refresh token with custom claims type.
-func CreateRefreshTokenWithClaims(p *Processor, claims CustomClaims) (string, error) {
-	if p.closed.Load() {
-		return "", ErrProcessorClosed
-	}
-
-	return createTokenWithCustomClaims(p, claims, p.refreshTokenTTL)
-}
-
-// createTokenWithCustomClaims handles the actual token creation for custom claims.
+// createTokenWithCustomClaims creates a signed token from custom claims.
+// Caller must validate claims before calling this function.
 func createTokenWithCustomClaims(p *Processor, claims CustomClaims, ttl time.Duration) (string, error) {
-	regClaims := claims.GetRegisteredClaims()
+	rc := claims.GetRegisteredClaims()
 
-	n := p.clock.Now()
-	if regClaims.IssuedAt.IsZero() {
-		regClaims.IssuedAt = NewNumericDate(n)
-	}
-	if regClaims.ExpiresAt.IsZero() {
-		regClaims.ExpiresAt = NewNumericDate(n.Add(ttl))
-	}
-	if regClaims.Issuer == "" {
-		regClaims.Issuer = p.issuer
-	}
-	if regClaims.ID == "" {
-		tokenID, err := internal.GenerateTokenID()
-		if err != nil {
-			return "", fmt.Errorf("failed to generate token ID: %w", err)
+	// Rate limit check with fallback: Subject → *Claims.UserID → RateLimitKeyer
+	rateLimitKey := rc.Subject
+	if rateLimitKey == "" {
+		if c, ok := claims.(*Claims); ok {
+			rateLimitKey = c.UserID
+		} else if k, ok := claims.(RateLimitKeyer); ok {
+			rateLimitKey = k.RateLimitKey()
 		}
-		regClaims.ID = tokenID
 	}
-
-	// Validate claims after setting standard fields
-	if err := claims.Validate(); err != nil {
-		return "", fmt.Errorf("%w: %v", ErrInvalidClaims, err)
-	}
-
-	signingMethod, err := internal.GetInternalSigningMethod(string(p.signingMethod))
-	if err != nil {
+	if err := p.checkRateLimit(rateLimitKey); err != nil {
 		return "", err
 	}
 
-	token := internal.NewTokenWithClaims(signingMethod, claims)
-
-	// Use appropriate key based on algorithm type
-	if p.isAsymmetric {
-		return token.SignedString(p.asymmetricKey)
+	// For *Claims, use pool copy to avoid mutating caller's struct
+	if c, ok := claims.(*Claims); ok {
+		claimsCopy := getClaims()
+		defer putClaims(claimsCopy)
+		copyClaims(claimsCopy, c)
+		if err := p.setRegisteredDefaults(&claimsCopy.RegisteredClaims, ttl); err != nil {
+			return "", err
+		}
+		return p.signClaims(claimsCopy)
 	}
-	return token.SignedString(p.secretKey)
+
+	// For other custom types, save and restore RegisteredClaims to avoid
+	// mutating the caller's struct (consistent with built-in Claims behavior).
+	orig := *rc
+	defer func() { *rc = orig }()
+
+	if err := p.setRegisteredDefaults(rc, ttl); err != nil {
+		return "", err
+	}
+	return p.signClaims(claims)
 }
 
 // validateTokenIntoCustomClaims parses and validates a token into custom claims.
-func validateTokenIntoCustomClaims(p *Processor, tokenString string, claims CustomClaims) (bool, error) {
-	token, err := internal.ParseWithClaims(tokenString, claims, func(token *internal.Core) (any, error) {
-		if alg, ok := token.Header["alg"].(string); !ok || alg != string(p.signingMethod) {
-			return nil, ErrInvalidToken
-		}
-		// Use appropriate key based on algorithm type
-		if p.isAsymmetric {
-			return p.verificationKey, nil
-		}
-		return p.secretKey, nil
-	})
-
+func validateTokenIntoCustomClaims(p *Processor, tokenString string, claims CustomClaims) error {
+	token, err := p.parseToken(tokenString, claims)
 	if err != nil {
-		return false, fmt.Errorf("%w: %v", ErrInvalidToken, err)
+		return fmt.Errorf("%w: %w", ErrInvalidToken, err)
 	}
+
+	defer internal.ReleaseCore(token)
 
 	if !token.Valid {
-		return false, nil
+		return ErrInvalidToken
 	}
 
-	// Validate standard claims
-	regClaims := claims.GetRegisteredClaims()
-	now := p.clock.Now()
-
-	if !regClaims.ExpiresAt.IsZero() && now.After(regClaims.ExpiresAt.Time) {
-		return false, nil
-	}
-
-	if !regClaims.NotBefore.IsZero() && now.Before(regClaims.NotBefore.Time) {
-		return false, nil
-	}
-
-	if regClaims.Issuer != "" && regClaims.Issuer != p.issuer {
-		return false, nil
-	}
-
-	return true, nil
-}
-
-// ParseUnverified parses a token without verifying the signature.
-// This is useful for extracting claims from a token when you don't have the key.
-// WARNING: The returned claims are NOT validated and should NOT be trusted.
-func (p *Processor) ParseUnverified(tokenString string, claims any) error {
-	if p.closed.Load() {
-		return ErrProcessorClosed
-	}
-
-	if tokenString == "" {
-		return ErrEmptyToken
-	}
-
-	_, _, err := internal.ParseUnverified(tokenString, claims)
-	if err != nil {
-		return fmt.Errorf("failed to parse token: %w", err)
-	}
-
-	return nil
+	return p.validateRegistered(claims.GetRegisteredClaims())
 }
 
 // Ensure Claims implements CustomClaims interface.
@@ -227,16 +150,4 @@ func (c *Claims) Validate() error {
 		return ErrInvalidClaims
 	}
 	return nil
-}
-
-// MarshalJSON implements json.Marshaler for Claims to ensure proper serialization.
-func (c *Claims) MarshalJSON() ([]byte, error) {
-	type Alias Claims
-	return json.Marshal((*Alias)(c))
-}
-
-// UnmarshalJSON implements json.Unmarshaler for Claims to ensure proper deserialization.
-func (c *Claims) UnmarshalJSON(data []byte) error {
-	type Alias Claims
-	return json.Unmarshal(data, (*Alias)(c))
 }

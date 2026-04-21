@@ -38,7 +38,7 @@ func main() {
 	}
 
 	// Step 4: Create access token
-	token, err := processor.CreateToken(claims)
+	token, err := processor.Create(&claims)
 	if err != nil {
 		log.Fatalf("Failed to create token: %v", err)
 	}
@@ -46,7 +46,7 @@ func main() {
 	fmt.Println("Token created successfully")
 
 	// Step 5: Validate token
-	parsedClaims, valid, err := processor.ValidateToken(token)
+	parsedClaims, valid, err := processor.Validate(token)
 	if err != nil {
 		log.Fatalf("Token validation failed: %v", err)
 	}
@@ -56,14 +56,14 @@ func main() {
 	fmt.Printf("Token validated - User: %s, Role: %s\n", parsedClaims.Username, parsedClaims.Role)
 
 	// Step 6: Revoke token (add to blacklist)
-	if err := processor.RevokeToken(token); err != nil {
+	if err := processor.Revoke(token); err != nil {
 		log.Printf("Failed to revoke token: %v", err)
 	} else {
 		fmt.Println("Token revoked successfully")
 	}
 
 	// Step 7: Verify revoked token is rejected
-	_, valid, _ = processor.ValidateToken(token)
+	_, valid, _ = processor.Validate(token)
 	if !valid {
 		fmt.Println("Revoked token correctly rejected")
 	}

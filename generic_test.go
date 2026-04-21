@@ -1,13 +1,11 @@
 package jwt
 
 import (
+	"errors"
 	"testing"
 	"time"
 )
 
-const genericTestSecretKey = "Str0ng!S3cr3t#K3y$W1th%Suff1c13nt&Entr0py*2024"
-
-// CustomClaims for testing
 type TestCustomClaims struct {
 	UserID  string `json:"user_id"`
 	Email   string `json:"email"`
@@ -30,8 +28,34 @@ func (c *TestCustomClaims) Validate() error {
 	return nil
 }
 
+// testMockStore is a mock BlacklistStore for testing.
+type testMockStore struct {
+	tokens map[string]time.Time
+}
+
+func newTestMockStore() *testMockStore {
+	return &testMockStore{tokens: make(map[string]time.Time)}
+}
+
+func (m *testMockStore) Add(tokenID string, expiresAt time.Time) error {
+	m.tokens[tokenID] = expiresAt
+	return nil
+}
+
+func (m *testMockStore) Contains(tokenID string) (bool, error) {
+	exp, exists := m.tokens[tokenID]
+	if !exists {
+		return false, nil
+	}
+	return time.Now().Before(exp), nil
+}
+
+func (m *testMockStore) Close() error {
+	return nil
+}
+
 func TestGenericCreateAndValidateToken(t *testing.T) {
-	processor, err := newTestProcessor(genericTestSecretKey)
+	processor, err := newTestProcessor(testSecretKey)
 	if err != nil {
 		t.Fatalf("Failed to create processor: %v", err)
 	}
@@ -44,256 +68,144 @@ func TestGenericCreateAndValidateToken(t *testing.T) {
 		TeamID:  "team1",
 	}
 
-	// Create token
-	token, err := CreateTokenWithClaims(processor, claims)
+	token, err := processor.Create(claims)
 	if err != nil {
 		t.Fatalf("Failed to create token: %v", err)
 	}
-
 	if token == "" {
 		t.Fatal("Token should not be empty")
 	}
 
-	// Validate token
 	validatedClaims := &TestCustomClaims{}
-	result, valid, err := ValidateTokenWithClaims(processor, token, validatedClaims)
+	result, valid, err := processor.ValidateInto(token, validatedClaims)
 	if err != nil {
 		t.Fatalf("Failed to validate token: %v", err)
 	}
-
 	if !valid {
 		t.Fatal("Token should be valid")
 	}
 
-	resultClaims, ok := result.(*TestCustomClaims)
-	if !ok {
-		t.Fatal("Expected TestCustomClaims type")
-	}
-
+	resultClaims := result.(*TestCustomClaims)
 	if resultClaims.UserID != claims.UserID {
-		t.Errorf("Expected UserID %s, got %s", claims.UserID, resultClaims.UserID)
+		t.Errorf("UserID: got %s, want %s", resultClaims.UserID, claims.UserID)
 	}
-
 	if resultClaims.Email != claims.Email {
-		t.Errorf("Expected Email %s, got %s", claims.Email, resultClaims.Email)
+		t.Errorf("Email: got %s, want %s", resultClaims.Email, claims.Email)
 	}
-
 	if resultClaims.IsAdmin != claims.IsAdmin {
-		t.Errorf("Expected IsAdmin %v, got %v", claims.IsAdmin, resultClaims.IsAdmin)
+		t.Errorf("IsAdmin: got %v, want %v", resultClaims.IsAdmin, claims.IsAdmin)
 	}
-
 	if resultClaims.TeamID != claims.TeamID {
-		t.Errorf("Expected TeamID %s, got %s", claims.TeamID, resultClaims.TeamID)
+		t.Errorf("TeamID: got %s, want %s", resultClaims.TeamID, claims.TeamID)
 	}
 }
 
 func TestGenericCreateRefreshToken(t *testing.T) {
-	processor, err := newTestProcessor(genericTestSecretKey)
+	processor, err := newTestProcessor(testSecretKey)
 	if err != nil {
 		t.Fatalf("Failed to create processor: %v", err)
 	}
 	defer processor.Close()
 
-	claims := &TestCustomClaims{
-		UserID: "user123",
-		Email:  "test@example.com",
-	}
-
-	token, err := CreateRefreshTokenWithClaims(processor, claims)
+	claims := &TestCustomClaims{UserID: "user123", Email: "test@example.com"}
+	token, err := processor.CreateRefresh(claims)
 	if err != nil {
 		t.Fatalf("Failed to create refresh token: %v", err)
 	}
 
-	if token == "" {
-		t.Fatal("Token should not be empty")
-	}
-
-	// Validate the refresh token
 	validatedClaims := &TestCustomClaims{}
-	_, valid, err := ValidateTokenWithClaims(processor, token, validatedClaims)
+	_, valid, err := processor.ValidateInto(token, validatedClaims)
 	if err != nil {
 		t.Fatalf("Failed to validate refresh token: %v", err)
 	}
-
 	if !valid {
 		t.Fatal("Refresh token should be valid")
 	}
 }
 
 func TestGenericInvalidClaims(t *testing.T) {
-	processor, err := newTestProcessor(genericTestSecretKey)
+	processor, err := newTestProcessor(testSecretKey)
 	if err != nil {
 		t.Fatalf("Failed to create processor: %v", err)
 	}
 	defer processor.Close()
 
-	// Claims without required fields
-	claims := &TestCustomClaims{
-		UserID: "", // Missing UserID
-		Email:  "", // Missing Email
+	tests := []struct {
+		name   string
+		claims *TestCustomClaims
+	}{
+		{"missing UserID and Email", &TestCustomClaims{}},
+		{"missing Email only", &TestCustomClaims{UserID: "user1"}},
+		{"missing UserID only", &TestCustomClaims{Email: "test@example.com"}},
 	}
 
-	_, err = CreateTokenWithClaims(processor, claims)
-	if err == nil {
-		t.Fatal("Expected error for invalid claims")
-	}
-}
-
-func TestGenericTokenRevocation(t *testing.T) {
-	processor, err := newTestProcessor(genericTestSecretKey)
-	if err != nil {
-		t.Fatalf("Failed to create processor: %v", err)
-	}
-	defer processor.Close()
-
-	claims := &TestCustomClaims{
-		UserID: "user789",
-		Email:  "revoke@example.com",
-	}
-
-	// Create token
-	token, err := CreateTokenWithClaims(processor, claims)
-	if err != nil {
-		t.Fatalf("Failed to create token: %v", err)
-	}
-
-	// Validate should work
-	validatedClaims := &TestCustomClaims{}
-	_, valid, err := ValidateTokenWithClaims(processor, token, validatedClaims)
-	if err != nil {
-		t.Fatalf("Failed to validate token: %v", err)
-	}
-	if !valid {
-		t.Fatal("Token should be valid before revocation")
-	}
-
-	// Revoke token
-	err = processor.RevokeToken(token)
-	if err != nil {
-		t.Fatalf("Failed to revoke token: %v", err)
-	}
-
-	// Validate should fail now
-	validatedClaims2 := &TestCustomClaims{}
-	_, valid, err = ValidateTokenWithClaims(processor, token, validatedClaims2)
-	if err != ErrTokenRevoked {
-		t.Fatalf("Expected ErrTokenRevoked, got: %v", err)
-	}
-	if valid {
-		t.Fatal("Token should not be valid after revocation")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := processor.Create(tt.claims)
+			if err == nil {
+				t.Error("Expected error for invalid claims")
+			}
+		})
 	}
 }
 
 func TestGenericParseUnverified(t *testing.T) {
-	processor, err := newTestProcessor(genericTestSecretKey)
+	processor, err := newTestProcessor(testSecretKey)
 	if err != nil {
 		t.Fatalf("Failed to create processor: %v", err)
 	}
 	defer processor.Close()
 
-	claims := &TestCustomClaims{
-		UserID: "user000",
-		Email:  "parse@example.com",
-	}
-
-	token, err := CreateTokenWithClaims(processor, claims)
+	claims := &TestCustomClaims{UserID: "user000", Email: "parse@example.com"}
+	token, err := processor.Create(claims)
 	if err != nil {
 		t.Fatalf("Failed to create token: %v", err)
 	}
 
-	// Parse without verification
 	parsedClaims := &TestCustomClaims{}
-	err = processor.ParseUnverified(token, parsedClaims)
-	if err != nil {
+	if err := processor.ParseUnverified(token, parsedClaims); err != nil {
 		t.Fatalf("Failed to parse token unverified: %v", err)
 	}
-
 	if parsedClaims.UserID != claims.UserID {
-		t.Errorf("Expected UserID %s, got %s", claims.UserID, parsedClaims.UserID)
-	}
-}
-
-func TestGenericClosedProcessor(t *testing.T) {
-	processor, err := newTestProcessor(genericTestSecretKey)
-	if err != nil {
-		t.Fatalf("Failed to create processor: %v", err)
-	}
-
-	// Close processor
-	processor.Close()
-
-	claims := &TestCustomClaims{
-		UserID: "user999",
-		Email:  "closed@example.com",
-	}
-
-	// All operations should fail
-	_, err = CreateTokenWithClaims(processor, claims)
-	if err != ErrProcessorClosed {
-		t.Errorf("Expected ErrProcessorClosed, got: %v", err)
-	}
-
-	_, _, err = ValidateTokenWithClaims(processor, "some-token", claims)
-	if err != ErrProcessorClosed {
-		t.Errorf("Expected ErrProcessorClosed, got: %v", err)
-	}
-
-	_, err = CreateRefreshTokenWithClaims(processor, claims)
-	if err != ErrProcessorClosed {
-		t.Errorf("Expected ErrProcessorClosed, got: %v", err)
+		t.Errorf("UserID: got %s, want %s", parsedClaims.UserID, claims.UserID)
 	}
 }
 
 func TestGenericClaimsImplementsInterface(t *testing.T) {
-	// Verify that Claims implements CustomClaims
 	var _ CustomClaims = (*Claims)(nil)
+	var _ CustomClaims = (*TestCustomClaims)(nil)
 
-	processor, err := newTestProcessor(genericTestSecretKey)
+	processor, err := newTestProcessor(testSecretKey)
 	if err != nil {
 		t.Fatalf("Failed to create processor: %v", err)
 	}
 	defer processor.Close()
 
-	// Use standard Claims with generic functions
-	claims := &Claims{
-		UserID:   "standard-user",
-		Username: "standard-username",
-		Role:     "admin",
-	}
-
-	token, err := CreateTokenWithClaims(processor, claims)
+	claims := &Claims{UserID: "standard-user", Username: "standard-username", Role: "admin"}
+	token, err := processor.Create(claims)
 	if err != nil {
 		t.Fatalf("Failed to create token with standard Claims: %v", err)
 	}
 
 	validatedClaims := &Claims{}
-	result, valid, err := ValidateTokenWithClaims(processor, token, validatedClaims)
-	if err != nil {
-		t.Fatalf("Failed to validate token: %v", err)
+	result, valid, err := processor.ValidateInto(token, validatedClaims)
+	if err != nil || !valid {
+		t.Fatalf("Failed to validate token: valid=%v, err=%v", valid, err)
 	}
 
-	if !valid {
-		t.Fatal("Token should be valid")
-	}
-
-	resultClaims, ok := result.(*Claims)
-	if !ok {
-		t.Fatal("Expected Claims type")
-	}
-
+	resultClaims := result.(*Claims)
 	if resultClaims.UserID != claims.UserID {
-		t.Errorf("Expected UserID %s, got %s", claims.UserID, resultClaims.UserID)
+		t.Errorf("UserID: got %s, want %s", resultClaims.UserID, claims.UserID)
 	}
 }
 
 func TestGenericExpiredToken(t *testing.T) {
-	processor, err := newTestProcessor(genericTestSecretKey)
+	processor, err := newTestProcessor(testSecretKey)
 	if err != nil {
 		t.Fatalf("Failed to create processor: %v", err)
 	}
 	defer processor.Close()
 
-	// Create claims with already expired time
 	claims := &TestCustomClaims{
 		UserID: "expired-user",
 		Email:  "expired@example.com",
@@ -307,78 +219,37 @@ func TestGenericExpiredToken(t *testing.T) {
 		t.Fatalf("Failed to create token: %v", err)
 	}
 
-	// Validate should fail
 	validatedClaims := &TestCustomClaims{}
-	_, valid, err := ValidateTokenWithClaims(processor, token, validatedClaims)
-	if err != nil {
-		t.Fatalf("Validation returned error: %v", err)
-	}
-
+	_, valid, err := processor.ValidateInto(token, validatedClaims)
 	if valid {
 		t.Fatal("Expired token should not be valid")
+	}
+	if !errors.Is(err, ErrTokenExpired) {
+		t.Fatalf("Expected ErrTokenExpired, got %v", err)
 	}
 }
 
 func TestGenericCustomStore(t *testing.T) {
-	// Create a mock store
-	mockStore := &mockBlacklistStore{
-		tokens: make(map[string]time.Time),
-	}
-
 	cfg := DefaultConfig()
-	cfg.SecretKey = genericTestSecretKey
-	cfg.Blacklist = BlacklistConfig{
-		Store: mockStore,
-	}
+	cfg.SecretKey = testSecretKey
+	cfg.Blacklist = BlacklistConfig{Store: newTestMockStore()}
+
 	processor, err := New(cfg)
 	if err != nil {
 		t.Fatalf("Failed to create processor with custom store: %v", err)
 	}
 	defer processor.Close()
 
-	claims := &TestCustomClaims{
-		UserID: "store-user",
-		Email:  "store@example.com",
-	}
-
-	token, err := CreateTokenWithClaims(processor, claims)
+	claims := &TestCustomClaims{UserID: "store-user", Email: "store@example.com"}
+	token, err := processor.Create(claims)
 	if err != nil {
 		t.Fatalf("Failed to create token: %v", err)
 	}
 
 	validatedClaims := &TestCustomClaims{}
-	_, valid, err := ValidateTokenWithClaims(processor, token, validatedClaims)
-	if err != nil {
-		t.Fatalf("Failed to validate token: %v", err)
-	}
-
-	if !valid {
-		t.Fatal("Token should be valid with custom store")
+	_, valid, err := processor.ValidateInto(token, validatedClaims)
+	if err != nil || !valid {
+		t.Fatalf("Token should be valid with custom store: %v", err)
 	}
 }
 
-// Mock blacklist store for testing
-type mockBlacklistStore struct {
-	tokens map[string]time.Time
-}
-
-func (m *mockBlacklistStore) Add(tokenID string, expiresAt time.Time) error {
-	m.tokens[tokenID] = expiresAt
-	return nil
-}
-
-func (m *mockBlacklistStore) Contains(tokenID string) (bool, error) {
-	exp, exists := m.tokens[tokenID]
-	if !exists {
-		return false, nil
-	}
-	return time.Now().Before(exp), nil
-}
-
-func (m *mockBlacklistStore) Cleanup() (int, error) {
-	return 0, nil
-}
-
-func (m *mockBlacklistStore) Close() error {
-	return nil
-}

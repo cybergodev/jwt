@@ -1,11 +1,11 @@
 package internal
 
 import (
+	"bytes"
 	"crypto"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"strings"
 	"sync"
 	"unsafe"
 )
@@ -20,6 +20,9 @@ var precomputedHeaders = map[string]string{
 	"RS256": "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXIn0",
 	"RS384": "eyJhbGciOiJSUzM4NCIsInR5cCI6IkpXIn0",
 	"RS512": "eyJhbGciOiJSUzUxMiIsInR5cCI6IkpXIn0",
+	"PS256": "eyJhbGciOiJQUzI1NiIsInR5cCI6IkpXIn0",
+	"PS384": "eyJhbGciOiJQUzM4NCIsInR5cCI6IkpXIn0",
+	"PS512": "eyJhbGciOiJQUzUxMiIsInR5cCI6IkpXIn0",
 	"ES256": "eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXIn0",
 	"ES384": "eyJhbGciOiJFUzM4NCIsInR5cCI6IkpXIn0",
 	"ES512": "eyJhbGciOiJFUzUxMiIsInR5cCI6IkpXIn0",
@@ -33,6 +36,10 @@ type Method interface {
 	// Sign creates a signature for the given signing string.
 	Sign(signingString string, key any) (string, error)
 
+	// SignTo writes the base64-encoded signature to dst and returns bytes written.
+	// Avoids intermediate string allocation by encoding directly into the caller's buffer.
+	SignTo(dst []byte, signingString string, key any) (int, error)
+
 	// Verify checks if the signature is valid for the given signing string.
 	Verify(signingString string, signature string, key any) error
 
@@ -40,60 +47,26 @@ type Method interface {
 	Hash() crypto.Hash
 }
 
-// methodRegistry holds registered signing methods.
-type methodRegistry struct {
-	mu      sync.RWMutex
-	methods map[string]Method
-}
-
-var globalRegistry = &methodRegistry{
-	methods: make(map[string]Method),
-}
+// globalMethods holds registered signing methods.
+// Populated exclusively in init(); read-only thereafter, so no mutex needed.
+var globalMethods map[string]Method
 
 func init() {
-	// Register built-in HMAC methods
-	globalRegistry.register("HS256", hmacHS256)
-	globalRegistry.register("HS384", hmacHS384)
-	globalRegistry.register("HS512", hmacHS512)
-
-	// Register built-in RSA methods
-	globalRegistry.register("RS256", rsaRS256)
-	globalRegistry.register("RS384", rsaRS384)
-	globalRegistry.register("RS512", rsaRS512)
-
-	// Register built-in ECDSA methods
-	globalRegistry.register("ES256", ecdsaES256)
-	globalRegistry.register("ES384", ecdsaES384)
-	globalRegistry.register("ES512", ecdsaES512)
-}
-
-func (r *methodRegistry) register(alg string, method Method) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.methods[alg] = method
-}
-
-func (r *methodRegistry) get(alg string) Method {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	return r.methods[alg]
-}
-
-// isStandardHeader checks if the header is a standard JWT header with only typ and alg fields.
-// Returns the precomputed base64-encoded header if it matches, empty string otherwise.
-func isStandardHeader(header map[string]any, alg string) string {
-	if len(header) != 2 {
-		return ""
+	// Populate read-only method registry (no further writes after init).
+	globalMethods = map[string]Method{
+		"HS256": hmacHS256,
+		"HS384": hmacHS384,
+		"HS512": hmacHS512,
+		"RS256": rsaRS256,
+		"RS384": rsaRS384,
+		"RS512": rsaRS512,
+		"PS256": rsaPS256,
+		"PS384": rsaPS384,
+		"PS512": rsaPS512,
+		"ES256": ecdsaES256,
+		"ES384": ecdsaES384,
+		"ES512": ecdsaES512,
 	}
-	typ, hasTyp := header["typ"].(string)
-	if !hasTyp || typ != "JWT" {
-		return ""
-	}
-	headerAlg, hasAlg := header["alg"].(string)
-	if !hasAlg || headerAlg != alg {
-		return ""
-	}
-	return precomputedHeaders[alg]
 }
 
 // signingBufPool pools byte slices for signing string construction.
@@ -104,86 +77,96 @@ var signingBufPool = sync.Pool{
 	},
 }
 
-func SignedString(header map[string]any, claims any, method Method, key any) (string, error) {
-	alg := method.Alg()
+// encoderBuf pairs a pooled bytes.Buffer with a reusable json.Encoder.
+// Sharing the encoder across calls eliminates the json.NewEncoder heap
+// allocation (~80 bytes) per SignToken invocation.
+type encoderBuf struct {
+	buf *bytes.Buffer
+	enc *json.Encoder
+}
 
-	claimsJSON, err := json.Marshal(claims)
-	if err != nil {
+var encoderBufPool = sync.Pool{
+	New: func() any {
+		buf := bytes.NewBuffer(make([]byte, 0, 512))
+		return &encoderBuf{
+			buf: buf,
+			enc: json.NewEncoder(buf),
+		}
+	},
+}
+
+// SignToken creates a signed JWT token string directly without allocating
+// a Core struct or header map. Uses precomputed headers for all built-in algorithms.
+// Encodes claims with a pooled JSON buffer and signs directly into the output buffer
+// to minimize allocations.
+func SignToken(alg string, claims any, method Method, key any) (string, error) {
+	headerEncoded := precomputedHeaders[alg]
+	if headerEncoded == "" {
+		return "", fmt.Errorf("no precomputed header for algorithm: %s", alg)
+	}
+
+	// Marshal claims using pooled encoder+buffer to avoid both
+	// json.NewEncoder allocation and json.Marshal's output copy.
+	eb := encoderBufPool.Get().(*encoderBuf)
+	eb.buf.Reset()
+	if err := eb.enc.Encode(claims); err != nil {
+		encoderBufPool.Put(eb)
 		return "", fmt.Errorf("failed to marshal claims: %w", err)
+	}
+	claimsJSON := eb.buf.Bytes()
+	// Trim trailing newline added by json.Encoder.Encode
+	if n := len(claimsJSON); n > 0 && claimsJSON[n-1] == '\n' {
+		claimsJSON = claimsJSON[:n-1]
 	}
 
 	claimsEncodedLen := base64.RawURLEncoding.EncodedLen(len(claimsJSON))
+	signingStringLen := len(headerEncoded) + 1 + claimsEncodedLen
 
-	var signingStringLen int
-	var headerBytes []byte
-	var isPrecomputed bool
-
-	// Check if we can use precomputed header (already base64 encoded)
-	if encoded := isStandardHeader(header, alg); encoded != "" {
-		headerBytes = stringToBytes(encoded)
-		signingStringLen = len(encoded) + 1 + claimsEncodedLen
-		isPrecomputed = true
-	} else {
-		// Fall back to encoding the header
-		headerJSON, err := json.Marshal(header)
-		if err != nil {
-			return "", fmt.Errorf("failed to marshal header: %w", err)
-		}
-		headerBytes = headerJSON
-		headerEncodedLen := base64.RawURLEncoding.EncodedLen(len(headerJSON))
-		signingStringLen = headerEncodedLen + 1 + claimsEncodedLen
-	}
-
-	// Use buffer pool for all cases
 	bufPtr := signingBufPool.Get().(*[]byte)
 	defer func() {
-		if cap(*bufPtr) <= 2048 {
+		encoderBufPool.Put(eb)
+		if cap(*bufPtr) <= 4096 {
 			*bufPtr = (*bufPtr)[:0]
 			signingBufPool.Put(bufPtr)
 		}
 	}()
 
-	if cap(*bufPtr) < signingStringLen {
-		*bufPtr = make([]byte, 0, signingStringLen)
+	// Ensure capacity for signing string + separator + signature.
+	// 1024 bytes covers all practical signature sizes (HS512: 86, RS4096: 684, ES512: 176).
+	needed := signingStringLen + 1 + 1024
+	if cap(*bufPtr) < needed {
+		*bufPtr = make([]byte, 0, needed+128)
 	}
 
+	// Build signing string in buffer.
 	signingStringBuf := (*bufPtr)[:signingStringLen]
+	copy(signingStringBuf, stringToBytes(headerEncoded))
+	signingStringBuf[len(headerEncoded)] = '.'
+	base64.RawURLEncoding.Encode(signingStringBuf[len(headerEncoded)+1:], claimsJSON)
 
-	if isPrecomputed {
-		// Header is already base64 encoded, just copy it
-		copy(signingStringBuf, headerBytes)
-		signingStringBuf[len(headerBytes)] = '.'
-		base64.RawURLEncoding.Encode(signingStringBuf[len(headerBytes)+1:], claimsJSON)
-	} else {
-		// Encode header to base64
-		base64.RawURLEncoding.Encode(signingStringBuf, headerBytes)
-		headerEncodedLen := base64.RawURLEncoding.EncodedLen(len(headerBytes))
-		signingStringBuf[headerEncodedLen] = '.'
-		base64.RawURLEncoding.Encode(signingStringBuf[headerEncodedLen+1:], claimsJSON)
-	}
-
-	// Use unsafe string for internal Sign call
+	// SAFETY: signingString references bufPtr's pooled memory, which is valid
+	// until the deferred cleanup returns it to signingBufPool. The underlying
+	// bytes are never modified after this point — SignTo reads the string and
+	// writes to a separate region of the same buffer.
 	signingString := unsafe.String(&signingStringBuf[0], len(signingStringBuf))
 
-	signature, err := method.Sign(signingString, key)
+	// Sign directly into buffer, avoiding intermediate base64 string allocation.
+	fullBuf := (*bufPtr)[:cap(*bufPtr)]
+	sigOffset := signingStringLen + 1
+	fullBuf[sigOffset-1] = '.'
+
+	sigLen, err := method.SignTo(fullBuf[sigOffset:], signingString, key)
 	if err != nil {
 		return "", fmt.Errorf("failed to sign token: %w", err)
 	}
 
-	// Use strings.Builder for efficient string concatenation
-	var builder strings.Builder
-	builder.Grow(signingStringLen + 1 + len(signature))
-	builder.Write(signingStringBuf)
-	builder.WriteByte('.')
-	builder.WriteString(signature)
-
-	return builder.String(), nil
+	return string(fullBuf[:sigOffset+sigLen]), nil
 }
 
 // GetInternalSigningMethod retrieves a signing method by algorithm name.
 // All built-in methods are registered in init(), so this simply checks the registry.
 func GetInternalSigningMethod(alg string) (Method, error) {
-	if method := globalRegistry.get(alg); method != nil {
+	if method := globalMethods[alg]; method != nil {
 		return method, nil
 	}
 	return nil, fmt.Errorf("unsupported signing method: %s", alg)

@@ -52,13 +52,13 @@ token expired
 
 **Solution:**
 ```go
-claims, valid, err := processor.ValidateToken(token)
+claims, valid, err := processor.Validate(token)
 if errors.Is(err, jwt.ErrTokenExpired) {
     // Option 1: Prompt user to refresh
     return &RefreshRequiredError{}
 
     // Option 2: Use refresh token to get new access token
-    newToken, err := processor.RefreshToken(refreshToken)
+    newToken, err := processor.Refresh(refreshToken)
 }
 
 // Prevent expiration by setting appropriate TTL
@@ -128,7 +128,7 @@ if processor.IsClosed() {
 }
 
 // Or handle gracefully
-claims, valid, err := processor.ValidateToken(token)
+claims, valid, err := processor.Validate(token)
 if errors.Is(err, jwt.ErrProcessorClosed) {
     // Return service unavailable
     return &ServiceUnavailableError{}
@@ -175,13 +175,22 @@ invalid secret key: RSA method requires *rsa.PrivateKey
 **Solution:**
 ```go
 // Ensure proper key type
-privateKey, err := jwt.ParseRSAPrivateKey(keyData)
+block, _ := pem.Decode(keyData)
+if block == nil {
+    log.Fatal("failed to decode PEM block")
+}
+
+privateKey, err := x509.ParsePKCS8PrivateKey(block.Bytes)
 if err != nil {
     log.Fatal(err)
 }
+rsaKey, ok := privateKey.(*rsa.PrivateKey)
+if !ok {
+    log.Fatal("not an RSA private key")
+}
 
 cfg := jwt.DefaultConfig()
-cfg.SigningKey = privateKey  // Must be *rsa.PrivateKey, not []byte or string
+cfg.SigningKey = rsaKey  // Must be *rsa.PrivateKey, not []byte or string
 cfg.SigningMethod = jwt.SigningMethodRS256
 ```
 
@@ -243,14 +252,26 @@ log.Printf("Config: %+v", cfg)
 
 **Solution:**
 ```go
-// If using custom claims, use ValidateTokenWith
+// If using custom claims, use ValidateInto with jwt.RegisteredClaims embedding
 type MyClaims struct {
-    jwt.Claims
+    UserID string `json:"user_id"`
     TeamID string `json:"team_id"`
+    jwt.RegisteredClaims
+}
+
+func (c *MyClaims) GetRegisteredClaims() *jwt.RegisteredClaims {
+    return &c.RegisteredClaims
+}
+
+func (c *MyClaims) Validate() error {
+    if c.UserID == "" {
+        return errors.New("user_id is required")
+    }
+    return nil
 }
 
 claims := &MyClaims{}
-result, valid, err := processor.ValidateTokenWith(token, claims)
+result, valid, err := processor.ValidateInto(token, claims)
 if valid {
     myClaims := result.(*MyClaims)
     fmt.Println(myClaims.TeamID) // Now accessible
@@ -266,7 +287,7 @@ if valid {
 **Solution:**
 ```go
 // Minimize claims
-claims := jwt.Claims{
+claims := &jwt.Claims{
     UserID: "user123", // Essential only
     Role:   "admin",
 }
@@ -323,7 +344,7 @@ func init() {
 **Debug:**
 ```go
 start := time.Now()
-claims, valid, err := processor.ValidateToken(token)
+claims, valid, err := processor.Validate(token)
 log.Printf("Validation took: %v", time.Since(start))
 ```
 
@@ -340,11 +361,11 @@ func BenchmarkValidation(b *testing.B) {
     processor, _ := jwt.New(cfg)
     defer processor.Close()
 
-    token, _ := processor.CreateToken(claims)
+    token, _ := processor.Create(claims)
     b.ResetTimer()
 
     for i := 0; i < b.N; i++ {
-        processor.ValidateToken(token)
+        processor.Validate(token)
     }
 }
 ```
@@ -427,10 +448,10 @@ type LoggingProcessor struct {
     logger *slog.Logger
 }
 
-func (p *LoggingProcessor) ValidateToken(token string) (jwt.Claims, bool, error) {
+func (p *LoggingProcessor) Validate(token string) (jwt.Claims, bool, error) {
     p.logger.Debug("validating token", "token_preview", token[:20]+"...")
 
-    claims, valid, err := p.Processor.ValidateToken(token)
+    claims, valid, err := p.Processor.Validate(token)
 
     p.logger.Debug("validation result",
         "valid", valid,
@@ -486,13 +507,13 @@ func TestConfig(t *testing.T) {
     defer processor.Close()
 
     // Test round-trip
-    claims := jwt.Claims{UserID: "test"}
-    token, err := processor.CreateToken(claims)
+    claims := &jwt.Claims{UserID: "test"}
+    token, err := processor.Create(claims)
     if err != nil {
         t.Fatalf("Failed to create token: %v", err)
     }
 
-    _, valid, err := processor.ValidateToken(token)
+    _, valid, err := processor.Validate(token)
     if err != nil || !valid {
         t.Fatalf("Token validation failed: valid=%v, err=%v", valid, err)
     }
@@ -506,17 +527,38 @@ func TestConfig(t *testing.T) {
 ### Q: How do I implement "remember me" functionality?
 
 ```go
-func createSession(userID string, rememberMe bool) (*Session, error) {
-    cfg := jwt.DefaultConfig()
+func createSession(processor *jwt.Processor, userID string, rememberMe bool) (*Session, error) {
+    claims := &jwt.Claims{UserID: userID}
 
-    if rememberMe {
-        cfg.RefreshTokenTTL = 30 * 24 * time.Hour // 30 days
-    } else {
-        cfg.RefreshTokenTTL = 24 * time.Hour // 1 day
+    accessToken, err := processor.Create(claims)
+    if err != nil {
+        return nil, err
     }
 
-    processor, _ := jwt.New(cfg)
-    // ...
+    // For "remember me", create a longer-lived refresh token
+    // by temporarily adjusting the processor configuration.
+    // Alternatively, create a second processor with a longer RefreshTokenTTL.
+    if rememberMe {
+        rememberCfg := jwt.DefaultConfig()
+        rememberCfg.SecretKey = os.Getenv("JWT_SECRET_KEY")
+        rememberCfg.RefreshTokenTTL = 30 * 24 * time.Hour // 30 days
+        rememberProc, err := jwt.New(rememberCfg)
+        if err != nil {
+            return nil, err
+        }
+        defer rememberProc.Close()
+        refreshToken, err := rememberProc.CreateRefresh(claims)
+        if err != nil {
+            return nil, err
+        }
+        return &Session{AccessToken: accessToken, RefreshToken: refreshToken}, nil
+    }
+
+    refreshToken, err := processor.CreateRefresh(claims)
+    if err != nil {
+        return nil, err
+    }
+    return &Session{AccessToken: accessToken, RefreshToken: refreshToken}, nil
 }
 ```
 
@@ -524,14 +566,26 @@ func createSession(userID string, rememberMe bool) (*Session, error) {
 
 ```go
 // Option 1: Use token version in claims
-type Claims struct {
-    jwt.Claims
-    TokenVersion int `json:"token_version"`
+type VersionedClaims struct {
+    UserID       string `json:"user_id"`
+    TokenVersion int    `json:"token_version"`
+    jwt.RegisteredClaims
 }
 
-// Store version in database
-// When validating, check version matches database
-// Increment version to invalidate all tokens
+func (c *VersionedClaims) GetRegisteredClaims() *jwt.RegisteredClaims {
+    return &c.RegisteredClaims
+}
+
+func (c *VersionedClaims) Validate() error {
+    if c.UserID == "" {
+        return errors.New("user_id is required")
+    }
+    return nil
+}
+
+// Store version in database.
+// When validating, use ValidateInto and check version matches database.
+// Increment version to invalidate all tokens.
 
 // Option 2: Track all tokens in blacklist
 // (Not recommended for large-scale applications)

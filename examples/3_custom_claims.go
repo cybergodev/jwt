@@ -36,15 +36,12 @@ func (c *AppClaims) Validate() error {
 	return nil
 }
 
-// Custom claims example demonstrates using custom claim types
-// with the CreateTokenWith and ValidateTokenWith methods.
 func main() {
 	fmt.Println("JWT Library - Custom Claims")
 	fmt.Println("===========================")
 
 	secretKey := "Kx9#mP2$vL8@nQ5!wR7&tY3^uI6*oE4%aS1+dF0-gH9~jK2#bN5$cM8@xZ7&vB4!"
 
-	// Create processor
 	cfg := jwt.DefaultConfig()
 	cfg.SecretKey = secretKey
 	cfg.Issuer = "custom-claims-example"
@@ -55,7 +52,7 @@ func main() {
 	}
 	defer processor.Close()
 
-	// Example 1: Custom claims with CreateTokenWith
+	// Example 1: Custom claims with Create/ValidateInto
 	fmt.Println("\nExample 1: Custom Claims Type")
 	fmt.Println("-----------------------------")
 	customClaimsExample(processor)
@@ -65,8 +62,13 @@ func main() {
 	fmt.Println("--------------------------------------------")
 	builtInClaimsExample(processor)
 
-	// Example 3: Custom validation error
-	fmt.Println("\nExample 3: Custom Validation")
+	// Example 3: RefreshInto with custom claims
+	fmt.Println("\nExample 3: RefreshInto with Custom Claims")
+	fmt.Println("------------------------------------------")
+	refreshIntoExample(processor)
+
+	// Example 4: Custom validation error
+	fmt.Println("\nExample 4: Custom Validation")
 	fmt.Println("-----------------------------")
 	customValidationExample(processor)
 
@@ -74,33 +76,30 @@ func main() {
 }
 
 func customClaimsExample(processor *jwt.Processor) {
-	// Create custom claims
 	customClaims := &AppClaims{
 		UserID: "user789",
 		TeamID: "team-abc",
 		Roles:  []string{"developer", "reviewer"},
 	}
 
-	// Create token with custom claims using CreateTokenWith
-	token, err := processor.CreateTokenWith(customClaims)
+	// Create token with custom claims
+	token, err := processor.Create(customClaims)
 	if err != nil {
 		log.Fatalf("Failed to create token: %v", err)
 	}
-	fmt.Printf("Token created with custom claims\n")
+	fmt.Println("Token created with custom claims")
 
-	// Validate and parse into custom claims using ValidateTokenWith
+	// Validate and parse into custom claims using ValidateInto
 	resultClaims := &AppClaims{}
-	result, valid, err := processor.ValidateTokenWith(token, resultClaims)
+	result, valid, err := processor.ValidateInto(token, resultClaims)
 	if err != nil || !valid {
 		log.Fatalf("Failed to validate token: %v", err)
 	}
 
 	parsed := result.(*AppClaims)
 	fmt.Printf("Token validated:\n")
-	fmt.Printf("  UserID: %s\n", parsed.UserID)
-	fmt.Printf("  TeamID: %s\n", parsed.TeamID)
-	fmt.Printf("  Roles: %v\n", parsed.Roles)
-	fmt.Printf("  Issuer: %s\n", parsed.Issuer)
+	fmt.Printf("  UserID: %s, TeamID: %s\n", parsed.UserID, parsed.TeamID)
+	fmt.Printf("  Roles: %v, Issuer: %s\n", parsed.Roles, parsed.Issuer)
 }
 
 func builtInClaimsExample(processor *jwt.Processor) {
@@ -116,66 +115,83 @@ func builtInClaimsExample(processor *jwt.Processor) {
 		},
 	}
 
-	token, err := processor.CreateToken(claims)
+	token, err := processor.Create(&claims)
 	if err != nil {
 		log.Fatalf("Failed to create token: %v", err)
 	}
 
-	parsedClaims, valid, err := processor.ValidateToken(token)
+	parsedClaims, valid, err := processor.Validate(token)
 	if err != nil || !valid {
 		log.Fatalf("Failed to validate token: %v", err)
 	}
 
-	fmt.Printf("Built-in claims validated:\n")
-	fmt.Printf("  UserID: %s\n", parsedClaims.UserID)
-	fmt.Printf("  Username: %s\n", parsedClaims.Username)
+	fmt.Printf("Built-in claims validated: UserID=%s, Username=%s\n",
+		parsedClaims.UserID, parsedClaims.Username)
 	if teamID, ok := parsedClaims.Extra["team_id"].(string); ok {
-		fmt.Printf("  TeamID (Extra): %s\n", teamID)
-	}
-	if level, ok := parsedClaims.Extra["level"].(string); ok {
-		fmt.Printf("  Level (Extra): %s\n", level)
+		fmt.Printf("  Extra - TeamID: %s, Level: %s\n",
+			teamID, parsedClaims.Extra["level"])
 	}
 }
 
-func customValidationExample(processor *jwt.Processor) {
-	// Test validation error handling
-	invalidClaims := &AppClaims{
-		UserID: "", // Missing required field
-		TeamID: "team-abc",
-	}
-
-	_, err := processor.CreateTokenWith(invalidClaims)
-	if err != nil {
-		fmt.Printf("Validation correctly failed:\n")
-		fmt.Printf("  Error: %v\n", err)
-
-		// Check if it's a claims validation error
-		if errors.Is(err, jwt.ErrInvalidClaims) {
-			fmt.Printf("  Type: Invalid claims error\n")
-		}
-	}
-
-	// Also test refresh token with custom claims
-	fmt.Println("\nRefresh token with custom claims:")
-	validClaims := &AppClaims{
+func refreshIntoExample(processor *jwt.Processor) {
+	// RefreshInto: refresh a custom-claims token into a new access token
+	claims := &AppClaims{
 		UserID: "user999",
 		TeamID: "team-refresh",
 		Roles:  []string{"admin"},
 	}
 
-	refreshToken, err := processor.CreateRefreshTokenWith(validClaims)
+	// Create refresh token with custom claims
+	refreshToken, err := processor.CreateRefresh(claims)
 	if err != nil {
 		log.Fatalf("Failed to create refresh token: %v", err)
 	}
-	fmt.Printf("Refresh token created\n")
+	fmt.Println("Refresh token created")
+
+	// RefreshInto parses the refresh token and creates a new access token
+	// The custom claims struct is populated with the parsed data
+	parsedClaims := &AppClaims{}
+	newAccessToken, err := processor.RefreshInto(refreshToken, parsedClaims)
+	if err != nil {
+		log.Fatalf("Failed to refresh into: %v", err)
+	}
+	fmt.Printf("Token refreshed - UserID: %s, TeamID: %s\n",
+		parsedClaims.UserID, parsedClaims.TeamID)
+
+	// Validate the new access token with ValidateInto
+	resultClaims := &AppClaims{}
+	_, valid, err := processor.ValidateInto(newAccessToken, resultClaims)
+	if err != nil || !valid {
+		log.Fatalf("Failed to validate refreshed token: %v", err)
+	}
+	fmt.Printf("Refreshed token validated - UserID: %s\n", resultClaims.UserID)
+}
+
+func customValidationExample(processor *jwt.Processor) {
+	// Demonstrates validation error handling with custom claims
+	invalidClaims := &AppClaims{
+		UserID: "", // Missing required field
+		TeamID: "team-abc",
+	}
+
+	_, err := processor.Create(invalidClaims)
+	if err != nil {
+		if errors.Is(err, jwt.ErrInvalidClaims) {
+			fmt.Printf("Validation correctly rejected: %v\n", err)
+		}
+	}
 
 	// Parse without verification (for debugging/inspection)
-	var parsedRefresh AppClaims
-	err = processor.ParseUnverified(refreshToken, &parsedRefresh)
+	validClaims := &AppClaims{UserID: "user888", TeamID: "team-debug"}
+	refreshToken, err := processor.CreateRefresh(validClaims)
 	if err != nil {
+		log.Fatalf("Failed to create refresh token: %v", err)
+	}
+
+	var parsed AppClaims
+	if err := processor.ParseUnverified(refreshToken, &parsed); err != nil {
 		log.Fatalf("Failed to parse token: %v", err)
 	}
-	fmt.Printf("Refresh token parsed (unverified):\n")
-	fmt.Printf("  UserID: %s\n", parsedRefresh.UserID)
-	fmt.Printf("  ExpiresAt: %v\n", parsedRefresh.ExpiresAt.Time.Format(time.RFC3339))
+	fmt.Printf("Unverified parse - UserID: %s, ExpiresAt: %v\n",
+		parsed.UserID, parsed.ExpiresAt.Time.Format(time.RFC3339))
 }

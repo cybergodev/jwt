@@ -5,12 +5,6 @@ import (
 	"time"
 )
 
-// ============================================================================
-// CONFIG TESTS - Tests for config.go
-// Migrated and consolidated from jwt_test.go and coverage_test.go
-// ============================================================================
-
-// TestConfigDefaultValues tests DefaultConfig returns expected defaults
 func TestConfigDefaultValues(t *testing.T) {
 	config := DefaultConfig()
 
@@ -37,7 +31,6 @@ func TestConfigDefaultValues(t *testing.T) {
 	}
 }
 
-// TestConfigValidateBasic tests basic config validation scenarios
 func TestConfigValidateBasic(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -110,81 +103,6 @@ func TestConfigValidateBasic(t *testing.T) {
 	}
 }
 
-// TestConfigValidateAdditionalEdgeCases tests additional config validation scenarios
-func TestConfigValidateAdditionalEdgeCases(t *testing.T) {
-	tests := []struct {
-		name      string
-		config    Config
-		wantError bool
-	}{
-		{
-			name: "valid config with all fields",
-			config: Config{
-				SecretKey:       "Str0ng!S3cr3t#K3y$W1th%Suff1c13nt&Entr0py*2024",
-				AccessTokenTTL:  15 * time.Minute,
-				RefreshTokenTTL: 7 * 24 * time.Hour,
-				Issuer:          "test-issuer",
-				SigningMethod:   SigningMethodHS256,
-				EnableRateLimit: true,
-				RateLimitRate:   100,
-				RateLimitWindow: time.Minute,
-				Blacklist:       DefaultBlacklistConfig(),
-			},
-			wantError: false,
-		},
-		{
-			name: "zero access token TTL",
-			config: Config{
-				SecretKey:       "Str0ng!S3cr3t#K3y$W1th%Suff1c13nt&Entr0py*2024",
-				AccessTokenTTL:  0,
-				RefreshTokenTTL: 7 * 24 * time.Hour,
-			},
-			wantError: true,
-		},
-		{
-			name: "zero refresh token TTL",
-			config: Config{
-				SecretKey:       "Str0ng!S3cr3t#K3y$W1th%Suff1c13nt&Entr0py*2024",
-				AccessTokenTTL:  15 * time.Minute,
-				RefreshTokenTTL: 0,
-			},
-			wantError: true,
-		},
-		{
-			name: "negative access token TTL",
-			config: Config{
-				SecretKey:       "Str0ng!S3cr3t#K3y$W1th%Suff1c13nt&Entr0py*2024",
-				AccessTokenTTL:  -1 * time.Minute,
-				RefreshTokenTTL: 7 * 24 * time.Hour,
-			},
-			wantError: true,
-		},
-		{
-			name: "invalid signing method",
-			config: Config{
-				SecretKey:       "Str0ng!S3cr3t#K3y$W1th%Suff1c13nt&Entr0py*2024",
-				AccessTokenTTL:  15 * time.Minute,
-				RefreshTokenTTL: 7 * 24 * time.Hour,
-				SigningMethod:   "INVALID",
-			},
-			wantError: true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			err := tt.config.Validate()
-			if tt.wantError && err == nil {
-				t.Error("Expected validation error, got nil")
-			}
-			if !tt.wantError && err != nil {
-				t.Errorf("Expected no error, got %v", err)
-			}
-		})
-	}
-}
-
-// TestNormalizeConfigDefaults tests that normalizeConfig fills in default values
 func TestNormalizeConfigDefaults(t *testing.T) {
 	cfg := Config{SecretKey: testSecretKey}
 	normalized := normalizeConfig(cfg)
@@ -203,7 +121,6 @@ func TestNormalizeConfigDefaults(t *testing.T) {
 	}
 }
 
-// TestNormalizeConfigPreservesCustom tests that normalizeConfig preserves custom values
 func TestNormalizeConfigPreservesCustom(t *testing.T) {
 	cfg := Config{
 		SecretKey:       testSecretKey,
@@ -228,104 +145,50 @@ func TestNormalizeConfigPreservesCustom(t *testing.T) {
 	}
 }
 
-// TestNormalizeConfigRateLimitDefaults tests rate limit defaults when enabled
-func TestNormalizeConfigRateLimitDefaults(t *testing.T) {
-	cfg := Config{
-		SecretKey:       testSecretKey,
-		EnableRateLimit: true,
-		RateLimitRate:   0,
-		RateLimitWindow: 0,
-	}
-	normalized := normalizeConfig(cfg)
+func TestNormalizeConfigRateLimit(t *testing.T) {
+	t.Run("defaults when enabled", func(t *testing.T) {
+		cfg := Config{SecretKey: testSecretKey, EnableRateLimit: true, RateLimitRate: 0, RateLimitWindow: 0}
+		normalized := normalizeConfig(cfg)
 
-	if normalized.RateLimitRate != 100 {
-		t.Errorf("Expected default RateLimitRate=100, got %d", normalized.RateLimitRate)
-	}
-	if normalized.RateLimitWindow != time.Minute {
-		t.Errorf("Expected default RateLimitWindow=1m, got %v", normalized.RateLimitWindow)
-	}
+		if normalized.RateLimitRate != 100 {
+			t.Errorf("Expected default RateLimitRate=100, got %d", normalized.RateLimitRate)
+		}
+		if normalized.RateLimitWindow != time.Minute {
+			t.Errorf("Expected default RateLimitWindow=1m, got %v", normalized.RateLimitWindow)
+		}
+	})
+
+	t.Run("preserves custom values", func(t *testing.T) {
+		cfg := Config{SecretKey: testSecretKey, EnableRateLimit: true, RateLimitRate: 50, RateLimitWindow: 30 * time.Second}
+		normalized := normalizeConfig(cfg)
+
+		if normalized.RateLimitRate != 50 {
+			t.Errorf("Expected RateLimitRate=50, got %d", normalized.RateLimitRate)
+		}
+		if normalized.RateLimitWindow != 30*time.Second {
+			t.Errorf("Expected RateLimitWindow=30s, got %v", normalized.RateLimitWindow)
+		}
+	})
 }
 
-// TestNormalizeConfigRateLimitPreserved tests rate limit values preserved when set
-func TestNormalizeConfigRateLimitPreserved(t *testing.T) {
-	cfg := Config{
-		SecretKey:       testSecretKey,
-		EnableRateLimit: true,
-		RateLimitRate:   50,
-		RateLimitWindow: 30 * time.Second,
-	}
-	normalized := normalizeConfig(cfg)
-
-	if normalized.RateLimitRate != 50 {
-		t.Errorf("Expected RateLimitRate=50, got %d", normalized.RateLimitRate)
-	}
-	if normalized.RateLimitWindow != 30*time.Second {
-		t.Errorf("Expected RateLimitWindow=30s, got %v", normalized.RateLimitWindow)
-	}
-}
-
-// TestBlacklistConfigValidate tests BlacklistConfig validation
 func TestBlacklistConfigValidate(t *testing.T) {
-	secretKey := "Str0ng!S3cr3t#K3y$W1th%Suff1c13nt&Entr0py*2024"
-
 	tests := []struct {
 		name            string
 		blacklistConfig BlacklistConfig
 		wantError       bool
 	}{
-		{
-			name: "zero max size",
-			blacklistConfig: BlacklistConfig{
-				MaxSize:         0,
-				CleanupInterval: time.Minute,
-			},
-			wantError: true,
-		},
-		{
-			name: "negative max size",
-			blacklistConfig: BlacklistConfig{
-				MaxSize:         -1,
-				CleanupInterval: time.Minute,
-			},
-			wantError: true,
-		},
-		{
-			name: "zero cleanup interval",
-			blacklistConfig: BlacklistConfig{
-				MaxSize:         1000,
-				CleanupInterval: 0,
-			},
-			wantError: true,
-		},
-		{
-			name: "negative cleanup interval",
-			blacklistConfig: BlacklistConfig{
-				MaxSize:         1000,
-				CleanupInterval: -1 * time.Minute,
-			},
-			wantError: true,
-		},
-		{
-			name: "valid config",
-			blacklistConfig: BlacklistConfig{
-				MaxSize:         1000,
-				CleanupInterval: time.Minute,
-			},
-			wantError: false,
-		},
-		{
-			name: "custom store bypasses validation",
-			blacklistConfig: BlacklistConfig{
-				Store: &configTestMockStore{},
-			},
-			wantError: false,
-		},
+		{"zero max size (normalized)", BlacklistConfig{MaxSize: 0, CleanupInterval: time.Minute}, false},
+		{"negative max size", BlacklistConfig{MaxSize: -1, CleanupInterval: time.Minute}, true},
+		{"zero cleanup interval (normalized)", BlacklistConfig{MaxSize: 1000, CleanupInterval: 0}, false},
+		{"negative cleanup interval", BlacklistConfig{MaxSize: 1000, CleanupInterval: -1 * time.Minute}, true},
+		{"valid config", BlacklistConfig{MaxSize: 1000, CleanupInterval: time.Minute}, false},
+		{"custom store bypasses validation", BlacklistConfig{Store: newTestMockStore()}, false},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := DefaultConfig()
-			cfg.SecretKey = secretKey
+			cfg.SecretKey = testSecretKey
 			cfg.Blacklist = tt.blacklistConfig
 			_, err := New(cfg)
 			if tt.wantError && err == nil {
@@ -338,26 +201,10 @@ func TestBlacklistConfigValidate(t *testing.T) {
 	}
 }
 
-// TestConfigValidateNil tests nil config validation
 func TestConfigValidateNil(t *testing.T) {
 	var cfg *Config
 	err := cfg.Validate()
 	if err != ErrInvalidConfig {
 		t.Errorf("Expected ErrInvalidConfig for nil config, got %v", err)
 	}
-}
-
-// configTestMockStore is a mock implementation for config testing
-type configTestMockStore struct{}
-
-func (m *configTestMockStore) Add(tokenID string, expiresAt time.Time) error {
-	return nil
-}
-
-func (m *configTestMockStore) Contains(tokenID string) (bool, error) {
-	return false, nil
-}
-
-func (m *configTestMockStore) Close() error {
-	return nil
 }

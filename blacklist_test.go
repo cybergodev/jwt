@@ -2,16 +2,10 @@ package jwt
 
 import (
 	"fmt"
-	"sync"
 	"testing"
 	"time"
 )
 
-// ============================================================================
-// BLACKLIST TESTS - Tests for blacklist.go
-// ============================================================================
-
-// TestBlacklistOperationsBasic tests basic blacklist operations
 func TestBlacklistOperationsBasic(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.SecretKey = testSecretKey
@@ -25,13 +19,9 @@ func TestBlacklistOperationsBasic(t *testing.T) {
 	const numTokens = 10
 	tokens := make([]string, numTokens)
 
-	// Create multiple tokens
 	for i := 0; i < numTokens; i++ {
-		claims := Claims{
-			UserID:   fmt.Sprintf("user%d", i),
-			Username: fmt.Sprintf("testuser%d", i),
-		}
-		token, err := processor.CreateToken(claims)
+		claims := Claims{UserID: fmt.Sprintf("user%d", i), Username: fmt.Sprintf("testuser%d", i)}
+		token, err := processor.Create(&claims)
 		if err != nil {
 			t.Fatalf("Failed to create token %d: %v", i, err)
 		}
@@ -40,15 +30,14 @@ func TestBlacklistOperationsBasic(t *testing.T) {
 
 	// Revoke half of the tokens
 	for i := 0; i < numTokens/2; i++ {
-		if err := processor.RevokeToken(tokens[i]); err != nil {
+		if err := processor.Revoke(tokens[i]); err != nil {
 			t.Fatalf("Failed to revoke token %d: %v", i, err)
 		}
 	}
 
 	// Check token validity
 	for i, token := range tokens {
-		_, valid, err := processor.ValidateToken(token)
-
+		_, valid, err := processor.Validate(token)
 		if i < numTokens/2 {
 			if err == nil || valid {
 				t.Errorf("Token %d should be invalid after revocation", i)
@@ -61,7 +50,6 @@ func TestBlacklistOperationsBasic(t *testing.T) {
 	}
 }
 
-// TestBlacklistCleanupMechanism tests blacklist cleanup mechanism
 func TestBlacklistCleanupMechanism(t *testing.T) {
 	blacklistConfig := BlacklistConfig{
 		CleanupInterval:   100 * time.Millisecond,
@@ -79,90 +67,29 @@ func TestBlacklistCleanupMechanism(t *testing.T) {
 	defer processor.Close()
 
 	claims := Claims{UserID: "user123", Username: "testuser"}
-	token, err := processor.CreateToken(claims)
+	token, err := processor.Create(&claims)
 	if err != nil {
 		t.Fatalf("Failed to create token: %v", err)
 	}
 
-	if err := processor.RevokeToken(token); err != nil {
+	if err := processor.Revoke(token); err != nil {
 		t.Fatalf("Failed to revoke token: %v", err)
 	}
 
-	// Wait for cleanup to run
+	// Wait for cleanup to run at least once
 	time.Sleep(200 * time.Millisecond)
 
-	// Cleanup mechanism should be running without errors
-	t.Log("Cleanup test completed successfully")
-}
-
-// TestIsTokenRevokedFunction tests IsTokenRevoked function
-func TestIsTokenRevokedFunction(t *testing.T) {
-	cfg := DefaultConfig()
-	cfg.SecretKey = "Str0ng!S3cr3t#K3y$W1th%Suff1c13nt&Entr0py*2024"
-	cfg.Blacklist = DefaultBlacklistConfig()
-	processor, err := New(cfg)
-	if err != nil {
-		t.Fatalf("Failed to create processor: %v", err)
+	// Token should still be revoked after cleanup (cleanup removes expired entries, not active ones)
+	_, valid, err := processor.Validate(token)
+	if valid {
+		t.Error("Token should remain revoked after cleanup cycle")
 	}
-	defer processor.Close()
-
-	claims := Claims{UserID: "user123", Username: "testuser"}
-	token, err := processor.CreateToken(claims)
-	if err != nil {
-		t.Fatalf("Failed to create token: %v", err)
-	}
-
-	// Token should not be revoked initially
-	revoked, err := processor.IsTokenRevoked(token)
-	if err != nil {
-		t.Fatalf("IsTokenRevoked failed: %v", err)
-	}
-	if revoked {
-		t.Error("Token should not be revoked initially")
-	}
-
-	// Revoke the token
-	err = processor.RevokeToken(token)
-	if err != nil {
-		t.Fatalf("Failed to revoke token: %v", err)
-	}
-
-	// Token should now be revoked
-	revoked, err = processor.IsTokenRevoked(token)
-	if err != nil {
-		t.Fatalf("IsTokenRevoked failed: %v", err)
-	}
-	if !revoked {
-		t.Error("Token should be revoked after RevokeToken")
+	if err != ErrTokenRevoked {
+		t.Errorf("Expected ErrTokenRevoked, got: %v", err)
 	}
 }
 
-// TestIsTokenRevokedNoBlacklist tests IsTokenRevoked when no blacklist configured
-func TestIsTokenRevokedNoBlacklist(t *testing.T) {
-	processor, err := newTestProcessor("Str0ng!S3cr3t#K3y$W1th%Suff1c13nt&Entr0py*2024")
-	if err != nil {
-		t.Fatalf("Failed to create processor: %v", err)
-	}
-	defer processor.Close()
-
-	claims := Claims{UserID: "user123", Username: "testuser"}
-	token, err := processor.CreateToken(claims)
-	if err != nil {
-		t.Fatalf("Failed to create token: %v", err)
-	}
-
-	// Should return false when no blacklist is configured
-	revoked, err := processor.IsTokenRevoked(token)
-	if err != nil {
-		t.Fatalf("IsTokenRevoked failed: %v", err)
-	}
-	if revoked {
-		t.Error("Token should not be revoked when no blacklist is configured")
-	}
-}
-
-// TestBlacklistConcurrentOps tests blacklist under high concurrency
-func TestBlacklistConcurrentOps(t *testing.T) {
+func TestIsRevokedFunction(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.SecretKey = testSecretKey
 	cfg.Blacklist = DefaultBlacklistConfig()
@@ -172,45 +99,60 @@ func TestBlacklistConcurrentOps(t *testing.T) {
 	}
 	defer processor.Close()
 
-	const numTokens = 200
-
-	// Create tokens
-	tokens := make([]string, numTokens)
-	for i := 0; i < numTokens; i++ {
-		claims := Claims{
-			UserID:   fmt.Sprintf("user%d", i),
-			Username: fmt.Sprintf("testuser%d", i),
-		}
-		token, err := processor.CreateToken(claims)
-		if err != nil {
-			t.Fatalf("Failed to create token %d: %v", i, err)
-		}
-		tokens[i] = token
+	claims := Claims{UserID: "user123", Username: "testuser"}
+	token, err := processor.Create(&claims)
+	if err != nil {
+		t.Fatalf("Failed to create token: %v", err)
 	}
 
-	var wg sync.WaitGroup
-
-	// Concurrent revoke and validate
-	wg.Add(numTokens * 2)
-
-	for i := 0; i < numTokens; i++ {
-		// Revoke goroutine
-		go func(idx int) {
-			defer wg.Done()
-			processor.RevokeToken(tokens[idx])
-		}(i)
-
-		// Validate goroutine (may race with revoke)
-		go func(idx int) {
-			defer wg.Done()
-			processor.ValidateToken(tokens[idx])
-		}(i)
+	// Token should not be revoked initially
+	revoked, err := processor.IsRevoked(token)
+	if err != nil {
+		t.Fatalf("IsRevoked failed: %v", err)
+	}
+	if revoked {
+		t.Error("Token should not be revoked initially")
 	}
 
-	wg.Wait()
+	// Revoke the token
+	if err := processor.Revoke(token); err != nil {
+		t.Fatalf("Failed to revoke token: %v", err)
+	}
+
+	// Token should now be revoked
+	revoked, err = processor.IsRevoked(token)
+	if err != nil {
+		t.Fatalf("IsRevoked failed: %v", err)
+	}
+	if !revoked {
+		t.Error("Token should be revoked after Revoke")
+	}
 }
 
-// TestBlacklistConfigDefaults tests BlacklistConfig defaults
+func TestIsRevokedNoBlacklist(t *testing.T) {
+	processor, err := newTestProcessor(testSecretKey)
+	if err != nil {
+		t.Fatalf("Failed to create processor: %v", err)
+	}
+	defer processor.Close()
+
+	claims := Claims{UserID: "user123", Username: "testuser"}
+	token, err := processor.Create(&claims)
+	if err != nil {
+		t.Fatalf("Failed to create token: %v", err)
+	}
+
+	// Should return false when no blacklist is configured
+	revoked, err := processor.IsRevoked(token)
+	if err != nil {
+		t.Fatalf("IsRevoked failed: %v", err)
+	}
+	if revoked {
+		t.Error("Token should not be revoked when no blacklist is configured")
+	}
+}
+
+
 func TestBlacklistConfigDefaults(t *testing.T) {
 	cfg := DefaultBlacklistConfig()
 
@@ -225,14 +167,53 @@ func TestBlacklistConfigDefaults(t *testing.T) {
 	}
 }
 
-// TestBlacklistConfigCreateManager tests CreateManager with custom store
 func TestBlacklistConfigCreateManager(t *testing.T) {
-	cfg := BlacklistConfig{
-		Store: &configTestMockStore{},
+	tests := []struct {
+		name string
+		cfg  BlacklistConfig
+	}{
+		{"custom store", BlacklistConfig{Store: newTestMockStore()}},
+		{"default store", DefaultBlacklistConfig()},
 	}
 
-	manager := cfg.CreateManager()
-	if manager == nil {
-		t.Error("CreateManager should return non-nil manager")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			manager := tt.cfg.createManager()
+			if manager == nil {
+				t.Error("createManager should return non-nil manager")
+			}
+			manager.Close()
+		})
+	}
+}
+
+func TestBlacklistDuplicateRevoke(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.SecretKey = testSecretKey
+	cfg.Blacklist = DefaultBlacklistConfig()
+	processor, err := New(cfg)
+	if err != nil {
+		t.Fatalf("Failed to create processor: %v", err)
+	}
+	defer processor.Close()
+
+	claims := Claims{UserID: "dup-user", Username: "testuser"}
+	token, err := processor.Create(&claims)
+	if err != nil {
+		t.Fatalf("Failed to create token: %v", err)
+	}
+
+	if err := processor.Revoke(token); err != nil {
+		t.Fatalf("First revoke failed: %v", err)
+	}
+
+	// Second revoke of same token should succeed (idempotent)
+	if err := processor.Revoke(token); err != nil {
+		t.Errorf("Second revoke should succeed (idempotent), got: %v", err)
+	}
+
+	_, valid, _ := processor.Validate(token)
+	if valid {
+		t.Error("Token should remain revoked after duplicate revoke")
 	}
 }

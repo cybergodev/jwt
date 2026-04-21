@@ -60,7 +60,7 @@ func (r *KeyRotator) GetCurrentKey() string {
 // During rotation, try current key, fall back to previous
 func validateWithRotation(processor *jwt.Processor, rotator *KeyRotator, token string) (jwt.Claims, bool, error) {
     // Try current key first
-    claims, valid, err := processor.ValidateToken(token)
+    claims, valid, err := processor.Validate(token)
     if valid {
         return claims, valid, nil
     }
@@ -183,18 +183,18 @@ func GetConfig(env string) jwt.Config {
 ```go
 func (s *AuthService) CreateSession(userID string) (*Session, error) {
     // 1. Create minimal claims
-    claims := jwt.Claims{
-        UserID:   userID,
+    claims := &jwt.Claims{
+        UserID:    userID,
         SessionID: generateSessionID(),
     }
 
     // 2. Create tokens
-    accessToken, err := s.processor.CreateToken(claims)
+    accessToken, err := s.processor.Create(claims)
     if err != nil {
         return nil, fmt.Errorf("failed to create access token: %w", err)
     }
 
-    refreshToken, err := s.processor.CreateRefreshToken(claims)
+    refreshToken, err := s.processor.CreateRefresh(claims)
     if err != nil {
         return nil, fmt.Errorf("failed to create refresh token: %w", err)
     }
@@ -213,24 +213,24 @@ func (s *AuthService) CreateSession(userID string) (*Session, error) {
 ```go
 func (s *AuthService) RefreshAccessToken(refreshToken string) (string, error) {
     // 1. Validate refresh token
-    claims, valid, err := s.processor.ValidateToken(refreshToken)
+    claims, valid, err := s.processor.Validate(refreshToken)
     if err != nil || !valid {
         return "", errors.New("invalid refresh token")
     }
 
     // 2. Check if user is still active (optional)
     if !s.isUserActive(claims.UserID) {
-        s.processor.RevokeToken(refreshToken)
+        s.processor.Revoke(refreshToken)
         return "", errors.New("user account disabled")
     }
 
     // 3. Create new access token
-    newClaims := jwt.Claims{
+    newClaims := &jwt.Claims{
         UserID:    claims.UserID,
         SessionID: claims.SessionID,
     }
 
-    return s.processor.CreateToken(newClaims)
+    return s.processor.Create(newClaims)
 }
 ```
 
@@ -238,20 +238,10 @@ func (s *AuthService) RefreshAccessToken(refreshToken string) (string, error) {
 
 ```go
 func (s *AuthService) Logout(tokenString string) error {
-    // 1. Validate token (even if expired, we need the ID)
-    claims, _, err := s.processor.ValidateToken(tokenString)
-    if err != nil && !errors.Is(err, jwt.ErrTokenExpired) {
-        return err
-    }
-
-    // 2. Revoke the token
-    if err := s.processor.RevokeToken(tokenString); err != nil {
+    // 1. Revoke the token directly (Revoke parses the token internally,
+    //    so it works even with expired tokens)
+    if err := s.processor.Revoke(tokenString); err != nil {
         return fmt.Errorf("failed to revoke token: %w", err)
-    }
-
-    // 3. Optionally revoke all tokens for this session
-    if claims.SessionID != "" {
-        s.revokeSessionTokens(claims.SessionID)
     }
 
     return nil
@@ -266,7 +256,7 @@ func (s *AuthService) Logout(tokenString string) error {
 
 ```go
 func (h *Handler) handleTokenValidation(token string) (*jwt.Claims, error) {
-    claims, valid, err := h.processor.ValidateToken(token)
+    claims, valid, err := h.processor.Validate(token)
 
     if err != nil {
         switch {
@@ -345,7 +335,7 @@ func (h *Handler) handleTokenValidation(token string) (*jwt.Claims, error) {
 
 ```go
 func (h *Handler) validateToken(token string) (*jwt.Claims, error) {
-    claims, valid, err := h.processor.ValidateToken(token)
+    claims, valid, err := h.processor.Validate(token)
 
     if err != nil {
         // Log security-relevant events
@@ -430,7 +420,7 @@ func main() {
 
 ```dockerfile
 # Dockerfile
-FROM golang:1.22-alpine AS builder
+FROM golang:1.25-alpine AS builder
 WORKDIR /app
 COPY . .
 RUN go build -o server ./cmd/server
@@ -502,16 +492,16 @@ type MetricsMiddleware struct {
     validationErrors *prometheus.CounterVec
 }
 
-func (m *MetricsMiddleware) CreateToken(claims jwt.Claims) (string, error) {
-    token, err := m.processor.CreateToken(claims)
+func (m *MetricsMiddleware) Create(claims jwt.CustomClaims) (string, error) {
+    token, err := m.processor.Create(claims)
     if err == nil {
         m.tokensCreated.Inc()
     }
     return token, err
 }
 
-func (m *MetricsMiddleware) ValidateToken(token string) (jwt.Claims, bool, error) {
-    claims, valid, err := m.processor.ValidateToken(token)
+func (m *MetricsMiddleware) Validate(token string) (jwt.Claims, bool, error) {
+    claims, valid, err := m.processor.Validate(token)
     m.tokensValidated.Inc()
 
     if err != nil {
@@ -530,18 +520,25 @@ type LoggingMiddleware struct {
     logger    *slog.Logger
 }
 
-func (m *LoggingMiddleware) ValidateToken(token string) (jwt.Claims, bool, error) {
+func (m *LoggingMiddleware) Validate(token string) (jwt.Claims, bool, error) {
     start := time.Now()
-    claims, valid, err := m.processor.ValidateToken(token)
+    claims, valid, err := m.processor.Validate(token)
     duration := time.Since(start)
 
     // Log validation event
-    m.logger.Info("token validated",
-        "user_id", claims.UserID,
-        "valid", valid,
-        "duration_ms", duration.Milliseconds(),
-        "error", err,
-    )
+    if err != nil {
+        m.logger.Warn("token validation failed",
+            "valid", valid,
+            "duration_ms", duration.Milliseconds(),
+            "error", err,
+        )
+    } else {
+        m.logger.Info("token validated",
+            "user_id", claims.UserID,
+            "valid", valid,
+            "duration_ms", duration.Milliseconds(),
+        )
+    }
 
     return claims, valid, err
 }

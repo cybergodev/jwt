@@ -2,6 +2,7 @@ package jwt
 
 import (
 	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rsa"
 	"fmt"
 	"time"
@@ -19,9 +20,10 @@ type Config struct {
 	SigningMethod   SigningMethod // HS256, HS384, HS512, RS256, RS384, RS512, ES256, ES384, ES512
 
 	// Token configuration
-	AccessTokenTTL  time.Duration `yaml:"access_token_ttl" json:"access_token_ttl"`
-	RefreshTokenTTL time.Duration `yaml:"refresh_token_ttl" json:"refresh_token_ttl"`
-	Issuer          string        `yaml:"issuer" json:"issuer"`
+	AccessTokenTTL    time.Duration `yaml:"access_token_ttl" json:"access_token_ttl"`
+	RefreshTokenTTL   time.Duration `yaml:"refresh_token_ttl" json:"refresh_token_ttl"`
+	Issuer            string        `yaml:"issuer" json:"issuer"`
+	ExpectedAudience  string        `yaml:"expected_audience" json:"expected_audience"` // Optional: reject tokens without matching aud claim
 
 	// Blacklist configuration (embedded)
 	Blacklist BlacklistConfig `yaml:"blacklist" json:"blacklist"`
@@ -31,6 +33,9 @@ type Config struct {
 	RateLimitRate   int               `yaml:"rate_limit_rate" json:"rate_limit_rate"`
 	RateLimitWindow time.Duration     `yaml:"rate_limit_window" json:"rate_limit_window"`
 	RateLimiter     RateLimitProvider `yaml:"-" json:"-"`
+
+	// Clock provider for time operations (optional, defaults to SystemClock)
+	Clock ClockProvider `yaml:"-" json:"-"`
 }
 
 // DefaultConfig returns a Config with sensible defaults.
@@ -70,13 +75,29 @@ func normalizeConfig(c Config) Config {
 	if c.RateLimitWindow == 0 && c.EnableRateLimit {
 		c.RateLimitWindow = defaults.RateLimitWindow
 	}
-	// Blacklist uses its own Validate() to handle defaults
+	// Blacklist: apply per-field defaults when using built-in store
+	if c.Blacklist.Store == nil {
+		if c.Blacklist.MaxSize == 0 {
+			c.Blacklist.MaxSize = defaults.Blacklist.MaxSize
+		}
+		if c.Blacklist.CleanupInterval == 0 {
+			c.Blacklist.CleanupInterval = defaults.Blacklist.CleanupInterval
+		}
+		// bool zero-value is false — indistinguishable from "not set".
+		// Always enable for built-in store to prevent unbounded growth.
+		c.Blacklist.EnableAutoCleanup = true
+	}
 
 	return c
 }
 
 // Validate validates the configuration.
 // Returns an error if the configuration is invalid.
+//
+// Returns errors:
+//   - [ErrInvalidConfig]: nil config, invalid TTL values, or invalid blacklist config
+//   - [ErrInvalidSecretKey]: missing key, key too short, weak key, wrong key type, or ECDSA curve mismatch
+//   - [ErrInvalidSigningMethod]: unrecognized signing method
 func (c *Config) Validate() error {
 	if c == nil {
 		return ErrInvalidConfig
@@ -95,17 +116,13 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("%w: access token TTL must be less than refresh token TTL", ErrInvalidConfig)
 	}
 
-	switch c.SigningMethod {
-	case SigningMethodHS256, SigningMethodHS384, SigningMethodHS512,
-		SigningMethodRS256, SigningMethodRS384, SigningMethodRS512,
-		SigningMethodES256, SigningMethodES384, SigningMethodES512:
-	default:
+	if !c.SigningMethod.isValid() {
 		return ErrInvalidSigningMethod
 	}
 
 	// Validate blacklist configuration
-	if err := c.Blacklist.Validate(); err != nil {
-		return fmt.Errorf("%w: %v", ErrInvalidConfig, err)
+	if err := c.Blacklist.validate(); err != nil {
+		return fmt.Errorf("%w: %w", ErrInvalidConfig, err)
 	}
 
 	return nil
@@ -113,8 +130,8 @@ func (c *Config) Validate() error {
 
 // validateSigningKey validates the signing key based on the signing method.
 func (c *Config) validateSigningKey() error {
-	switch c.SigningMethod {
-	case SigningMethodHS256, SigningMethodHS384, SigningMethodHS512:
+	switch {
+	case c.SigningMethod.isHMAC():
 		// HMAC requires SecretKey
 		keyLen := len(c.SecretKey)
 		if keyLen < 32 {
@@ -123,10 +140,12 @@ func (c *Config) validateSigningKey() error {
 		if internal.IsWeakKey([]byte(c.SecretKey)) {
 			return fmt.Errorf("%w: key must have sufficient entropy and complexity", ErrInvalidSecretKey)
 		}
-	case SigningMethodRS256, SigningMethodRS384, SigningMethodRS512,
-		SigningMethodES256, SigningMethodES384, SigningMethodES512:
+	case c.SigningMethod.isAsymmetric():
 		// Asymmetric methods use shared validation
 		if err := validateAsymmetricSigningKey(c.SigningMethod, c.SigningKey); err != nil {
+			return err
+		}
+		if err := validateVerificationKey(c.SigningMethod, c.VerificationKey); err != nil {
 			return err
 		}
 	}
@@ -140,12 +159,12 @@ func validateAsymmetricSigningKey(method SigningMethod, key any) error {
 		return fmt.Errorf("%w: SigningKey is required for %s method", ErrInvalidSecretKey, method)
 	}
 	switch method {
-	case SigningMethodRS256, SigningMethodRS384, SigningMethodRS512:
+	case SigningMethodRS256, SigningMethodRS384, SigningMethodRS512,
+		SigningMethodPS256, SigningMethodPS384, SigningMethodPS512:
 		rsaKey, ok := key.(*rsa.PrivateKey)
 		if !ok {
 			return fmt.Errorf("%w: RSA method requires *rsa.PrivateKey, got %T", ErrInvalidSecretKey, key)
 		}
-		// Typed nil like (*rsa.PrivateKey)(nil) passes type assertion but is still nil
 		if rsaKey == nil {
 			return fmt.Errorf("%w: RSA key cannot be nil", ErrInvalidSecretKey)
 		}
@@ -154,21 +173,65 @@ func validateAsymmetricSigningKey(method SigningMethod, key any) error {
 		if !ok {
 			return fmt.Errorf("%w: ECDSA method requires *ecdsa.PrivateKey, got %T", ErrInvalidSecretKey, key)
 		}
-		// Typed nil like (*ecdsa.PrivateKey)(nil) passes type assertion but is still nil
 		if ecdsaKey == nil {
 			return fmt.Errorf("%w: ECDSA key cannot be nil", ErrInvalidSecretKey)
 		}
+		if err := validateECDSACurve(method, ecdsaKey.Curve); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// validateECDSACurve checks that the key's curve matches the expected curve for the signing method.
+func validateECDSACurve(method SigningMethod, curve elliptic.Curve) error {
+	var expected elliptic.Curve
+	switch method {
+	case SigningMethodES256:
+		expected = elliptic.P256()
+	case SigningMethodES384:
+		expected = elliptic.P384()
+	case SigningMethodES512:
+		expected = elliptic.P521()
+	default:
+		return nil
+	}
+	if curve != expected {
+		return fmt.Errorf("%w: %s requires %s curve, got %s",
+			ErrInvalidSecretKey, method, expected.Params().Name, curve.Params().Name)
 	}
 	return nil
 }
 
 // isAsymmetric returns true if the signing method uses asymmetric keys.
 func (c *Config) isAsymmetric() bool {
-	switch c.SigningMethod {
-	case SigningMethodRS256, SigningMethodRS384, SigningMethodRS512,
-		SigningMethodES256, SigningMethodES384, SigningMethodES512:
-		return true
-	default:
-		return false
+	return c.SigningMethod.isAsymmetric()
+}
+
+// validateVerificationKey validates the optional verification key for asymmetric methods.
+// When nil, the SigningKey is used for both signing and verification.
+func validateVerificationKey(method SigningMethod, key any) error {
+	if key == nil {
+		return nil
 	}
+	switch method {
+	case SigningMethodRS256, SigningMethodRS384, SigningMethodRS512,
+		SigningMethodPS256, SigningMethodPS384, SigningMethodPS512:
+		rsaKey, ok := key.(*rsa.PublicKey)
+		if !ok {
+			return fmt.Errorf("%w: VerificationKey must be *rsa.PublicKey for RSA, got %T", ErrInvalidSecretKey, key)
+		}
+		if rsaKey == nil {
+			return fmt.Errorf("%w: RSA VerificationKey cannot be nil", ErrInvalidSecretKey)
+		}
+	case SigningMethodES256, SigningMethodES384, SigningMethodES512:
+		ecdsaKey, ok := key.(*ecdsa.PublicKey)
+		if !ok {
+			return fmt.Errorf("%w: VerificationKey must be *ecdsa.PublicKey for ECDSA, got %T", ErrInvalidSecretKey, key)
+		}
+		if ecdsaKey == nil {
+			return fmt.Errorf("%w: ECDSA VerificationKey cannot be nil", ErrInvalidSecretKey)
+		}
+	}
+	return nil
 }

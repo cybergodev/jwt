@@ -106,55 +106,6 @@ func TestHMACInvalidKey(t *testing.T) {
 	}
 }
 
-func TestSignedString(t *testing.T) {
-	header := map[string]any{
-		"alg": "HS256",
-		"typ": "JWT",
-	}
-	claims := map[string]any{
-		"sub": "user123",
-		"exp": 1234567890,
-	}
-	method, err := GetInternalSigningMethod("HS256")
-	if err != nil {
-		t.Fatalf("GetInternalSigningMethod failed: %v", err)
-	}
-	key := []byte("test-secret-key-with-sufficient-length")
-
-	tokenString, err := SignedString(header, claims, method, key)
-	if err != nil {
-		t.Fatalf("SignedString failed: %v", err)
-	}
-
-	if tokenString == "" {
-		t.Error("SignedString returned empty string")
-	}
-
-	parts := strings.Split(tokenString, ".")
-	if len(parts) != 3 {
-		t.Errorf("Expected 3 parts, got %d", len(parts))
-	}
-
-	// Test with invalid header (non-serializable)
-	invalidHeader := map[string]any{
-		"alg":     "HS256",
-		"invalid": make(chan int),
-	}
-	_, err = SignedString(invalidHeader, claims, method, key)
-	if err == nil {
-		t.Error("Expected error for invalid header, got nil")
-	}
-
-	// Test with invalid claims (non-serializable)
-	invalidClaims := map[string]any{
-		"sub":     "test",
-		"invalid": make(chan int),
-	}
-	_, err = SignedString(header, invalidClaims, method, key)
-	if err == nil {
-		t.Error("Expected error for invalid claims, got nil")
-	}
-}
 
 func TestGetInternalSigningMethod(t *testing.T) {
 	tests := []struct {
@@ -173,6 +124,10 @@ func TestGetInternalSigningMethod(t *testing.T) {
 		{"ES256", false},
 		{"ES384", false},
 		{"ES512", false},
+		// RSA-PSS methods
+		{"PS256", false},
+		{"PS384", false},
+		{"PS512", false},
 		// Invalid/unsupported methods
 		{"", true},
 		{"none", true},
@@ -199,7 +154,7 @@ func TestGetInternalSigningMethod(t *testing.T) {
 // Core Token Tests
 // =============================================================================
 
-func TestNewTokenWithClaims(t *testing.T) {
+func TestSignTokenRoundTrip(t *testing.T) {
 	method, err := GetInternalSigningMethod("HS256")
 	if err != nil {
 		t.Fatalf("GetInternalSigningMethod failed: %v", err)
@@ -208,51 +163,15 @@ func TestNewTokenWithClaims(t *testing.T) {
 		"sub": "user123",
 		"exp": 1234567890,
 	}
-
-	token := NewTokenWithClaims(method, claims)
-	if token == nil {
-		t.Fatal("NewTokenWithClaims returned nil")
-	}
-
-	if token.Header["typ"] != "JWT" {
-		t.Errorf("Expected typ=JWT, got %v", token.Header["typ"])
-	}
-
-	if token.Header["alg"] != "HS256" {
-		t.Errorf("Expected alg=HS256, got %v", token.Header["alg"])
-	}
-
-	if token.Claims == nil {
-		t.Error("Claims not set correctly")
-	}
-
-	if token.Method != method {
-		t.Error("Method not set correctly")
-	}
-}
-
-func TestCoreSignedString(t *testing.T) {
-	method, err := GetInternalSigningMethod("HS256")
-	if err != nil {
-		t.Fatalf("GetInternalSigningMethod failed: %v", err)
-	}
-	claims := map[string]any{
-		"sub": "user123",
-		"exp": 1234567890,
-	}
-
-	token := NewTokenWithClaims(method, claims)
 	key := []byte("test-secret-key-with-sufficient-length-32bytes")
 
-	tokenString, err := token.SignedString(key)
+	tokenString, err := SignToken("HS256", claims, method, key)
 	if err != nil {
-		t.Fatalf("SignedString failed: %v", err)
+		t.Fatalf("SignToken failed: %v", err)
 	}
-
 	if tokenString == "" {
-		t.Error("SignedString returned empty string")
+		t.Error("SignToken returned empty string")
 	}
-
 	parts := strings.Split(tokenString, ".")
 	if len(parts) != 3 {
 		t.Errorf("Expected 3 parts, got %d", len(parts))
@@ -484,9 +403,8 @@ func TestParseWithClaimsKeyFuncError(t *testing.T) {
 	claims := map[string]any{
 		"user_id": "test",
 	}
-	token := NewTokenWithClaims(method, claims)
 	key := []byte("test-secret-key-with-sufficient-length-32bytes")
-	tokenString, err := token.SignedString(key)
+	tokenString, err := SignToken("HS256", claims, method, key)
 	if err != nil {
 		t.Fatalf("Failed to create token: %v", err)
 	}
@@ -515,9 +433,8 @@ func TestParseWithClaimsInvalidSignature(t *testing.T) {
 	claims := map[string]any{
 		"user_id": "test",
 	}
-	token := NewTokenWithClaims(method, claims)
 	key := []byte("test-secret-key-with-sufficient-length-32bytes")
-	tokenString, err := token.SignedString(key)
+	tokenString, err := SignToken("HS256", claims, method, key)
 	if err != nil {
 		t.Fatalf("Failed to create token: %v", err)
 	}
@@ -689,7 +606,7 @@ func TestZeroBytes(t *testing.T) {
 // =============================================================================
 
 func TestMemoryStoreBasicOperations(t *testing.T) {
-	store := NewMemoryStore(100, time.Minute, false)
+	store := NewMemoryStore(100, time.Minute, false, nil)
 	defer store.Close()
 
 	tokenID := "test-token-123"
@@ -721,7 +638,7 @@ func TestMemoryStoreBasicOperations(t *testing.T) {
 }
 
 func TestMemoryStoreExpiration(t *testing.T) {
-	store := NewMemoryStore(100, time.Minute, false)
+	store := NewMemoryStore(100, time.Minute, false, nil)
 	defer store.Close()
 
 	tokenID := "expired-token"
@@ -743,7 +660,7 @@ func TestMemoryStoreExpiration(t *testing.T) {
 }
 
 func TestMemoryStoreCleanup(t *testing.T) {
-	store := NewMemoryStore(100, time.Minute, false)
+	store := NewMemoryStore(100, time.Minute, false, nil)
 	defer store.Close()
 
 	// Add expired tokens
@@ -773,7 +690,7 @@ func TestMemoryStoreCleanup(t *testing.T) {
 
 func TestMemoryStoreMaxSize(t *testing.T) {
 	maxSize := 10
-	store := NewMemoryStore(maxSize, time.Minute, false)
+	store := NewMemoryStore(maxSize, time.Minute, false, nil)
 	defer store.Close()
 
 	// Add more tokens than max size
@@ -798,7 +715,7 @@ func TestMemoryStoreMaxSize(t *testing.T) {
 }
 
 func TestMemoryStoreAutoCleanup(t *testing.T) {
-	store := NewMemoryStore(100, 50*time.Millisecond, true)
+	store := NewMemoryStore(100, 50*time.Millisecond, true, nil)
 	defer store.Close()
 
 	// Add expired token
@@ -821,7 +738,7 @@ func TestMemoryStoreAutoCleanup(t *testing.T) {
 }
 
 func TestMemoryStoreClose(t *testing.T) {
-	store := NewMemoryStore(100, time.Minute, true)
+	store := NewMemoryStore(100, time.Minute, true, nil)
 
 	tokenID := "test-token"
 	expiresAt := time.Now().Add(time.Hour)
@@ -857,7 +774,7 @@ func TestMemoryStoreClose(t *testing.T) {
 }
 
 func TestMemoryStoreConcurrency(t *testing.T) {
-	store := NewMemoryStore(1000, time.Minute, false)
+	store := NewMemoryStore(1000, time.Minute, false, nil)
 	defer store.Close()
 
 	done := make(chan bool)
@@ -895,13 +812,13 @@ func TestMemoryStoreConcurrency(t *testing.T) {
 // =============================================================================
 
 func TestManagerBlacklistToken(t *testing.T) {
-	store := NewMemoryStore(1000, 5*time.Minute, false)
+	store := NewMemoryStore(1000, 5*time.Minute, false, nil)
 	defer store.Close()
 
-	manager := NewManager(store.Add, store.Contains, store.Close)
+	manager := NewManagerWithClock(store, nil)
 
 	// Test with empty token ID
-	err := manager.BlacklistToken("", time.Now().Add(time.Hour))
+	err := manager.blacklistToken("", time.Now().Add(time.Hour))
 	if err == nil {
 		t.Error("Expected error for empty token ID")
 	}
@@ -912,7 +829,7 @@ func TestManagerBlacklistToken(t *testing.T) {
 	// Test with valid token ID
 	tokenID := "tok_valid123"
 	expiresAt := time.Now().Add(time.Hour)
-	err = manager.BlacklistToken(tokenID, expiresAt)
+	err = manager.blacklistToken(tokenID, expiresAt)
 	if err != nil {
 		t.Fatalf("BlacklistToken failed: %v", err)
 	}
@@ -928,8 +845,8 @@ func TestManagerBlacklistToken(t *testing.T) {
 }
 
 func TestManagerIsBlacklisted(t *testing.T) {
-	store := NewMemoryStore(1000, 5*time.Minute, false)
-	manager := NewManager(store.Add, store.Contains, store.Close)
+	store := NewMemoryStore(1000, 5*time.Minute, false, nil)
+	manager := NewManagerWithClock(store, nil)
 	defer manager.Close()
 
 	// Test with empty token ID
@@ -952,8 +869,8 @@ func TestManagerIsBlacklisted(t *testing.T) {
 }
 
 func TestManagerBlacklistTokenString(t *testing.T) {
-	store := NewMemoryStore(1000, 5*time.Minute, false)
-	manager := NewManager(store.Add, store.Contains, store.Close)
+	store := NewMemoryStore(1000, 5*time.Minute, false, nil)
+	manager := NewManagerWithClock(store, nil)
 	defer manager.Close()
 
 	tests := []struct {
@@ -1009,11 +926,11 @@ func TestManagerBlacklistTokenString(t *testing.T) {
 }
 
 func TestManagerClose(t *testing.T) {
-	store := NewMemoryStore(1000, 5*time.Minute, false)
-	manager := NewManager(store.Add, store.Contains, store.Close)
+	store := NewMemoryStore(1000, 5*time.Minute, false, nil)
+	manager := NewManagerWithClock(store, nil)
 
 	// Add some tokens
-	err := manager.BlacklistToken("tok_test1", time.Now().Add(time.Hour))
+	err := manager.blacklistToken("tok_test1", time.Now().Add(time.Hour))
 	if err != nil {
 		t.Fatalf("Failed to blacklist token: %v", err)
 	}
@@ -1273,5 +1190,482 @@ func TestECDSASignatureLength(t *testing.T) {
 	err = method.Verify(signingString, wrongLenSig, privateKey)
 	if err == nil {
 		t.Error("Expected error for wrong signature length, got nil")
+	}
+}
+
+// =============================================================================
+// Hash() Method Coverage Tests
+// =============================================================================
+
+func TestSigningMethodHash(t *testing.T) {
+	tests := []struct {
+		alg string
+	}{
+		{"HS256"}, {"HS384"}, {"HS512"},
+		{"RS256"}, {"RS384"}, {"RS512"},
+		{"ES256"}, {"ES384"}, {"ES512"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.alg, func(t *testing.T) {
+			method, err := GetInternalSigningMethod(tt.alg)
+			if err != nil {
+				t.Fatalf("GetInternalSigningMethod(%q) failed: %v", tt.alg, err)
+			}
+			// Call Hash() to cover the method
+			hash := method.Hash()
+			if !hash.Available() {
+				t.Errorf("Hash() for %s should be available", tt.alg)
+			}
+		})
+	}
+}
+
+// =============================================================================
+// NewManagerWithClock Tests
+// =============================================================================
+
+func TestNewManagerWithClock(t *testing.T) {
+	store := NewMemoryStore(100, time.Minute, false, nil)
+	defer store.Close()
+
+	// With custom clock
+	fixedTime := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
+	manager := NewManagerWithClock(store, func() time.Time { return fixedTime })
+	if manager == nil {
+		t.Fatal("NewManagerWithClock returned nil")
+	}
+
+	// Verify the clock is used by checking BlacklistToken uses correct time
+	tokenID := "tok_clock_test"
+	expiresAt := fixedTime.Add(-time.Hour) // Already expired relative to fixed clock
+	err := manager.blacklistToken(tokenID, expiresAt)
+	if err != nil {
+		t.Fatalf("BlacklistToken failed: %v", err)
+	}
+
+	// With nil clock (should use time.Now)
+	store2 := NewMemoryStore(100, time.Minute, false, nil)
+	defer store2.Close()
+	manager2 := NewManagerWithClock(store2, nil)
+	if manager2 == nil {
+		t.Fatal("NewManagerWithClock with nil clock returned nil")
+	}
+	manager2.Close()
+}
+
+// =============================================================================
+// ParseTokenID Tests
+// =============================================================================
+
+func TestParseTokenID(t *testing.T) {
+	tests := []struct {
+		name       string
+		token      string
+		wantID     string
+		wantError  bool
+	}{
+		{
+			name:   "valid token with jti",
+			token:  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJqdGkiOiJ0b2tfMTIzNDU2In0.signature",
+			wantID: "tok_123456",
+		},
+		{
+			name:   "token without jti",
+			token:  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjoidGVzdCJ9.signature",
+			wantID: "",
+		},
+		{
+			name:      "malformed token",
+			token:     "malformed",
+			wantError: true,
+		},
+		{
+			name:      "empty token",
+			token:     "",
+			wantError: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			id, err := ParseTokenID(tt.token)
+			if tt.wantError {
+				if err == nil {
+					t.Error("Expected error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Unexpected error: %v", err)
+			}
+			if id != tt.wantID {
+				t.Errorf("ParseTokenID() = %q, want %q", id, tt.wantID)
+			}
+		})
+	}
+}
+
+// =============================================================================
+// Manager Close Edge Cases
+// =============================================================================
+
+func TestManagerCloseNilStore(t *testing.T) {
+	manager := NewManagerWithClock(nil, nil)
+	// Should not panic with nil store
+	err := manager.Close()
+	if err != nil {
+		t.Errorf("Close with nil store should not error: %v", err)
+	}
+}
+
+// =============================================================================
+// Key Analysis Edge Case Tests
+// =============================================================================
+
+func TestKeyAnalysisEdgeCases(t *testing.T) {
+	t.Run("ShortKey", func(t *testing.T) {
+		if !hasLowEntropy([]byte("abc")) {
+			t.Error("Short keys should be low entropy")
+		}
+	})
+
+		t.Run("OnlyOneClass", func(t *testing.T) {
+			// Only lowercase letters - should be weak (only 1 class)
+			if !hasLowEntropy([]byte("abcdefghijklmnopqrstuvwx")) {
+				t.Error("Single-class keys should be detected as low entropy")
+			}
+		})
+
+	t.Run("SequentialWindow", func(t *testing.T) {
+		// Key with sequential pattern in a window
+		key := []byte("abcdefghRANDOMSTUFF")
+		if !hasSequentialPattern(key, 8) {
+			t.Error("Should detect sequential pattern in window")
+		}
+	})
+
+	t.Run("NonSequentialWindow", func(t *testing.T) {
+		key := []byte("a1b2c3d4e5f6g7h8")
+		if hasSequentialPattern(key, 8) {
+			t.Error("Should not detect sequential pattern in random key")
+		}
+	})
+
+	t.Run("RepeatingPattern", func(t *testing.T) {
+		if !hasRepeatingPattern([]byte("abcabcabc"), 3) {
+			t.Error("Should detect 'abcabcabc' as repeating")
+		}
+	})
+
+	t.Run("NonRepeatingPattern", func(t *testing.T) {
+		if hasRepeatingPattern([]byte("aB3$fG7*k"), 3) {
+			t.Error("Should not detect random string as repeating")
+		}
+	})
+
+	t.Run("TooShortForRepeating", func(t *testing.T) {
+		if hasRepeatingPattern([]byte("abc"), 3) {
+			t.Error("Should not detect pattern when key is too short")
+		}
+	})
+
+	t.Run("IsSequential", func(t *testing.T) {
+		if !isSequential([]byte("abcdef")) {
+			t.Error("abcdef should be sequential")
+		}
+		if !isSequential([]byte("fedcba")) {
+			t.Error("fedcba should be sequential (descending)")
+		}
+		if isSequential([]byte("aB3$fG")) {
+			t.Error("aB3$fG should not be sequential")
+		}
+		if isSequential([]byte("a")) {
+			t.Error("Single byte should not be sequential")
+		}
+	})
+}
+
+
+// =============================================================================
+// RSA-PSS Signing Method Tests
+// =============================================================================
+
+func TestPSSSignAndVerify(t *testing.T) {
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("Failed to generate RSA key: %v", err)
+	}
+
+	signingString := "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ0ZXN0In0"
+
+	tests := []struct {
+		alg string
+	}{
+		{"PS256"},
+		{"PS384"},
+		{"PS512"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.alg, func(t *testing.T) {
+			method, err := GetInternalSigningMethod(tt.alg)
+			if err != nil {
+				t.Fatalf("GetInternalSigningMethod(%q) failed: %v", tt.alg, err)
+			}
+			if method == nil {
+				t.Fatalf("GetInternalSigningMethod(%q) returned nil", tt.alg)
+			}
+
+			if method.Alg() != tt.alg {
+				t.Errorf("Alg() = %q, want %q", method.Alg(), tt.alg)
+			}
+
+			signature, err := method.Sign(signingString, privateKey)
+			if err != nil {
+				t.Fatalf("Sign failed: %v", err)
+			}
+			if signature == "" {
+				t.Error("Sign returned empty signature")
+			}
+
+			err = method.Verify(signingString, signature, privateKey)
+			if err != nil {
+				t.Errorf("Verify with private key failed: %v", err)
+			}
+
+			err = method.Verify(signingString, signature, &privateKey.PublicKey)
+			if err != nil {
+				t.Errorf("Verify with public key failed: %v", err)
+			}
+
+			wrongKey, _ := rsa.GenerateKey(rand.Reader, 2048)
+			err = method.Verify(signingString, signature, wrongKey)
+			if err == nil {
+				t.Error("Expected error for wrong key, got nil")
+			}
+
+			err = method.Verify(signingString, "invalid-signature", privateKey)
+			if err == nil {
+				t.Error("Expected error for invalid signature, got nil")
+			}
+		})
+	}
+}
+
+func TestPSSSignTo(t *testing.T) {
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("Failed to generate RSA key: %v", err)
+	}
+
+	signingString := "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ0ZXN0In0"
+
+	for _, alg := range []string{"PS256", "PS384", "PS512"} {
+		t.Run(alg, func(t *testing.T) {
+			method, err := GetInternalSigningMethod(alg)
+			if err != nil {
+				t.Fatalf("GetInternalSigningMethod(%q) failed: %v", alg, err)
+			}
+
+			dst := make([]byte, 512)
+			n, err := method.SignTo(dst, signingString, privateKey)
+			if err != nil {
+				t.Fatalf("SignTo failed: %v", err)
+			}
+			if n == 0 {
+				t.Error("SignTo wrote 0 bytes")
+			}
+
+			sig := string(dst[:n])
+			err = method.Verify(signingString, sig, &privateKey.PublicKey)
+			if err != nil {
+				t.Errorf("Verify failed for SignTo output: %v", err)
+			}
+
+			smallBuf := make([]byte, 1)
+			_, err = method.SignTo(smallBuf, signingString, privateKey)
+			if err == nil {
+				t.Error("Expected error for small buffer, got nil")
+			}
+		})
+	}
+}
+
+func TestPSSInvalidKeyType(t *testing.T) {
+	method, err := GetInternalSigningMethod("PS256")
+	if err != nil {
+		t.Fatalf("GetInternalSigningMethod failed: %v", err)
+	}
+
+	signingString := "test.data"
+
+	_, err = method.Sign(signingString, "string-key")
+	if err == nil {
+		t.Error("Expected error for non-RSA key in Sign, got nil")
+	}
+	if !strings.Contains(err.Error(), "must be *rsa.PrivateKey") {
+		t.Errorf("Expected 'must be *rsa.PrivateKey' in error, got: %v", err)
+	}
+
+	_, err = method.Sign(signingString, (*rsa.PrivateKey)(nil))
+	if err == nil {
+		t.Error("Expected error for nil key in Sign, got nil")
+	}
+
+	err = method.Verify(signingString, "signature", "string-key")
+	if err == nil {
+		t.Error("Expected error for non-RSA key in Verify, got nil")
+	}
+	if !strings.Contains(err.Error(), "must be *rsa.PublicKey") {
+		t.Errorf("Expected 'must be *rsa.PublicKey' in error, got: %v", err)
+	}
+
+	err = method.Verify(signingString, "signature", (*rsa.PublicKey)(nil))
+	if err == nil {
+		t.Error("Expected error for nil public key in Verify, got nil")
+	}
+
+	err = method.Verify(signingString, "!!!invalid-base64!!!", &rsa.PublicKey{})
+	if err == nil {
+		t.Error("Expected error for invalid base64 signature, got nil")
+	}
+}
+
+func TestPSSRegistryLookup(t *testing.T) {
+	for _, alg := range []string{"PS256", "PS384", "PS512"} {
+		t.Run(alg, func(t *testing.T) {
+			method, err := GetInternalSigningMethod(alg)
+			if err != nil {
+				t.Fatalf("GetInternalSigningMethod(%q) failed: %v", alg, err)
+			}
+			if method.Alg() != alg {
+				t.Errorf("Alg() = %q, want %q", method.Alg(), alg)
+			}
+			if !method.Hash().Available() {
+				t.Errorf("Hash() for %s should be available", alg)
+			}
+		})
+	}
+}
+
+// =============================================================================
+// ECDSA SignTo Tests
+// =============================================================================
+
+func TestECDSASignTo(t *testing.T) {
+	tests := []struct {
+		alg   string
+		curve elliptic.Curve
+	}{
+		{"ES256", elliptic.P256()},
+		{"ES384", elliptic.P384()},
+		{"ES512", elliptic.P521()},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.alg, func(t *testing.T) {
+			privateKey, err := ecdsa.GenerateKey(tt.curve, rand.Reader)
+			if err != nil {
+				t.Fatalf("Failed to generate key: %v", err)
+			}
+
+			method, err := GetInternalSigningMethod(tt.alg)
+			if err != nil {
+				t.Fatalf("GetInternalSigningMethod(%q) failed: %v", tt.alg, err)
+			}
+
+			signingString := "test.data"
+
+			dst := make([]byte, 256)
+			n, err := method.SignTo(dst, signingString, privateKey)
+			if err != nil {
+				t.Fatalf("SignTo failed: %v", err)
+			}
+			if n == 0 {
+				t.Error("SignTo wrote 0 bytes")
+			}
+
+			sig := string(dst[:n])
+			err = method.Verify(signingString, sig, &privateKey.PublicKey)
+			if err != nil {
+				t.Errorf("Verify failed for SignTo output: %v", err)
+			}
+
+			smallBuf := make([]byte, 1)
+			_, err = method.SignTo(smallBuf, signingString, privateKey)
+			if err == nil {
+				t.Error("Expected error for small buffer")
+			}
+		})
+	}
+}
+
+// =============================================================================
+// HMAC ClearCaches and DrainPool Tests
+// =============================================================================
+
+func TestClearHMACCaches(t *testing.T) {
+	key := []byte("test-secret-key-with-sufficient-length-32bytes")
+	signingString := "test.data"
+
+	method, err := GetInternalSigningMethod("HS256")
+	if err != nil {
+		t.Fatalf("GetInternalSigningMethod failed: %v", err)
+	}
+
+	_, err = method.Sign(signingString, key)
+	if err != nil {
+		t.Fatalf("Sign failed: %v", err)
+	}
+
+	ClearHMACCaches()
+
+	// Verify signing still works after clear
+	_, err = method.Sign(signingString, key)
+	if err != nil {
+		t.Fatalf("Sign after clear failed: %v", err)
+	}
+
+	ClearHMACCaches()
+	ClearHMACCaches()
+}
+
+// =============================================================================
+// HMAC SignTo Tests
+// =============================================================================
+
+func TestHMACSignTo(t *testing.T) {
+	key := []byte("test-secret-key-with-sufficient-length-32bytes")
+	signingString := "test.data"
+
+	for _, alg := range []string{"HS256", "HS384", "HS512"} {
+		t.Run(alg, func(t *testing.T) {
+			method, err := GetInternalSigningMethod(alg)
+			if err != nil {
+				t.Fatalf("GetInternalSigningMethod(%q) failed: %v", alg, err)
+			}
+
+			dst := make([]byte, 128)
+			n, err := method.SignTo(dst, signingString, key)
+			if err != nil {
+				t.Fatalf("SignTo failed: %v", err)
+			}
+			if n == 0 {
+				t.Error("SignTo wrote 0 bytes")
+			}
+
+			sig := string(dst[:n])
+			err = method.Verify(signingString, sig, key)
+			if err != nil {
+				t.Errorf("Verify failed for SignTo output: %v", err)
+			}
+
+			smallBuf := make([]byte, 1)
+			_, err = method.SignTo(smallBuf, signingString, key)
+			if err == nil {
+				t.Error("Expected error for small buffer")
+			}
+		})
 	}
 }

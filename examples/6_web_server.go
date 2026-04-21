@@ -71,7 +71,6 @@ func init() {
 	cfg.AccessTokenTTL = 15 * time.Minute
 	cfg.RefreshTokenTTL = 7 * 24 * time.Hour
 	cfg.Issuer = "web-server-example"
-	cfg.SigningMethod = jwt.SigningMethodHS256
 	cfg.EnableRateLimit = true
 	cfg.RateLimitRate = 100
 	cfg.RateLimitWindow = time.Minute
@@ -101,7 +100,7 @@ func main() {
 	mux.HandleFunc("/profile", authMiddleware(profileHandler))
 	mux.HandleFunc("/admin", authMiddleware(requireRole("admin", adminHandler)))
 	mux.HandleFunc("/logout", authMiddleware(logoutHandler))
-	mux.HandleFunc("/refresh", authMiddleware(refreshHandler))
+	mux.HandleFunc("/refresh", refreshHandler)
 
 	// Create HTTP server
 	server := &http.Server{
@@ -197,7 +196,7 @@ func loginHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Generate access token
-	accessToken, err := processor.CreateToken(claims)
+	accessToken, err := processor.Create(&claims)
 	if err != nil {
 		log.Printf("Token creation failed: %v", err)
 		sendError(w, http.StatusInternalServerError, "token_generation_failed", "Failed to generate token")
@@ -205,7 +204,7 @@ func loginHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Generate refresh token
-	refreshToken, err := processor.CreateRefreshToken(claims)
+	refreshToken, err := processor.CreateRefresh(&claims)
 	if err != nil {
 		log.Printf("Refresh token creation failed: %v", err)
 		sendError(w, http.StatusInternalServerError, "token_generation_failed", "Failed to generate refresh token")
@@ -282,17 +281,17 @@ func refreshHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Refresh token
-	newAccessToken, err := processor.RefreshToken(req.RefreshToken)
+	newAccessToken, err := processor.Refresh(req.RefreshToken)
 	if err != nil {
 		sendError(w, http.StatusUnauthorized, "invalid_token", "Invalid or expired refresh token")
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{
+	json.NewEncoder(w).Encode(map[string]any{
 		"access_token": newAccessToken,
 		"token_type":   "Bearer",
-		"expires_in":   "900",
+		"expires_in":   900,
 	})
 }
 
@@ -310,7 +309,7 @@ func logoutHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Revoke token
-	if err := processor.RevokeToken(token); err != nil {
+	if err := processor.Revoke(token); err != nil {
 		log.Printf("Token revocation failed: %v", err)
 		sendError(w, http.StatusInternalServerError, "logout_failed", "Failed to logout")
 		return
@@ -332,14 +331,14 @@ func authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 
-		claims, valid, err := processor.ValidateToken(token)
+		claims, valid, err := processor.Validate(token)
 		if err != nil || !valid {
 			sendError(w, http.StatusUnauthorized, "invalid_token", "Invalid or expired token")
 			return
 		}
 
 		// Add claims to context
-		ctx := context.WithValue(r.Context(), claimsKey, claims)
+		ctx := context.WithValue(r.Context(), claimsKey, &claims)
 		next(w, r.WithContext(ctx))
 	}
 }
