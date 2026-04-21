@@ -17,8 +17,8 @@ func TestErrorTypes(t *testing.T) {
 		baseErr := errors.New("base error")
 		tokenErr := &TokenError{Err: baseErr, TokenID: "tok_abc123", ExpiresAt: time.Now().Add(time.Hour)}
 
-		if msg := tokenErr.Error(); !strings.Contains(msg, "tok_abc123") || !strings.Contains(msg, "token error") {
-			t.Errorf("Error() = %q, want TokenID and 'token error'", msg)
+		if msg := tokenErr.Error(); !strings.Contains(msg, "tok_abc1") || !strings.Contains(msg, "token error") {
+			t.Errorf("Error() = %q, want TokenID prefix and 'token error'", msg)
 		}
 		if tokenErr.Unwrap() != baseErr {
 			t.Errorf("Unwrap() = %v, want %v", tokenErr.Unwrap(), baseErr)

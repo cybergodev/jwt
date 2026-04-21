@@ -12,6 +12,18 @@ var (
 	errStoreFull   = errors.New("blacklist store is full")
 )
 
+// mapCapacity returns a small initial map capacity hint to reduce early rehashing
+// without wasting memory at processor creation time.
+func mapCapacity(maxSize int) int {
+	if maxSize <= 0 {
+		return 8
+	}
+	if maxSize < 8 {
+		return maxSize
+	}
+	return 8
+}
+
 type memoryStore struct {
 	tokens        map[string]time.Time
 	mu            sync.RWMutex
@@ -34,7 +46,7 @@ func NewMemoryStore(maxSize int, cleanupInterval time.Duration, enableAutoCleanu
 	}
 
 	store := &memoryStore{
-		tokens:      make(map[string]time.Time), // Lazy allocation, grows as needed
+		tokens:      make(map[string]time.Time, mapCapacity(maxSize)),
 		maxSize:     maxSize,
 		stopCleanup: make(chan struct{}),
 		nowFunc:     nowFunc,

@@ -116,7 +116,7 @@ func (c *Config) Validate() error {
 
 	// Validate blacklist configuration
 	if err := c.Blacklist.validate(); err != nil {
-		return fmt.Errorf("%w: %v", ErrInvalidConfig, err)
+		return fmt.Errorf("%w: %w", ErrInvalidConfig, err)
 	}
 
 	return nil
@@ -153,12 +153,12 @@ func validateAsymmetricSigningKey(method SigningMethod, key any) error {
 		return fmt.Errorf("%w: SigningKey is required for %s method", ErrInvalidSecretKey, method)
 	}
 	switch method {
-	case SigningMethodRS256, SigningMethodRS384, SigningMethodRS512:
+	case SigningMethodRS256, SigningMethodRS384, SigningMethodRS512,
+		SigningMethodPS256, SigningMethodPS384, SigningMethodPS512:
 		rsaKey, ok := key.(*rsa.PrivateKey)
 		if !ok {
 			return fmt.Errorf("%w: RSA method requires *rsa.PrivateKey, got %T", ErrInvalidSecretKey, key)
 		}
-		// Typed nil like (*rsa.PrivateKey)(nil) passes type assertion but is still nil
 		if rsaKey == nil {
 			return fmt.Errorf("%w: RSA key cannot be nil", ErrInvalidSecretKey)
 		}
@@ -167,7 +167,6 @@ func validateAsymmetricSigningKey(method SigningMethod, key any) error {
 		if !ok {
 			return fmt.Errorf("%w: ECDSA method requires *ecdsa.PrivateKey, got %T", ErrInvalidSecretKey, key)
 		}
-		// Typed nil like (*ecdsa.PrivateKey)(nil) passes type assertion but is still nil
 		if ecdsaKey == nil {
 			return fmt.Errorf("%w: ECDSA key cannot be nil", ErrInvalidSecretKey)
 		}
@@ -187,7 +186,8 @@ func validateVerificationKey(method SigningMethod, key any) error {
 		return nil
 	}
 	switch method {
-	case SigningMethodRS256, SigningMethodRS384, SigningMethodRS512:
+	case SigningMethodRS256, SigningMethodRS384, SigningMethodRS512,
+		SigningMethodPS256, SigningMethodPS384, SigningMethodPS512:
 		rsaKey, ok := key.(*rsa.PublicKey)
 		if !ok {
 			return fmt.Errorf("%w: VerificationKey must be *rsa.PublicKey for RSA, got %T", ErrInvalidSecretKey, key)

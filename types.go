@@ -58,8 +58,9 @@ func (date *NumericDate) UnmarshalJSON(b []byte) error {
 		return nil
 	}
 
-	// Zero-allocation byte-to-string conversion (safe: b is from json decoder,
-	// string does not escape this function)
+	// SAFETY: b is a subslice of json.Decoder's internal buffer which is
+	// alive for the duration of this UnmarshalJSON call. The resulting
+	// string s does not escape this function, so the reference is safe.
 	s := unsafe.String(unsafe.SliceData(b), len(b))
 	if len(s) >= 2 && s[0] == '"' && s[len(s)-1] == '"' {
 		s = s[1 : len(s)-1]
@@ -94,10 +95,15 @@ const (
 	SigningMethodHS384 SigningMethod = "HS384"
 	SigningMethodHS512 SigningMethod = "HS512"
 
-	// RSA signing methods (asymmetric)
+	// RSA signing methods (asymmetric, PKCS#1 v1.5)
 	SigningMethodRS256 SigningMethod = "RS256"
 	SigningMethodRS384 SigningMethod = "RS384"
 	SigningMethodRS512 SigningMethod = "RS512"
+
+	// RSA-PSS signing methods (asymmetric, recommended over PKCS#1 v1.5)
+	SigningMethodPS256 SigningMethod = "PS256"
+	SigningMethodPS384 SigningMethod = "PS384"
+	SigningMethodPS512 SigningMethod = "PS512"
 
 	// ECDSA signing methods (asymmetric)
 	SigningMethodES256 SigningMethod = "ES256"
@@ -118,6 +124,7 @@ func (m SigningMethod) isHMAC() bool {
 func (m SigningMethod) isAsymmetric() bool {
 	switch m {
 	case SigningMethodRS256, SigningMethodRS384, SigningMethodRS512,
+		SigningMethodPS256, SigningMethodPS384, SigningMethodPS512,
 		SigningMethodES256, SigningMethodES384, SigningMethodES512:
 		return true
 	}

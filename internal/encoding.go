@@ -35,7 +35,8 @@ func putDecodeBuf(buf *[]byte) {
 }
 
 // stringToBytes converts a string to a byte slice without allocation.
-// The returned byte slice must not be modified.
+// The returned byte slice must not be modified — the underlying data is
+// shared with the source string. Safe for read-only use in base64/hashing.
 // Uses unsafe for zero allocation conversion.
 func stringToBytes(s string) []byte {
 	return unsafe.Slice(unsafe.StringData(s), len(s))
@@ -113,44 +114,41 @@ func DecodeHeaderAlg(headerSegment string) string {
 
 // extractAlgFromJSON scans the JSON data for the "alg" field value.
 // Handles both {"alg":"HS256","typ":"JWT"} and {"typ":"JWT","alg":"HS256"}.
+// Uses direct byte comparison to avoid string allocation per iteration.
 func extractAlgFromJSON(data []byte) string {
-	// Find "alg" key
-	const algKey = `"alg"`
 	idx := 0
-	for idx < len(data)-len(algKey) {
-		if data[idx] == '"' {
-			// Check if this is "alg"
-			if string(data[idx:idx+len(algKey)]) == algKey {
-				// Skip past "alg" and find the colon
-				pos := idx + len(algKey)
-				for pos < len(data) && data[pos] != ':' {
-					pos++
-				}
-				if pos >= len(data) {
-					return ""
-				}
-				pos++ // skip colon
-
-				// Skip whitespace
-				for pos < len(data) && data[pos] == ' ' {
-					pos++
-				}
-
-				if pos >= len(data) || data[pos] != '"' {
-					return ""
-				}
-				pos++ // skip opening quote
-
-				// Read value until closing quote
-				start := pos
-				for pos < len(data) && data[pos] != '"' {
-					pos++
-				}
-				if pos >= len(data) {
-					return ""
-				}
-				return string(data[start:pos])
+	for idx+4 <= len(data) {
+		// Direct byte comparison for "alg" — avoids string(data[...]) allocation
+		if data[idx] == '"' && data[idx+1] == 'a' && data[idx+2] == 'l' && data[idx+3] == 'g' {
+			pos := idx + 4
+			// Skip to colon
+			for pos < len(data) && data[pos] != ':' {
+				pos++
 			}
+			if pos >= len(data) {
+				return ""
+			}
+			pos++ // skip colon
+
+			// Skip whitespace
+			for pos < len(data) && data[pos] == ' ' {
+				pos++
+			}
+
+			if pos >= len(data) || data[pos] != '"' {
+				return ""
+			}
+			pos++ // skip opening quote
+
+			// Read value until closing quote
+			start := pos
+			for pos < len(data) && data[pos] != '"' {
+				pos++
+			}
+			if pos >= len(data) {
+				return ""
+			}
+			return string(data[start:pos])
 		}
 		idx++
 	}

@@ -206,6 +206,9 @@ func verifyAndReturn(token *Core, part1, part2, part3 string, method Method, key
 	signingStringBuf[len(part1)] = '.'
 	copy(signingStringBuf[len(part1)+1:], part2)
 
+	// SAFETY: signingString references bufPtr's pooled memory, valid until
+	// deferred putParseBuf returns it to the pool. method.Verify only reads
+	// the string and does not retain a reference after returning.
 	signingString := unsafe.String(&signingStringBuf[0], len(signingStringBuf))
 
 	if err := method.Verify(signingString, part3, key); err != nil {

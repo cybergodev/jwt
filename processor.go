@@ -282,6 +282,7 @@ func (p *Processor) Close() error {
 
 	if p.secretKey != nil {
 		internal.ZeroBytes(p.secretKey)
+		internal.ClearHMACCaches()
 	}
 	p.asymmetricKey = nil
 	p.verificationKey = nil
@@ -296,7 +297,14 @@ func (p *Processor) IsClosed() bool {
 
 // ParseUnverified parses a token without verifying the signature.
 // This is useful for extracting claims from a token when you don't have the key.
+//
 // WARNING: The returned claims are NOT validated and should NOT be trusted.
+// Never use parsed data for authentication or authorization decisions.
+// This method exists solely for inspection/logging purposes where signature
+// verification is handled by a separate system.
+//
+// SECURITY: Claims parsed by this method may have been tampered with.
+// Always use Validate or ValidateInto for security-sensitive operations.
 func (p *Processor) ParseUnverified(tokenString string, claims any) error {
 	if err := p.checkActive(); err != nil {
 		return err
@@ -427,7 +435,7 @@ func (p *Processor) parseToken(tokenString string, claims any) (*internal.Core, 
 func (p *Processor) keyFunc(token *internal.Core) (any, error) {
 	alg, ok := token.Header["alg"].(string)
 	if !ok || alg != string(p.signingMethod) {
-		return nil, ErrInvalidToken
+		return nil, ErrAlgorithmMismatch
 	}
 	return p.getVerificationKey(), nil
 }

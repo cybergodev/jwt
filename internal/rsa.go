@@ -22,6 +22,38 @@ func (r *rsaSigningMethod) Hash() crypto.Hash {
 	return r.HashFunc
 }
 
+func (r *rsaSigningMethod) SignTo(dst []byte, signingString string, key any) (int, error) {
+	rsaKey, ok := key.(*rsa.PrivateKey)
+	if !ok {
+		return 0, fmt.Errorf("RSA key must be *rsa.PrivateKey, got %T", key)
+	}
+	if rsaKey == nil {
+		return 0, fmt.Errorf("RSA key cannot be nil")
+	}
+
+	if !r.HashFunc.Available() {
+		return 0, fmt.Errorf("hash function %v not available", r.HashFunc)
+	}
+
+	hasher := r.HashFunc.New()
+	hasher.Write(stringToBytes(signingString))
+
+	var hashBuf [64]byte
+	hashed := hasher.Sum(hashBuf[:0])
+
+	signature, err := rsa.SignPKCS1v15(rand.Reader, rsaKey, r.HashFunc, hashed)
+	if err != nil {
+		return 0, fmt.Errorf("failed to sign with RSA: %w", err)
+	}
+
+	encodedLen := base64.RawURLEncoding.EncodedLen(len(signature))
+	if len(dst) < encodedLen {
+		return 0, fmt.Errorf("signature buffer too small: need %d, have %d", encodedLen, len(dst))
+	}
+	base64.RawURLEncoding.Encode(dst[:encodedLen], signature)
+	return encodedLen, nil
+}
+
 func (r *rsaSigningMethod) Sign(signingString string, key any) (string, error) {
 	rsaKey, ok := key.(*rsa.PrivateKey)
 	if !ok {
@@ -74,6 +106,9 @@ func (r *rsaSigningMethod) Verify(signingString string, signature string, key an
 	// Stack-allocated decode buffer for signature (max RSA sig: 512 bytes for RSA-4096)
 	var sigBuf [512]byte
 	decodedLen := base64.RawURLEncoding.DecodedLen(len(signature))
+	if decodedLen > len(sigBuf) {
+		return errors.New("RSA signature verification failed")
+	}
 	sigBytes := sigBuf[:decodedLen]
 	n, err := base64.RawURLEncoding.Decode(sigBytes, stringToBytes(signature))
 	if err != nil {
@@ -104,4 +139,136 @@ var (
 	rsaRS256 = &rsaSigningMethod{"RS256", crypto.SHA256}
 	rsaRS384 = &rsaSigningMethod{"RS384", crypto.SHA384}
 	rsaRS512 = &rsaSigningMethod{"RS512", crypto.SHA512}
+)
+
+type rsaPSSSigningMethod struct {
+	Name     string
+	HashFunc crypto.Hash
+	opts     rsa.PSSOptions
+}
+
+func (r *rsaPSSSigningMethod) Alg() string {
+	return r.Name
+}
+
+func (r *rsaPSSSigningMethod) Hash() crypto.Hash {
+	return r.HashFunc
+}
+
+func (r *rsaPSSSigningMethod) SignTo(dst []byte, signingString string, key any) (int, error) {
+	rsaKey, ok := key.(*rsa.PrivateKey)
+	if !ok {
+		return 0, fmt.Errorf("RSA key must be *rsa.PrivateKey, got %T", key)
+	}
+	if rsaKey == nil {
+		return 0, fmt.Errorf("RSA key cannot be nil")
+	}
+
+	if !r.HashFunc.Available() {
+		return 0, fmt.Errorf("hash function %v not available", r.HashFunc)
+	}
+
+	hasher := r.HashFunc.New()
+	hasher.Write(stringToBytes(signingString))
+
+	var hashBuf [64]byte
+	hashed := hasher.Sum(hashBuf[:0])
+
+	signature, err := rsa.SignPSS(rand.Reader, rsaKey, r.HashFunc, hashed, &r.opts)
+	if err != nil {
+		return 0, fmt.Errorf("failed to sign with RSA-PSS: %w", err)
+	}
+
+	encodedLen := base64.RawURLEncoding.EncodedLen(len(signature))
+	if len(dst) < encodedLen {
+		return 0, fmt.Errorf("signature buffer too small: need %d, have %d", encodedLen, len(dst))
+	}
+	base64.RawURLEncoding.Encode(dst[:encodedLen], signature)
+	return encodedLen, nil
+}
+
+func (r *rsaPSSSigningMethod) Sign(signingString string, key any) (string, error) {
+	rsaKey, ok := key.(*rsa.PrivateKey)
+	if !ok {
+		return "", fmt.Errorf("RSA key must be *rsa.PrivateKey, got %T", key)
+	}
+	if rsaKey == nil {
+		return "", fmt.Errorf("RSA key cannot be nil")
+	}
+
+	if !r.HashFunc.Available() {
+		return "", fmt.Errorf("hash function %v not available", r.HashFunc)
+	}
+
+	hasher := r.HashFunc.New()
+	hasher.Write(stringToBytes(signingString))
+
+	var hashBuf [64]byte
+	hashed := hasher.Sum(hashBuf[:0])
+
+	signature, err := rsa.SignPSS(rand.Reader, rsaKey, r.HashFunc, hashed, &r.opts)
+	if err != nil {
+		return "", fmt.Errorf("failed to sign with RSA-PSS: %w", err)
+	}
+
+	return base64.RawURLEncoding.EncodeToString(signature), nil
+}
+
+func (r *rsaPSSSigningMethod) Verify(signingString string, signature string, key any) error {
+	rsaKey, ok := key.(*rsa.PublicKey)
+	if !ok {
+		privKey, ok := key.(*rsa.PrivateKey)
+		if !ok {
+			return fmt.Errorf("RSA key must be *rsa.PublicKey or *rsa.PrivateKey, got %T", key)
+		}
+		if privKey == nil {
+			return fmt.Errorf("RSA key cannot be nil")
+		}
+		rsaKey = &privKey.PublicKey
+	}
+
+	if rsaKey == nil {
+		return fmt.Errorf("RSA key cannot be nil")
+	}
+
+	if !r.HashFunc.Available() {
+		return fmt.Errorf("hash function %v not available", r.HashFunc)
+	}
+
+	// Stack-allocated decode buffer for signature (max RSA sig: 512 bytes for RSA-4096)
+	var sigBuf [512]byte
+	decodedLen := base64.RawURLEncoding.DecodedLen(len(signature))
+	if decodedLen > len(sigBuf) {
+		return errors.New("RSA-PSS signature verification failed")
+	}
+	sigBytes := sigBuf[:decodedLen]
+	n, err := base64.RawURLEncoding.Decode(sigBytes, stringToBytes(signature))
+	if err != nil {
+		return fmt.Errorf("failed to decode signature: %w", err)
+	}
+	sigBytes = sigBytes[:n]
+
+	expectedSigLen := rsaKey.Size()
+	if len(sigBytes) != expectedSigLen {
+		return errors.New("RSA-PSS signature verification failed")
+	}
+
+	hasher := r.HashFunc.New()
+	hasher.Write(stringToBytes(signingString))
+
+	var hashBuf [64]byte
+	hashed := hasher.Sum(hashBuf[:0])
+
+	err = rsa.VerifyPSS(rsaKey, r.HashFunc, hashed, sigBytes, &r.opts)
+	if err != nil {
+		return errors.New("RSA-PSS signature verification failed")
+	}
+
+	return nil
+}
+
+var (
+	rsaPS256 = &rsaPSSSigningMethod{"PS256", crypto.SHA256, rsa.PSSOptions{SaltLength: rsa.PSSSaltLengthEqualsHash}}
+	rsaPS384 = &rsaPSSSigningMethod{"PS384", crypto.SHA384, rsa.PSSOptions{SaltLength: rsa.PSSSaltLengthEqualsHash}}
+	rsaPS512 = &rsaPSSSigningMethod{"PS512", crypto.SHA512, rsa.PSSOptions{SaltLength: rsa.PSSSaltLengthEqualsHash}}
 )

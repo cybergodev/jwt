@@ -17,6 +17,7 @@ var (
 	// Token errors
 	ErrInvalidToken          = errors.New("invalid token")
 	ErrEmptyToken            = errors.New("empty token")
+	ErrAlgorithmMismatch     = errors.New("token algorithm does not match configured signing method")
 	ErrTokenRevoked          = errors.New("token revoked")
 	ErrTokenMissingID        = errors.New("token missing ID")
 	ErrTokenExpired          = errors.New("token expired")
@@ -65,6 +66,9 @@ type TokenError struct {
 
 func (e *TokenError) Error() string {
 	if e.TokenID != "" {
+		if len(e.TokenID) > 8 {
+			return fmt.Sprintf("token error (id=%s...): %v", e.TokenID[:8], e.Err)
+		}
 		return fmt.Sprintf("token error (id=%s): %v", e.TokenID, e.Err)
 	}
 	return fmt.Sprintf("token error: %v", e.Err)

@@ -31,7 +31,7 @@ func NewRateLimiter(maxRate int, window time.Duration) *RateLimiter {
 	}
 
 	return &RateLimiter{
-		buckets:    make(map[string]*bucket),
+		buckets:    make(map[string]*bucket, 16),
 		maxRate:    maxRate,
 		window:     window,
 		maxBuckets: 10000,
@@ -73,7 +73,10 @@ func (rl *RateLimiter) AllowN(key string, n int) bool {
 
 	if !exists {
 		if len(rl.buckets) >= rl.maxBuckets {
-			rl.evictOldestUnsafe()
+			rl.evictExpiredUnsafe(nowNano)
+			if len(rl.buckets) >= rl.maxBuckets {
+				rl.evictOldestUnsafe()
+			}
 		}
 		rl.buckets[key] = &bucket{
 			tokens:     rl.maxRate - n,
@@ -132,6 +135,17 @@ func (rl *RateLimiter) Close() {
 	rl.closed = true
 	clear(rl.buckets)
 	rl.buckets = nil
+}
+
+// evictExpiredUnsafe removes all buckets whose last activity is older than
+// 2x the window duration, indicating they are stale and unlikely to be used again.
+func (rl *RateLimiter) evictExpiredUnsafe(nowNano int64) {
+	staleThreshold := nowNano - int64(rl.window)*2
+	for key, b := range rl.buckets {
+		if b.lastRefill < staleThreshold {
+			delete(rl.buckets, key)
+		}
+	}
 }
 
 func (rl *RateLimiter) evictOldestUnsafe() {
