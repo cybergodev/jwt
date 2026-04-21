@@ -22,6 +22,7 @@ type bucket struct {
 }
 
 // NewRateLimiter creates a new rate limiter with the specified rate and window.
+// If maxRate <= 0, defaults to 100. If window <= 0, defaults to 1 minute.
 func NewRateLimiter(maxRate int, window time.Duration) *RateLimiter {
 	if maxRate <= 0 {
 		maxRate = 100

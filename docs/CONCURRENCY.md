@@ -56,13 +56,19 @@ go func() {
 type Processor struct {
     // These fields are protected by atomic operations or mutexes:
     closed           atomic.Bool      // Atomic flag
-    blacklistManager *Manager         // Has internal synchronization
+    blacklistManager *Manager         // Has internal synchronization (sync.RWMutex)
     rateLimiter      RateLimitProvider // Interface requires thread-safety
 
     // These are read-only after creation:
-    secretKey        []byte         // Immutable after New()
+    secretKey        []byte         // Immutable after New() (zeroed on Close)
+    asymmetricKey    any            // Immutable after New() (nil'd on Close)
+    verificationKey  any            // Immutable after New() (nil'd on Close)
     signingMethod    SigningMethod  // Immutable after New()
     accessTokenTTL   time.Duration  // Immutable after New()
+    refreshTokenTTL  time.Duration  // Immutable after New()
+    issuer           string         // Immutable after New()
+    audience         string         // Immutable after New()
+    clock            ClockProvider  // Immutable after New()
 }
 ```
 
@@ -226,7 +232,7 @@ func (r *TokenRefresher) GetToken(userID string) (string, error) {
 The library uses these synchronization primitives:
 
 1. **sync.Pool**: Object pooling for buffers and structs
-2. **sync.RWMutex**: Blacklist operations and method registry
+2. **sync.RWMutex**: Blacklist store operations (built-in MemoryStore)
 3. **atomic.Bool**: Processor closed state
 
 ### Claims Synchronization

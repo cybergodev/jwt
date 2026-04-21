@@ -19,7 +19,7 @@
 - **性能优化** - 对象池和高效内存管理
 - **零依赖** - 完全基于 Go 标准库构建
 - **生产就绪** - 线程安全操作、可配置黑名单和全面的错误处理
-- **多种算法** - 支持 HMAC、RSA 和 ECDSA 签名方法
+- **多种算法** - 支持 HMAC、RSA、RSA-PSS 和 ECDSA 签名方法
 
 ## 安装
 
@@ -541,6 +541,7 @@ if err != nil {
 | `ErrInvalidSigningMethod` | 不支持的签名方法 |
 | `ErrInvalidToken` | 令牌格式错误或签名无效 |
 | `ErrEmptyToken` | 提供了空令牌字符串 |
+| `ErrAlgorithmMismatch` | 令牌算法与配置方法不匹配 |
 | `ErrTokenRevoked` | 令牌存在于黑名单中 |
 | `ErrTokenExpired` | 令牌已过期 |
 | `ErrTokenNotValidYet` | 令牌 nbf 声明在未来 |
@@ -562,12 +563,6 @@ if err != nil {
 var verr *jwt.ValidationError
 if errors.As(err, &verr) {
     fmt.Println("字段:", verr.Field, "问题:", verr.Message)
-}
-
-// TokenError - 带上下文的令牌相关错误
-var terr *jwt.TokenError
-if errors.As(err, &terr) {
-    fmt.Println("令牌 ID:", terr.TokenID, "过期时间:", terr.ExpiresAt)
 }
 ```
 

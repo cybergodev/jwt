@@ -4,7 +4,6 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
-	"sync"
 )
 
 const (
@@ -16,40 +15,20 @@ const (
 	tokenIDResultLen = len(TokenIDPrefix) + TokenIDLength*2
 )
 
-// tokenIDBufPool pools byte slices used for token ID generation.
-// Avoids two heap allocations per token creation.
-var tokenIDBufPool = sync.Pool{
-	New: func() any {
-		buf := make([]byte, tokenIDResultLen)
-		return &buf
-	},
-}
-
-// randomBufPool pools the random bytes slice used in token ID generation.
-var randomBufPool = sync.Pool{
-	New: func() any {
-		buf := make([]byte, TokenIDLength)
-		return &buf
-	},
-}
-
 // GenerateTokenID generates a unique token ID using cryptographic random bytes.
 // The ID has the format "tok_" followed by 32 hexadecimal characters.
+// Uses stack-allocated arrays instead of pooled buffers because the fixed
+// result size (36 bytes) makes pool Get/Put overhead (~60ns) more expensive
+// than a single string() copy.
 func GenerateTokenID() (string, error) {
-	randomBytes := randomBufPool.Get().(*[]byte)
-	defer randomBufPool.Put(randomBytes)
-
-	if _, err := rand.Read(*randomBytes); err != nil {
+	var randomBytes [TokenIDLength]byte
+	if _, err := rand.Read(randomBytes[:]); err != nil {
 		return "", fmt.Errorf("failed to generate token ID: %w", err)
 	}
 
-	bufPtr := tokenIDBufPool.Get().(*[]byte)
-	defer tokenIDBufPool.Put(bufPtr)
+	var buf [tokenIDResultLen]byte
+	copy(buf[:len(TokenIDPrefix)], TokenIDPrefix)
+	hex.Encode(buf[len(TokenIDPrefix):], randomBytes[:])
 
-	buf := (*bufPtr)[:tokenIDResultLen]
-	copy(buf, TokenIDPrefix)
-	hex.Encode(buf[len(TokenIDPrefix):], *randomBytes)
-
-	result := string(buf)
-	return result, nil
+	return string(buf[:]), nil
 }

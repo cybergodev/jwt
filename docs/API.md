@@ -56,25 +56,25 @@ type Config struct {
     SecretKey       string        // For HMAC algorithms (minimum 32 bytes)
     SigningKey      any           // For asymmetric algorithms (*rsa.PrivateKey or *ecdsa.PrivateKey)
     VerificationKey any           // Optional: public key for verification only (*rsa.PublicKey or *ecdsa.PublicKey)
-    SigningMethod   SigningMethod // HS256, HS384, HS512, RS256, RS384, RS512, ES256, ES384, ES512
+    SigningMethod   SigningMethod // HS256, HS384, HS512, RS256, RS384, RS512, PS256, PS384, PS512, ES256, ES384, ES512
 
     // Token configuration
-    AccessTokenTTL   time.Duration // Default: 15 minutes
-    RefreshTokenTTL  time.Duration // Default: 7 days
-    Issuer           string        // Default: "jwt-service"
-    ExpectedAudience string        // Optional: reject tokens without matching aud claim
+    AccessTokenTTL    time.Duration // Default: 15 minutes (supports YAML/JSON: access_token_ttl)
+    RefreshTokenTTL   time.Duration // Default: 7 days (supports YAML/JSON: refresh_token_ttl)
+    Issuer            string        // Default: "jwt-service" (supports YAML/JSON: issuer)
+    ExpectedAudience  string        // Optional: reject tokens without matching aud claim (supports YAML/JSON: expected_audience)
 
     // Blacklist configuration (embedded)
-    Blacklist BlacklistConfig
+    Blacklist BlacklistConfig // Supports YAML/JSON: blacklist
 
     // Rate limiting
-    EnableRateLimit bool              // Default: false
-    RateLimitRate   int               // Default: 100
-    RateLimitWindow time.Duration     // Default: 1 minute
-    RateLimiter     RateLimitProvider // Optional: custom rate limiter
+    EnableRateLimit bool              // Default: false (supports YAML/JSON: enable_rate_limit)
+    RateLimitRate   int               // Default: 100 (supports YAML/JSON: rate_limit_rate)
+    RateLimitWindow time.Duration     // Default: 1 minute (supports YAML/JSON: rate_limit_window)
+    RateLimiter     RateLimitProvider // Optional: custom rate limiter (not serialized)
 
     // Clock provider for time operations (optional, defaults to SystemClock)
-    Clock ClockProvider // Optional: inject custom clock for testing
+    Clock ClockProvider // Optional: inject custom clock for testing (not serialized)
 }
 ```
 
@@ -104,8 +104,8 @@ Configuration for the token blacklist.
 
 ```go
 type BlacklistConfig struct {
-    MaxSize           int            // Maximum entries (default: 100000)
     CleanupInterval   time.Duration  // Cleanup interval (default: 5 minutes)
+    MaxSize           int            // Maximum entries (default: 100000)
     EnableAutoCleanup bool           // Enable automatic cleanup (default: true)
     Store             BlacklistStore // Optional: custom store implementation
 }
@@ -451,6 +451,7 @@ var (
     // Token errors
     ErrInvalidToken       = errors.New("invalid token")
     ErrEmptyToken         = errors.New("empty token")
+    ErrAlgorithmMismatch  = errors.New("token algorithm does not match configured signing method")
     ErrTokenRevoked       = errors.New("token revoked")
     ErrTokenMissingID     = errors.New("token missing ID")
     ErrTokenExpired       = errors.New("token expired")
@@ -509,18 +510,6 @@ type ValidationError struct {
     Field   string
     Message string
     Err     error
-}
-```
-
-### TokenError
-
-Token-related error with additional context.
-
-```go
-type TokenError struct {
-    Err       error
-    TokenID   string
-    ExpiresAt time.Time
 }
 ```
 
@@ -605,10 +594,15 @@ const (
     SigningMethodHS384 SigningMethod = "HS384"
     SigningMethodHS512 SigningMethod = "HS512"
 
-    // RSA signing methods (asymmetric)
+    // RSA signing methods (asymmetric, PKCS#1 v1.5)
     SigningMethodRS256 SigningMethod = "RS256"
     SigningMethodRS384 SigningMethod = "RS384"
     SigningMethodRS512 SigningMethod = "RS512"
+
+    // RSA-PSS signing methods (asymmetric, recommended over PKCS#1 v1.5)
+    SigningMethodPS256 SigningMethod = "PS256"
+    SigningMethodPS384 SigningMethod = "PS384"
+    SigningMethodPS512 SigningMethod = "PS512"
 
     // ECDSA signing methods (asymmetric)
     SigningMethodES256 SigningMethod = "ES256"

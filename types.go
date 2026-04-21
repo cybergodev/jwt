@@ -136,6 +136,8 @@ func (m SigningMethod) isValid() bool {
 	return m.isHMAC() || m.isAsymmetric()
 }
 
+// RegisteredClaims contains the standard JWT claims defined in RFC 7519 §4.1.
+// These are set automatically during token creation and validated during verification.
 type RegisteredClaims struct {
 	Issuer    string      `json:"iss,omitempty"`
 	Subject   string      `json:"sub,omitempty"`

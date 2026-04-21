@@ -83,6 +83,8 @@ go test -race -bench=. -benchmem ./...
 | `BenchmarkDifferentSigningMethods` | Algorithm comparison |
 | `BenchmarkLargeClaimsToken` | Performance with large claims |
 | `BenchmarkHighConcurrencyMixed` | Mixed concurrent operations |
+| `BenchmarkMemoryUsage` | Memory allocation profiling |
+| `BenchmarkProcessorCreation` | Processor initialization overhead |
 
 ### Custom Benchmarks
 
@@ -117,11 +119,12 @@ func BenchmarkMyUseCase(b *testing.B) {
 
 The library uses `sync.Pool` for frequently allocated objects:
 
-- **Signing buffers**: Reused for token signing operations (`signingBufPool`, `sigBufPool`)
+- **Signing buffers**: Reused for token signing operations (`signingBufPool`, `encoderBufPool`)
 - **Claims objects**: Pooled to reduce GC pressure (`claimsPool`)
 - **Parse buffers**: Reused for token parsing (`parseBufPool`, `decodeBufPool`)
 - **Core structs**: Pooled for parsed token objects (`corePool`)
-- **Token ID buffers**: Pooled for token ID generation (`tokenIDBufPool`)
+- **Hash.Hash instances**: Pooled for HMAC, RSA, and ECDSA operations (per-method hash pools)
+- **ECDSA big.Int/sig buffers**: Pooled for signature encoding/decoding (`bigIntPool`, `sigPool`)
 
 ### Memory Allocation Breakdown
 

@@ -2,6 +2,7 @@ package jwt
 
 import (
 	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rsa"
 	"fmt"
 	"time"
@@ -92,6 +93,11 @@ func normalizeConfig(c Config) Config {
 
 // Validate validates the configuration.
 // Returns an error if the configuration is invalid.
+//
+// Returns errors:
+//   - [ErrInvalidConfig]: nil config, invalid TTL values, or invalid blacklist config
+//   - [ErrInvalidSecretKey]: missing key, key too short, weak key, wrong key type, or ECDSA curve mismatch
+//   - [ErrInvalidSigningMethod]: unrecognized signing method
 func (c *Config) Validate() error {
 	if c == nil {
 		return ErrInvalidConfig
@@ -170,6 +176,29 @@ func validateAsymmetricSigningKey(method SigningMethod, key any) error {
 		if ecdsaKey == nil {
 			return fmt.Errorf("%w: ECDSA key cannot be nil", ErrInvalidSecretKey)
 		}
+		if err := validateECDSACurve(method, ecdsaKey.Curve); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// validateECDSACurve checks that the key's curve matches the expected curve for the signing method.
+func validateECDSACurve(method SigningMethod, curve elliptic.Curve) error {
+	var expected elliptic.Curve
+	switch method {
+	case SigningMethodES256:
+		expected = elliptic.P256()
+	case SigningMethodES384:
+		expected = elliptic.P384()
+	case SigningMethodES512:
+		expected = elliptic.P521()
+	default:
+		return nil
+	}
+	if curve != expected {
+		return fmt.Errorf("%w: %s requires %s curve, got %s",
+			ErrInvalidSecretKey, method, expected.Params().Name, curve.Params().Name)
 	}
 	return nil
 }

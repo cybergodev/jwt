@@ -238,20 +238,10 @@ func (s *AuthService) RefreshAccessToken(refreshToken string) (string, error) {
 
 ```go
 func (s *AuthService) Logout(tokenString string) error {
-    // 1. Validate token (even if expired, we need the ID)
-    claims, _, err := s.processor.Validate(tokenString)
-    if err != nil && !errors.Is(err, jwt.ErrTokenExpired) {
-        return err
-    }
-
-    // 2. Revoke the token
+    // 1. Revoke the token directly (Revoke parses the token internally,
+    //    so it works even with expired tokens)
     if err := s.processor.Revoke(tokenString); err != nil {
         return fmt.Errorf("failed to revoke token: %w", err)
-    }
-
-    // 3. Optionally revoke all tokens for this session
-    if claims.SessionID != "" {
-        s.revokeSessionTokens(claims.SessionID)
     }
 
     return nil
@@ -430,7 +420,7 @@ func main() {
 
 ```dockerfile
 # Dockerfile
-FROM golang:1.24-alpine AS builder
+FROM golang:1.25-alpine AS builder
 WORKDIR /app
 COPY . .
 RUN go build -o server ./cmd/server

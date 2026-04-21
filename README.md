@@ -19,7 +19,7 @@ A **production-ready Go JWT library** with a focus on security, performance, and
 - **Performance Optimized** - Object pooling and efficient memory management
 - **Zero Dependencies** - Built entirely on Go standard library
 - **Production Ready** - Thread-safe operations, configurable blacklist, and comprehensive error handling
-- **Multiple Algorithms** - HMAC, RSA, and ECDSA signing methods supported
+- **Multiple Algorithms** - HMAC, RSA, RSA-PSS, and ECDSA signing methods supported
 
 ## Installation
 
@@ -540,6 +540,7 @@ if err != nil {
 | `ErrInvalidSigningMethod` | Unsupported signing method |
 | `ErrInvalidToken` | Token is malformed or signature invalid |
 | `ErrEmptyToken` | Empty token string provided |
+| `ErrAlgorithmMismatch` | Token algorithm does not match configured method |
 | `ErrTokenRevoked` | Token exists in blacklist |
 | `ErrTokenExpired` | Token has expired |
 | `ErrTokenNotValidYet` | Token nbf claim is in the future |
@@ -561,12 +562,6 @@ For applications needing programmatic access to error details:
 var verr *jwt.ValidationError
 if errors.As(err, &verr) {
     fmt.Println("Field:", verr.Field, "Issue:", verr.Message)
-}
-
-// TokenError - token-related errors with context
-var terr *jwt.TokenError
-if errors.As(err, &terr) {
-    fmt.Println("Token ID:", terr.TokenID, "ExpiresAt:", terr.ExpiresAt)
 }
 ```
 

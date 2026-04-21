@@ -2,8 +2,67 @@
 
 All notable changes to the cybergodev/jwt library will be documented in this file.
 
-[//]: # (The format is based on [Keep a Changelog]&#40;https://keepachangelog.com&#41;,)
-[//]: # (and this project adheres to [Semantic Versioning]&#40;https://semver.org&#41;.)
+---
+
+## v1.2.0 - API Unification, Performance & Security Hardening (2026-04-22)
+
+### Breaking
+
+- `Create(claims Claims)` → `Create(claims CustomClaims)` — accepts any CustomClaims including `*Claims`
+- `ValidateFor` / `RefreshFor` renamed to `ValidateInto` / `RefreshInto`
+- `CreateFor`, `CreateRefreshFor`, `ValidateTokenWith` removed — merged into unified methods
+- `RegisteredClaims.Audience` changed from `[]string` to `StringOrSlice` (handles RFC 7519 string-or-array)
+- Removed exported `SigningError` type, `NewTokenError` / `NewSigningError` constructors (dead code)
+- Removed `ExtendedTokenManager` type alias — use `TokenManager` directly
+- `DefaultBlacklistConfig`, `RateLimiter`, `NewRateLimiter`, `CreateManager`, `SignedString`, `NewManager` unexported (internal-only)
+- Extra map values with unsupported types (int, float64, bool, nil, []any) now rejected by validation
+
+### Added
+
+- RSA-PSS signing methods: PS256, PS384, PS512 (`rsa.SignPSS`/`VerifyPSS` with `PSSSaltLengthEqualsHash`)
+- `ErrAlgorithmMismatch` sentinel error for algorithm confusion attack detection (OWASP A07, CWE-345)
+- `ErrBlacklistNotConfigured`, `ErrTokenInvalidAudience` sentinel errors for precise error matching
+- `Config.Clock` field (`ClockProvider`) for testable time injection across all time-dependent operations
+- `RateLimitKeyer` optional interface — custom claims types can provide rate limit keys when Subject is empty
+- `BlacklistTokenString` TTL capped at 30 days (`MaxBlacklistTTL`) to prevent DoS via crafted exp claims
+- `RefreshInto` method for custom-claims refresh token flow
+- ECDSA curve validation — mismatched curves rejected at config time (e.g., ES256 requires P-256)
+- Examples: `7_testing_clock.go` (ClockProvider/FixedClock), `8_custom_store.go` (custom BlacklistStore)
+
+### Changed
+
+- Extracted shared helpers (`checkRateLimit`, `setRegisteredDefaults`, `signClaims`, `parseToken`, `validateRegistered`, `checkBlacklist`) to eliminate duplicated logic
+- `Refresh` now checks refresh token blacklist before issuing new access token
+- `Validate` returns specific error types (`ErrTokenExpired`, `ErrTokenNotValidYet`, `ErrTokenInvalidIssuer`) instead of generic `ErrInvalidToken`
+- Issuer validation now rejects tokens missing `iss` when processor has a configured issuer
+- `normalizeConfig` applies blacklist defaults per-field instead of all-or-nothing
+- Error wrapping changed from `%v` to `%w` throughout — `errors.Is()`/`errors.As()` now match root causes
+- Documentation: fixed accuracy across API.md, BEST_PRACTICES.md, CONCURRENCY.md, PERFORMANCE.md, TROUBLESHOOTING.md
+
+### Fixed
+
+- Data race in `GenerateTokenID` — pooled buffer shared backing array across concurrent goroutines
+- Data race in HMAC `Sign`/`Verify` — pooled buffer aliasing; replaced with standard alloc/dealloc
+- `copyClaims` shallow copy shared `Extra` map, `Permissions`, `Scopes`, `Audience` backing arrays with pooled claims
+- `extractAlgFromJSON` matched "alg" inside JSON string values; rewritten with direct byte comparison
+- `ValidateTokenFor`/`RefreshTokenFor` double-wrapped errors with `ErrInvalidClaims` — now returns raw validation errors
+- `BlacklistTokenString` used untrusted `exp` directly — now caps TTL and uses `max(tokenExp, now+DefaultBlacklistTTL)`
+- HMAC hasher pool stored reference to Processor's secret key — now stores a copy; `drainPool` zeros key material on `Close()`
+- RSA/ECDSA `Sign`/`Verify` accepted typed nil keys (`(*rsa.PrivateKey)(nil)`) — now rejected at config time
+- `containsWeakPattern` created unzeroable heap copies of secret key via `strings.ToLower(string(key))` — rewritten with `[]byte` + `clear()`
+- Token signature length validation added to HMAC/RSA/ECDSA `Verify()` — prevents panic on oversized signatures
+- `memoryStore` now uses injected `nowFunc` instead of hardcoded `time.Now()`
+- `RateLimiter` now uses injectable clock, consistent with `memoryStore` and `Processor.ClockProvider`
+- Stale rate limiter buckets batch-evicted when at capacity, preventing unbounded accumulation
+- Audience validation returned generic `ErrInvalidToken` — now returns `ErrTokenInvalidAudience`
+
+### Removed
+
+- ~500 lines of redundant tests consolidated into table-driven tests
+- Dead code: `signedString` (internal), `isStandardHeader`, `GetCore()`, `Signer` interface, `CurveBits` field
+- Deprecated backward-compatibility methods: `CreateFor`, `ValidateFor`, `CreateRefreshFor`, `RefreshFor`
+- Deprecated package-level functions: `CreateTokenWithClaims`, `ValidateTokenWithClaims`, `CreateRefreshTokenWithClaims`
+- TokenError type removed from docs, tests, and code (dead code — never returned by any public method)
 
 ---
 

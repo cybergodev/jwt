@@ -47,48 +47,26 @@ type Method interface {
 	Hash() crypto.Hash
 }
 
-// methodRegistry holds registered signing methods.
-type methodRegistry struct {
-	mu      sync.RWMutex
-	methods map[string]Method
-}
-
-var globalRegistry = &methodRegistry{
-	methods: make(map[string]Method),
-}
+// globalMethods holds registered signing methods.
+// Populated exclusively in init(); read-only thereafter, so no mutex needed.
+var globalMethods map[string]Method
 
 func init() {
-	// Register built-in HMAC methods
-	globalRegistry.register("HS256", hmacHS256)
-	globalRegistry.register("HS384", hmacHS384)
-	globalRegistry.register("HS512", hmacHS512)
-
-	// Register built-in RSA methods
-	globalRegistry.register("RS256", rsaRS256)
-	globalRegistry.register("RS384", rsaRS384)
-	globalRegistry.register("RS512", rsaRS512)
-
-	// Register built-in RSA-PSS methods
-	globalRegistry.register("PS256", rsaPS256)
-	globalRegistry.register("PS384", rsaPS384)
-	globalRegistry.register("PS512", rsaPS512)
-
-	// Register built-in ECDSA methods
-	globalRegistry.register("ES256", ecdsaES256)
-	globalRegistry.register("ES384", ecdsaES384)
-	globalRegistry.register("ES512", ecdsaES512)
-}
-
-func (r *methodRegistry) register(alg string, method Method) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.methods[alg] = method
-}
-
-func (r *methodRegistry) get(alg string) Method {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	return r.methods[alg]
+	// Populate read-only method registry (no further writes after init).
+	globalMethods = map[string]Method{
+		"HS256": hmacHS256,
+		"HS384": hmacHS384,
+		"HS512": hmacHS512,
+		"RS256": rsaRS256,
+		"RS384": rsaRS384,
+		"RS512": rsaRS512,
+		"PS256": rsaPS256,
+		"PS384": rsaPS384,
+		"PS512": rsaPS512,
+		"ES256": ecdsaES256,
+		"ES384": ecdsaES384,
+		"ES512": ecdsaES512,
+	}
 }
 
 // signingBufPool pools byte slices for signing string construction.
@@ -99,11 +77,21 @@ var signingBufPool = sync.Pool{
 	},
 }
 
-// jsonEncoderPool pools bytes.Buffer for JSON encoding to avoid
-// the internal allocation in json.Marshal's output copy.
-var jsonEncoderPool = sync.Pool{
+// encoderBuf pairs a pooled bytes.Buffer with a reusable json.Encoder.
+// Sharing the encoder across calls eliminates the json.NewEncoder heap
+// allocation (~80 bytes) per SignToken invocation.
+type encoderBuf struct {
+	buf *bytes.Buffer
+	enc *json.Encoder
+}
+
+var encoderBufPool = sync.Pool{
 	New: func() any {
-		return bytes.NewBuffer(make([]byte, 0, 512))
+		buf := bytes.NewBuffer(make([]byte, 0, 512))
+		return &encoderBuf{
+			buf: buf,
+			enc: json.NewEncoder(buf),
+		}
 	},
 }
 
@@ -117,14 +105,15 @@ func SignToken(alg string, claims any, method Method, key any) (string, error) {
 		return "", fmt.Errorf("no precomputed header for algorithm: %s", alg)
 	}
 
-	// Marshal claims using pooled JSON buffer to avoid json.Marshal's output copy.
-	jsonBuf := jsonEncoderPool.Get().(*bytes.Buffer)
-	jsonBuf.Reset()
-	if err := json.NewEncoder(jsonBuf).Encode(claims); err != nil {
-		jsonEncoderPool.Put(jsonBuf)
+	// Marshal claims using pooled encoder+buffer to avoid both
+	// json.NewEncoder allocation and json.Marshal's output copy.
+	eb := encoderBufPool.Get().(*encoderBuf)
+	eb.buf.Reset()
+	if err := eb.enc.Encode(claims); err != nil {
+		encoderBufPool.Put(eb)
 		return "", fmt.Errorf("failed to marshal claims: %w", err)
 	}
-	claimsJSON := jsonBuf.Bytes()
+	claimsJSON := eb.buf.Bytes()
 	// Trim trailing newline added by json.Encoder.Encode
 	if n := len(claimsJSON); n > 0 && claimsJSON[n-1] == '\n' {
 		claimsJSON = claimsJSON[:n-1]
@@ -135,7 +124,7 @@ func SignToken(alg string, claims any, method Method, key any) (string, error) {
 
 	bufPtr := signingBufPool.Get().(*[]byte)
 	defer func() {
-		jsonEncoderPool.Put(jsonBuf)
+		encoderBufPool.Put(eb)
 		if cap(*bufPtr) <= 4096 {
 			*bufPtr = (*bufPtr)[:0]
 			signingBufPool.Put(bufPtr)
@@ -177,7 +166,7 @@ func SignToken(alg string, claims any, method Method, key any) (string, error) {
 // GetInternalSigningMethod retrieves a signing method by algorithm name.
 // All built-in methods are registered in init(), so this simply checks the registry.
 func GetInternalSigningMethod(alg string) (Method, error) {
-	if method := globalRegistry.get(alg); method != nil {
+	if method := globalMethods[alg]; method != nil {
 		return method, nil
 	}
 	return nil, fmt.Errorf("unsupported signing method: %s", alg)

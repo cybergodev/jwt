@@ -114,43 +114,76 @@ func DecodeHeaderAlg(headerSegment string) string {
 
 // extractAlgFromJSON scans the JSON data for the "alg" field value.
 // Handles both {"alg":"HS256","typ":"JWT"} and {"typ":"JWT","alg":"HS256"}.
-// Uses direct byte comparison to avoid string allocation per iteration.
+// Skips over JSON string values when scanning for the key, preventing
+// false matches from "alg" embedded inside string values.
 func extractAlgFromJSON(data []byte) string {
 	idx := 0
 	for idx+4 <= len(data) {
-		// Direct byte comparison for "alg" — avoids string(data[...]) allocation
+		// Direct byte comparison for "alg" key pattern
 		if data[idx] == '"' && data[idx+1] == 'a' && data[idx+2] == 'l' && data[idx+3] == 'g' {
+			// Look ahead: a JSON key must be followed by closing quote then colon
 			pos := idx + 4
-			// Skip to colon
-			for pos < len(data) && data[pos] != ':' {
-				pos++
+			if pos < len(data) && data[pos] == '"' {
+				pos++ // skip closing quote
+				// Skip whitespace before colon
+				for pos < len(data) && data[pos] == ' ' {
+					pos++
+				}
+				if pos < len(data) && data[pos] == ':' {
+					pos++ // skip colon
+					// Skip whitespace before value
+					for pos < len(data) && data[pos] == ' ' {
+						pos++
+					}
+					if pos < len(data) && data[pos] == '"' {
+						pos++ // skip opening quote
+						start := pos
+						for pos < len(data) {
+							if data[pos] == '\\' {
+								pos += 2
+								continue
+							}
+							if data[pos] == '"' {
+								break
+							}
+							pos++
+						}
+						if pos < len(data) {
+							return string(data[start:pos])
+						}
+					}
+				}
 			}
-			if pos >= len(data) {
-				return ""
-			}
-			pos++ // skip colon
-
-			// Skip whitespace
-			for pos < len(data) && data[pos] == ' ' {
-				pos++
-			}
-
-			if pos >= len(data) || data[pos] != '"' {
-				return ""
-			}
-			pos++ // skip opening quote
-
-			// Read value until closing quote
-			start := pos
-			for pos < len(data) && data[pos] != '"' {
-				pos++
-			}
-			if pos >= len(data) {
-				return ""
-			}
-			return string(data[start:pos])
+			// Not a key — skip past this string
+			idx++
+			continue
+		}
+		// Skip other string values to avoid false "alg" matches inside values
+		if data[idx] == '"' {
+			idx = skipJSONString(data, idx)
+			continue
 		}
 		idx++
 	}
 	return ""
+}
+
+// skipJSONString advances past a JSON string starting at the opening quote (data[idx] == '"').
+// Returns the index after the closing quote.
+func skipJSONString(data []byte, idx int) int {
+	if idx >= len(data) || data[idx] != '"' {
+		return idx + 1
+	}
+	idx++ // skip opening quote
+	for idx < len(data) {
+		if data[idx] == '\\' {
+			idx += 2 // skip escaped character
+			continue
+		}
+		if data[idx] == '"' {
+			return idx + 1 // past closing quote
+		}
+		idx++
+	}
+	return idx
 }

@@ -3,40 +3,50 @@ package jwt
 import (
 	"errors"
 	"fmt"
-	"time"
 )
 
 // Sentinel errors for common failure cases.
 // Use errors.Is() to check for specific error types.
 var (
-	// Configuration errors
-	ErrInvalidConfig        = errors.New("invalid configuration")
-	ErrInvalidSecretKey     = errors.New("invalid secret key")
+	// ErrInvalidConfig indicates that the provided configuration is invalid.
+	ErrInvalidConfig = errors.New("invalid configuration")
+	// ErrInvalidSecretKey indicates that the signing key is missing, too short, or too weak.
+	ErrInvalidSecretKey = errors.New("invalid secret key")
+	// ErrInvalidSigningMethod indicates that the signing method is not recognized or not supported.
 	ErrInvalidSigningMethod = errors.New("invalid signing method")
 
-	// Token errors
-	ErrInvalidToken          = errors.New("invalid token")
-	ErrEmptyToken            = errors.New("empty token")
-	ErrAlgorithmMismatch     = errors.New("token algorithm does not match configured signing method")
-	ErrTokenRevoked          = errors.New("token revoked")
-	ErrTokenMissingID        = errors.New("token missing ID")
-	ErrTokenExpired          = errors.New("token expired")
-	ErrTokenNotValidYet      = errors.New("token not valid yet")
-	ErrTokenInvalidIssuer    = errors.New("token invalid issuer")
-	ErrTokenInvalidAudience  = errors.New("token invalid audience")
+	// ErrInvalidToken indicates that the token could not be parsed or has an invalid signature.
+	ErrInvalidToken = errors.New("invalid token")
+	// ErrEmptyToken indicates that an empty token string was provided.
+	ErrEmptyToken = errors.New("empty token")
+	// ErrAlgorithmMismatch indicates that the token's algorithm header does not match the configured signing method.
+	ErrAlgorithmMismatch = errors.New("token algorithm does not match configured signing method")
+	// ErrTokenRevoked indicates that the token has been revoked via the blacklist.
+	ErrTokenRevoked = errors.New("token revoked")
+	// ErrTokenMissingID indicates that the token does not contain a jti (JWT ID) claim required for blacklist operations.
+	ErrTokenMissingID = errors.New("token missing ID")
+	// ErrTokenExpired indicates that the token's exp (expiration) claim has passed.
+	ErrTokenExpired = errors.New("token expired")
+	// ErrTokenNotValidYet indicates that the token's nbf (not-before) claim is in the future.
+	ErrTokenNotValidYet = errors.New("token not valid yet")
+	// ErrTokenInvalidIssuer indicates that the token's iss (issuer) claim does not match the configured issuer.
+	ErrTokenInvalidIssuer = errors.New("token invalid issuer")
+	// ErrTokenInvalidAudience indicates that the token's aud (audience) claim does not match the configured audience.
+	ErrTokenInvalidAudience = errors.New("token invalid audience")
 
-	// Claims errors
+	// ErrInvalidClaims indicates that the claims failed validation (missing required fields, injection patterns, etc.).
 	ErrInvalidClaims = errors.New("invalid claims")
 
-	// Rate limiting errors
+	// ErrRateLimitExceeded indicates that the rate limit for token operations has been exceeded.
 	ErrRateLimitExceeded = errors.New("rate limit exceeded")
 
-	// Blacklist errors
+	// ErrBlacklistNotConfigured indicates that a blacklist operation was attempted without configuring the blacklist.
 	ErrBlacklistNotConfigured = errors.New("blacklist not configured")
 
-	// Lifecycle errors
+	// ErrProcessorClosed indicates that an operation was attempted on a closed Processor.
 	ErrProcessorClosed = errors.New("processor closed")
-	ErrStoreClosed     = errors.New("store closed")
+	// ErrStoreClosed indicates that an operation was attempted on a closed store.
+	ErrStoreClosed = errors.New("store closed")
 )
 
 // ValidationError represents a field-level validation failure.
@@ -55,30 +65,4 @@ func (e *ValidationError) Error() string {
 
 func (e *ValidationError) Unwrap() error {
 	return e.Err
-}
-
-// TokenError represents a token-related error with additional context.
-type TokenError struct {
-	Err       error
-	TokenID   string
-	ExpiresAt time.Time
-}
-
-func (e *TokenError) Error() string {
-	if e.TokenID != "" {
-		if len(e.TokenID) > 8 {
-			return fmt.Sprintf("token error (id=%s...): %v", e.TokenID[:8], e.Err)
-		}
-		return fmt.Sprintf("token error (id=%s): %v", e.TokenID, e.Err)
-	}
-	return fmt.Sprintf("token error: %v", e.Err)
-}
-
-func (e *TokenError) Unwrap() error {
-	return e.Err
-}
-
-// Is implements errors.Is interface for comparison.
-func (e *TokenError) Is(target error) bool {
-	return errors.Is(e.Err, target)
 }

@@ -9,6 +9,10 @@ import (
 // when the token does not have an expiration time.
 const DefaultBlacklistTTL = 7 * 24 * time.Hour
 
+// MaxBlacklistTTL caps the maximum blacklist entry TTL to prevent
+// untrusted exp values from crafted tokens causing DoS.
+const MaxBlacklistTTL = 30 * 24 * time.Hour
+
 type tokenClaims struct {
 	ID        string `json:"jti,omitempty"`
 	ExpiresAt int64  `json:"exp,omitempty"`
@@ -91,7 +95,12 @@ func (m *Manager) BlacklistTokenString(tokenString string) error {
 	if claims.ExpiresAt > 0 {
 		tokenExp := time.Unix(claims.ExpiresAt, 0)
 		if tokenExp.After(expiresAt) {
-			expiresAt = tokenExp
+			maxExp := m.nowFunc().Add(MaxBlacklistTTL)
+			if tokenExp.After(maxExp) {
+				expiresAt = maxExp
+			} else {
+				expiresAt = tokenExp
+			}
 		}
 	}
 

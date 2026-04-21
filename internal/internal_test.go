@@ -124,6 +124,10 @@ func TestGetInternalSigningMethod(t *testing.T) {
 		{"ES256", false},
 		{"ES384", false},
 		{"ES512", false},
+		// RSA-PSS methods
+		{"PS256", false},
+		{"PS384", false},
+		{"PS512", false},
 		// Invalid/unsupported methods
 		{"", true},
 		{"none", true},
@@ -1382,3 +1386,286 @@ func TestKeyAnalysisEdgeCases(t *testing.T) {
 	})
 }
 
+
+// =============================================================================
+// RSA-PSS Signing Method Tests
+// =============================================================================
+
+func TestPSSSignAndVerify(t *testing.T) {
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("Failed to generate RSA key: %v", err)
+	}
+
+	signingString := "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ0ZXN0In0"
+
+	tests := []struct {
+		alg string
+	}{
+		{"PS256"},
+		{"PS384"},
+		{"PS512"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.alg, func(t *testing.T) {
+			method, err := GetInternalSigningMethod(tt.alg)
+			if err != nil {
+				t.Fatalf("GetInternalSigningMethod(%q) failed: %v", tt.alg, err)
+			}
+			if method == nil {
+				t.Fatalf("GetInternalSigningMethod(%q) returned nil", tt.alg)
+			}
+
+			if method.Alg() != tt.alg {
+				t.Errorf("Alg() = %q, want %q", method.Alg(), tt.alg)
+			}
+
+			signature, err := method.Sign(signingString, privateKey)
+			if err != nil {
+				t.Fatalf("Sign failed: %v", err)
+			}
+			if signature == "" {
+				t.Error("Sign returned empty signature")
+			}
+
+			err = method.Verify(signingString, signature, privateKey)
+			if err != nil {
+				t.Errorf("Verify with private key failed: %v", err)
+			}
+
+			err = method.Verify(signingString, signature, &privateKey.PublicKey)
+			if err != nil {
+				t.Errorf("Verify with public key failed: %v", err)
+			}
+
+			wrongKey, _ := rsa.GenerateKey(rand.Reader, 2048)
+			err = method.Verify(signingString, signature, wrongKey)
+			if err == nil {
+				t.Error("Expected error for wrong key, got nil")
+			}
+
+			err = method.Verify(signingString, "invalid-signature", privateKey)
+			if err == nil {
+				t.Error("Expected error for invalid signature, got nil")
+			}
+		})
+	}
+}
+
+func TestPSSSignTo(t *testing.T) {
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("Failed to generate RSA key: %v", err)
+	}
+
+	signingString := "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ0ZXN0In0"
+
+	for _, alg := range []string{"PS256", "PS384", "PS512"} {
+		t.Run(alg, func(t *testing.T) {
+			method, err := GetInternalSigningMethod(alg)
+			if err != nil {
+				t.Fatalf("GetInternalSigningMethod(%q) failed: %v", alg, err)
+			}
+
+			dst := make([]byte, 512)
+			n, err := method.SignTo(dst, signingString, privateKey)
+			if err != nil {
+				t.Fatalf("SignTo failed: %v", err)
+			}
+			if n == 0 {
+				t.Error("SignTo wrote 0 bytes")
+			}
+
+			sig := string(dst[:n])
+			err = method.Verify(signingString, sig, &privateKey.PublicKey)
+			if err != nil {
+				t.Errorf("Verify failed for SignTo output: %v", err)
+			}
+
+			smallBuf := make([]byte, 1)
+			_, err = method.SignTo(smallBuf, signingString, privateKey)
+			if err == nil {
+				t.Error("Expected error for small buffer, got nil")
+			}
+		})
+	}
+}
+
+func TestPSSInvalidKeyType(t *testing.T) {
+	method, err := GetInternalSigningMethod("PS256")
+	if err != nil {
+		t.Fatalf("GetInternalSigningMethod failed: %v", err)
+	}
+
+	signingString := "test.data"
+
+	_, err = method.Sign(signingString, "string-key")
+	if err == nil {
+		t.Error("Expected error for non-RSA key in Sign, got nil")
+	}
+	if !strings.Contains(err.Error(), "must be *rsa.PrivateKey") {
+		t.Errorf("Expected 'must be *rsa.PrivateKey' in error, got: %v", err)
+	}
+
+	_, err = method.Sign(signingString, (*rsa.PrivateKey)(nil))
+	if err == nil {
+		t.Error("Expected error for nil key in Sign, got nil")
+	}
+
+	err = method.Verify(signingString, "signature", "string-key")
+	if err == nil {
+		t.Error("Expected error for non-RSA key in Verify, got nil")
+	}
+	if !strings.Contains(err.Error(), "must be *rsa.PublicKey") {
+		t.Errorf("Expected 'must be *rsa.PublicKey' in error, got: %v", err)
+	}
+
+	err = method.Verify(signingString, "signature", (*rsa.PublicKey)(nil))
+	if err == nil {
+		t.Error("Expected error for nil public key in Verify, got nil")
+	}
+
+	err = method.Verify(signingString, "!!!invalid-base64!!!", &rsa.PublicKey{})
+	if err == nil {
+		t.Error("Expected error for invalid base64 signature, got nil")
+	}
+}
+
+func TestPSSRegistryLookup(t *testing.T) {
+	for _, alg := range []string{"PS256", "PS384", "PS512"} {
+		t.Run(alg, func(t *testing.T) {
+			method, err := GetInternalSigningMethod(alg)
+			if err != nil {
+				t.Fatalf("GetInternalSigningMethod(%q) failed: %v", alg, err)
+			}
+			if method.Alg() != alg {
+				t.Errorf("Alg() = %q, want %q", method.Alg(), alg)
+			}
+			if !method.Hash().Available() {
+				t.Errorf("Hash() for %s should be available", alg)
+			}
+		})
+	}
+}
+
+// =============================================================================
+// ECDSA SignTo Tests
+// =============================================================================
+
+func TestECDSASignTo(t *testing.T) {
+	tests := []struct {
+		alg   string
+		curve elliptic.Curve
+	}{
+		{"ES256", elliptic.P256()},
+		{"ES384", elliptic.P384()},
+		{"ES512", elliptic.P521()},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.alg, func(t *testing.T) {
+			privateKey, err := ecdsa.GenerateKey(tt.curve, rand.Reader)
+			if err != nil {
+				t.Fatalf("Failed to generate key: %v", err)
+			}
+
+			method, err := GetInternalSigningMethod(tt.alg)
+			if err != nil {
+				t.Fatalf("GetInternalSigningMethod(%q) failed: %v", tt.alg, err)
+			}
+
+			signingString := "test.data"
+
+			dst := make([]byte, 256)
+			n, err := method.SignTo(dst, signingString, privateKey)
+			if err != nil {
+				t.Fatalf("SignTo failed: %v", err)
+			}
+			if n == 0 {
+				t.Error("SignTo wrote 0 bytes")
+			}
+
+			sig := string(dst[:n])
+			err = method.Verify(signingString, sig, &privateKey.PublicKey)
+			if err != nil {
+				t.Errorf("Verify failed for SignTo output: %v", err)
+			}
+
+			smallBuf := make([]byte, 1)
+			_, err = method.SignTo(smallBuf, signingString, privateKey)
+			if err == nil {
+				t.Error("Expected error for small buffer")
+			}
+		})
+	}
+}
+
+// =============================================================================
+// HMAC ClearCaches and DrainPool Tests
+// =============================================================================
+
+func TestClearHMACCaches(t *testing.T) {
+	key := []byte("test-secret-key-with-sufficient-length-32bytes")
+	signingString := "test.data"
+
+	method, err := GetInternalSigningMethod("HS256")
+	if err != nil {
+		t.Fatalf("GetInternalSigningMethod failed: %v", err)
+	}
+
+	_, err = method.Sign(signingString, key)
+	if err != nil {
+		t.Fatalf("Sign failed: %v", err)
+	}
+
+	ClearHMACCaches()
+
+	// Verify signing still works after clear
+	_, err = method.Sign(signingString, key)
+	if err != nil {
+		t.Fatalf("Sign after clear failed: %v", err)
+	}
+
+	ClearHMACCaches()
+	ClearHMACCaches()
+}
+
+// =============================================================================
+// HMAC SignTo Tests
+// =============================================================================
+
+func TestHMACSignTo(t *testing.T) {
+	key := []byte("test-secret-key-with-sufficient-length-32bytes")
+	signingString := "test.data"
+
+	for _, alg := range []string{"HS256", "HS384", "HS512"} {
+		t.Run(alg, func(t *testing.T) {
+			method, err := GetInternalSigningMethod(alg)
+			if err != nil {
+				t.Fatalf("GetInternalSigningMethod(%q) failed: %v", alg, err)
+			}
+
+			dst := make([]byte, 128)
+			n, err := method.SignTo(dst, signingString, key)
+			if err != nil {
+				t.Fatalf("SignTo failed: %v", err)
+			}
+			if n == 0 {
+				t.Error("SignTo wrote 0 bytes")
+			}
+
+			sig := string(dst[:n])
+			err = method.Verify(signingString, sig, key)
+			if err != nil {
+				t.Errorf("Verify failed for SignTo output: %v", err)
+			}
+
+			smallBuf := make([]byte, 1)
+			_, err = method.SignTo(smallBuf, signingString, key)
+			if err == nil {
+				t.Error("Expected error for small buffer")
+			}
+		})
+	}
+}

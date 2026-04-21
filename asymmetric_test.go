@@ -342,3 +342,40 @@ func TestAsymmetricVerificationKeyValidation(t *testing.T) {
 		})
 	}
 }
+
+func TestECDSACurveMismatch(t *testing.T) {
+	tests := []struct {
+		name         string
+		method       SigningMethod
+		curve        elliptic.Curve
+		wantErrMatch string
+	}{
+		{"ES256 with P-384 key", SigningMethodES256, elliptic.P384(), "P-256"},
+		{"ES256 with P-521 key", SigningMethodES256, elliptic.P521(), "P-256"},
+		{"ES384 with P-256 key", SigningMethodES384, elliptic.P256(), "P-384"},
+		{"ES384 with P-521 key", SigningMethodES384, elliptic.P521(), "P-384"},
+		{"ES512 with P-256 key", SigningMethodES512, elliptic.P256(), "P-521"},
+		{"ES512 with P-384 key", SigningMethodES512, elliptic.P384(), "P-521"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			privateKey, err := ecdsa.GenerateKey(tt.curve, rand.Reader)
+			if err != nil {
+				t.Fatalf("Failed to generate ECDSA key: %v", err)
+			}
+
+			cfg := DefaultConfig()
+			cfg.SigningKey = privateKey
+			cfg.SigningMethod = tt.method
+
+			_, err = New(cfg)
+			if err == nil {
+				t.Fatal("Expected error for curve mismatch")
+			}
+			if err.Error() == "" {
+				t.Error("Error message should not be empty")
+			}
+		})
+	}
+}

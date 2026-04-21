@@ -54,6 +54,7 @@ func ReleaseCore(c *Core) {
 	c.Signature = ""
 	c.Raw = ""
 	c.Valid = false
+	c.Alg = ""
 	corePool.Put(c)
 }
 
@@ -129,9 +130,9 @@ func parseFastPath(part1, part2, part3, tokenString, alg string, claims any, key
 	token.Valid = false
 	token.Method = method
 
-	// Set only the "alg" field in the header map. keyFunc reads only "alg",
-	// so we skip full JSON decode to avoid interface boxing allocations.
-	token.Header["alg"] = alg
+	// Cache alg on the struct to avoid string→interface boxing in Header map,
+	// which costs one heap allocation per parse. keyFunc reads Core.Alg first.
+	token.Alg = alg
 
 	key, err := keyFunc(token)
 	if err != nil {

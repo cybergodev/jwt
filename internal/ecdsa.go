@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"hash"
 	"math/big"
 	"sync"
 )
@@ -16,10 +17,11 @@ type ecdsaSigningMethod struct {
 	HashFunc crypto.Hash
 	KeySize  int
 	sigPool  sync.Pool
+	hashPool sync.Pool
 }
 
 func newECDSAMethod(name string, hash crypto.Hash, keySize int) *ecdsaSigningMethod {
-	return &ecdsaSigningMethod{
+	m := &ecdsaSigningMethod{
 		Name:     name,
 		HashFunc: hash,
 		KeySize:  keySize,
@@ -29,7 +31,13 @@ func newECDSAMethod(name string, hash crypto.Hash, keySize int) *ecdsaSigningMet
 				return &buf
 			},
 		},
+		hashPool: sync.Pool{
+			New: func() any {
+				return hash.New()
+			},
+		},
 	}
+	return m
 }
 
 func (e *ecdsaSigningMethod) Alg() string {
@@ -53,7 +61,9 @@ func (e *ecdsaSigningMethod) SignTo(dst []byte, signingString string, key any) (
 		return 0, fmt.Errorf("hash function %v not available", e.HashFunc)
 	}
 
-	hasher := e.HashFunc.New()
+	hasher := e.hashPool.Get().(hash.Hash)
+	defer e.hashPool.Put(hasher)
+	hasher.Reset()
 	hasher.Write(stringToBytes(signingString))
 
 	var hashBuf [64]byte
@@ -102,7 +112,9 @@ func (e *ecdsaSigningMethod) Sign(signingString string, key any) (string, error)
 		return "", fmt.Errorf("hash function %v not available", e.HashFunc)
 	}
 
-	hasher := e.HashFunc.New()
+	hasher := e.hashPool.Get().(hash.Hash)
+	defer e.hashPool.Put(hasher)
+	hasher.Reset()
 	hasher.Write(stringToBytes(signingString))
 
 	var hashBuf [64]byte
@@ -149,7 +161,7 @@ func (e *ecdsaSigningMethod) Verify(signingString string, signature string, key 
 	var sigBuf [132]byte
 	decodedLen := base64.RawURLEncoding.DecodedLen(len(signature))
 	if decodedLen > len(sigBuf) {
-		return errors.New("ECDSA signature verification failed")
+		return errors.New("signature verification failed")
 	}
 	decoded := sigBuf[:decodedLen]
 	n, err := base64.RawURLEncoding.Decode(decoded, stringToBytes(signature))
@@ -160,7 +172,7 @@ func (e *ecdsaSigningMethod) Verify(signingString string, signature string, key 
 
 	keyBytes := e.KeySize
 	if len(sigBytes) != 2*keyBytes {
-		return errors.New("ECDSA signature verification failed")
+		return errors.New("signature verification failed")
 	}
 
 	// Use pooled big.Int to avoid heap allocation
@@ -176,7 +188,9 @@ func (e *ecdsaSigningMethod) Verify(signingString string, signature string, key 
 	r.SetBytes(sigBytes[:keyBytes])
 	s.SetBytes(sigBytes[keyBytes:])
 
-	hasher := e.HashFunc.New()
+	hasher := e.hashPool.Get().(hash.Hash)
+	defer e.hashPool.Put(hasher)
+	hasher.Reset()
 	hasher.Write(stringToBytes(signingString))
 
 	var hashBuf [64]byte
@@ -184,7 +198,7 @@ func (e *ecdsaSigningMethod) Verify(signingString string, signature string, key 
 
 	valid := ecdsa.Verify(ecdsaKey, hashed, r, s)
 	if !valid {
-		return errors.New("ECDSA signature verification failed")
+		return errors.New("signature verification failed")
 	}
 
 	return nil

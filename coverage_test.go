@@ -13,27 +13,6 @@ import (
 // ============================================================================
 
 func TestErrorTypes(t *testing.T) {
-	t.Run("TokenError", func(t *testing.T) {
-		baseErr := errors.New("base error")
-		tokenErr := &TokenError{Err: baseErr, TokenID: "tok_abc123", ExpiresAt: time.Now().Add(time.Hour)}
-
-		if msg := tokenErr.Error(); !strings.Contains(msg, "tok_abc1") || !strings.Contains(msg, "token error") {
-			t.Errorf("Error() = %q, want TokenID prefix and 'token error'", msg)
-		}
-		if tokenErr.Unwrap() != baseErr {
-			t.Errorf("Unwrap() = %v, want %v", tokenErr.Unwrap(), baseErr)
-		}
-		if !errors.Is(tokenErr, baseErr) {
-			t.Error("errors.Is should match base error")
-		}
-
-		// Without TokenID
-		noIDErr := &TokenError{Err: baseErr, TokenID: ""}
-		if strings.Contains(noIDErr.Error(), "id=") {
-			t.Error("Error() should not contain 'id=' when TokenID is empty")
-		}
-	})
-
 	t.Run("ValidationError", func(t *testing.T) {
 		baseErr := errors.New("base error")
 		valErr := &ValidationError{Field: "username", Message: "invalid format", Err: baseErr}
@@ -49,14 +28,6 @@ func TestErrorTypes(t *testing.T) {
 		valErr2 := &ValidationError{Field: "email", Message: "required"}
 		if valErr2.Unwrap() != nil {
 			t.Error("Unwrap() should return nil when Err is nil")
-		}
-	})
-
-	t.Run("Constructors", func(t *testing.T) {
-		baseErr := errors.New("test")
-		tokenErr := &TokenError{Err: baseErr, TokenID: "tok_123", ExpiresAt: time.Now().Add(time.Hour)}
-		if tokenErr.Err != baseErr || tokenErr.TokenID != "tok_123" {
-			t.Errorf("TokenError fields wrong: %+v", tokenErr)
 		}
 	})
 }

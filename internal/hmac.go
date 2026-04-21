@@ -37,7 +37,9 @@ func (h *hmacSigningMethod) getHasher(key []byte) hash.Hash {
 }
 
 func (h *hmacSigningMethod) putHasher(hasher hash.Hash, key []byte) {
-	h.pool.Put(&hasherEntry{key: key, hasher: hasher})
+	keyCopy := make([]byte, len(key))
+	copy(keyCopy, key)
+	h.pool.Put(&hasherEntry{key: keyCopy, hasher: hasher})
 }
 
 func (h *hmacSigningMethod) Verify(signingString string, signature string, key any) error {
@@ -149,11 +151,16 @@ func ClearHMACCaches() {
 	hmacHS512.drainPool()
 }
 
-// drainPool removes all entries from the pool so they can be garbage collected.
+// drainPool removes all entries from the pool, zeroing key material and resetting
+// hashers before allowing GC to reclaim them.
 func (h *hmacSigningMethod) drainPool() {
 	for {
-		if h.pool.Get() == nil {
+		v := h.pool.Get()
+		if v == nil {
 			return
 		}
+		entry := v.(*hasherEntry)
+		ZeroBytes(entry.key)
+		entry.hasher.Reset()
 	}
 }

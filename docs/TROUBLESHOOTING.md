@@ -527,17 +527,38 @@ func TestConfig(t *testing.T) {
 ### Q: How do I implement "remember me" functionality?
 
 ```go
-func createSession(userID string, rememberMe bool) (*Session, error) {
-    cfg := jwt.DefaultConfig()
+func createSession(processor *jwt.Processor, userID string, rememberMe bool) (*Session, error) {
+    claims := &jwt.Claims{UserID: userID}
 
-    if rememberMe {
-        cfg.RefreshTokenTTL = 30 * 24 * time.Hour // 30 days
-    } else {
-        cfg.RefreshTokenTTL = 24 * time.Hour // 1 day
+    accessToken, err := processor.Create(claims)
+    if err != nil {
+        return nil, err
     }
 
-    processor, _ := jwt.New(cfg)
-    // ...
+    // For "remember me", create a longer-lived refresh token
+    // by temporarily adjusting the processor configuration.
+    // Alternatively, create a second processor with a longer RefreshTokenTTL.
+    if rememberMe {
+        rememberCfg := jwt.DefaultConfig()
+        rememberCfg.SecretKey = os.Getenv("JWT_SECRET_KEY")
+        rememberCfg.RefreshTokenTTL = 30 * 24 * time.Hour // 30 days
+        rememberProc, err := jwt.New(rememberCfg)
+        if err != nil {
+            return nil, err
+        }
+        defer rememberProc.Close()
+        refreshToken, err := rememberProc.CreateRefresh(claims)
+        if err != nil {
+            return nil, err
+        }
+        return &Session{AccessToken: accessToken, RefreshToken: refreshToken}, nil
+    }
+
+    refreshToken, err := processor.CreateRefresh(claims)
+    if err != nil {
+        return nil, err
+    }
+    return &Session{AccessToken: accessToken, RefreshToken: refreshToken}, nil
 }
 ```
 
@@ -545,14 +566,26 @@ func createSession(userID string, rememberMe bool) (*Session, error) {
 
 ```go
 // Option 1: Use token version in claims
-type Claims struct {
-    jwt.Claims
-    TokenVersion int `json:"token_version"`
+type VersionedClaims struct {
+    UserID       string `json:"user_id"`
+    TokenVersion int    `json:"token_version"`
+    jwt.RegisteredClaims
 }
 
-// Store version in database
-// When validating, check version matches database
-// Increment version to invalidate all tokens
+func (c *VersionedClaims) GetRegisteredClaims() *jwt.RegisteredClaims {
+    return &c.RegisteredClaims
+}
+
+func (c *VersionedClaims) Validate() error {
+    if c.UserID == "" {
+        return errors.New("user_id is required")
+    }
+    return nil
+}
+
+// Store version in database.
+// When validating, use ValidateInto and check version matches database.
+// Increment version to invalidate all tokens.
 
 // Option 2: Track all tokens in blacklist
 // (Not recommended for large-scale applications)

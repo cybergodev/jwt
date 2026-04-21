@@ -1,3 +1,23 @@
+// Package jwt provides a high-performance, thread-safe JWT (JSON Web Token) library
+// for Go. It supports HMAC, RSA (PKCS#1v15 and PSS), and ECDSA signing algorithms,
+// with built-in token blacklist, rate limiting, and clock injection for testing.
+//
+// The central type is [Processor], created via [New] with a [Config].
+// Use [DefaultConfig] to obtain a configuration with sensible defaults,
+// then set SecretKey (HMAC) or SigningKey (asymmetric) before calling [New].
+//
+// Basic usage:
+//
+//	cfg := jwt.DefaultConfig()
+//	cfg.SecretKey = "your-32-byte-secret-key-here-minimum"
+//	p, err := jwt.New(cfg)
+//	if err != nil {
+//	    log.Fatal(err)
+//	}
+//	defer p.Close()
+//
+//	claims := &jwt.Claims{UserID: "user123", Username: "alice"}
+//	token, err := p.Create(claims)
 package jwt
 
 import (
@@ -10,6 +30,10 @@ import (
 	"github.com/cybergodev/jwt/internal"
 )
 
+// Processor handles JWT token creation, validation, refresh, and revocation.
+// It is the central type in the library, created via New() with a Config.
+// All methods are goroutine-safe. Call Close() when done to zero the secret key
+// and release pooled resources.
 type Processor struct {
 	secretKey        []byte // For HMAC algorithms
 	asymmetricKey    any    // For RSA/ECDSA algorithms (private key)
@@ -31,6 +55,11 @@ type Processor struct {
 // then modify fields as needed before passing it to New.
 // The processor is thread-safe and can be used concurrently by multiple goroutines.
 // Always call Close() when done to release resources and securely clear the secret key.
+//
+// Returns errors:
+//   - [ErrInvalidConfig]: nil config, invalid TTL values, or invalid blacklist config
+//   - [ErrInvalidSecretKey]: missing key, key too short (<32 bytes), weak key, wrong key type, or ECDSA curve mismatch
+//   - [ErrInvalidSigningMethod]: unrecognized signing method
 //
 // Example (HMAC):
 //
@@ -111,6 +140,11 @@ func New(cfg Config) (*Processor, error) {
 // The caller's claims struct is not modified; timing fields and defaults
 // are set internally during signing and restored afterward.
 //
+// Returns errors:
+//   - [ErrProcessorClosed]: processor has been closed
+//   - [ErrInvalidClaims]: claims failed validation (missing required fields, injection patterns, etc.)
+//   - [ErrRateLimitExceeded]: rate limit exceeded for the claims' subject/user
+//
 // Example (built-in Claims):
 //
 //	claims := &jwt.Claims{UserID: "user123", Username: "alice"}
@@ -136,6 +170,18 @@ func (p *Processor) Create(claims CustomClaims) (string, error) {
 // Returns a value copy of the claims, whether the token is valid, and any error.
 // The token is checked for signature validity, expiration, issuer, audience,
 // and blacklist status before claims validation.
+//
+// Returns errors:
+//   - [ErrProcessorClosed]: processor has been closed
+//   - [ErrEmptyToken]: empty token string
+//   - [ErrInvalidToken]: malformed token or invalid signature
+//   - [ErrAlgorithmMismatch]: token algorithm does not match configured method
+//   - [ErrTokenExpired]: token has expired
+//   - [ErrTokenNotValidYet]: token's nbf claim is in the future
+//   - [ErrTokenInvalidIssuer]: token issuer does not match configured issuer
+//   - [ErrTokenInvalidAudience]: token audience does not match configured audience
+//   - [ErrTokenRevoked]: token has been revoked
+//   - [ErrInvalidClaims]: claims failed validation
 //
 // Example:
 //
@@ -184,6 +230,18 @@ func (p *Processor) CreateRefresh(claims CustomClaims) (string, error) {
 // The refresh token is validated (signature, expiration, blacklist) before
 // a new access token is created. The original refresh token's claims are copied;
 // IssuedAt, ExpiresAt, and ID are reset and regenerated for the new token.
+//
+// Returns errors:
+//   - [ErrProcessorClosed]: processor has been closed
+//   - [ErrEmptyToken]: empty token string
+//   - [ErrInvalidToken]: malformed token or invalid signature
+//   - [ErrAlgorithmMismatch]: token algorithm does not match configured method
+//   - [ErrTokenExpired]: refresh token has expired
+//   - [ErrTokenNotValidYet]: token's nbf claim is in the future
+//   - [ErrTokenInvalidIssuer]: token issuer does not match configured issuer
+//   - [ErrTokenInvalidAudience]: token audience does not match configured audience
+//   - [ErrTokenRevoked]: refresh token has been revoked
+//   - [ErrInvalidClaims]: claims failed validation
 //
 // Security note: Claims from the refresh token are validated for standard
 // JWT fields (exp, nbf, iss, aud, blacklist) and basic structural validity
@@ -433,8 +491,16 @@ func (p *Processor) parseToken(tokenString string, claims any) (*internal.Core, 
 
 // keyFunc validates the algorithm header and returns the verification key.
 func (p *Processor) keyFunc(token *internal.Core) (any, error) {
-	alg, ok := token.Header["alg"].(string)
-	if !ok || alg != string(p.signingMethod) {
+	// Read cached Alg from fast-path parsing first (avoids Header map lookup
+	// and string→any type assertion). Falls back to Header for slow-path tokens.
+	alg := token.Alg
+	if alg == "" {
+		var ok bool
+		alg, ok = token.Header["alg"].(string)
+		if !ok || alg != string(p.signingMethod) {
+			return nil, ErrAlgorithmMismatch
+		}
+	} else if alg != string(p.signingMethod) {
 		return nil, ErrAlgorithmMismatch
 	}
 	return p.getVerificationKey(), nil
@@ -562,7 +628,11 @@ func (p *Processor) validateCustomTokenFully(tokenString string, claims CustomCl
 }
 
 // Revoke adds a token to the blacklist by its string representation.
-// Returns an error if the blacklist is not configured or the token cannot be parsed.
+//
+// Returns errors:
+//   - [ErrProcessorClosed]: processor has been closed
+//   - [ErrEmptyToken]: empty token string
+//   - [ErrBlacklistNotConfigured]: blacklist is not configured
 func (p *Processor) Revoke(tokenString string) error {
 	if err := p.checkActive(); err != nil {
 		return err

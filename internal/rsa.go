@@ -7,11 +7,14 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"hash"
+	"sync"
 )
 
 type rsaSigningMethod struct {
 	Name     string
 	HashFunc crypto.Hash
+	hashPool sync.Pool
 }
 
 func (r *rsaSigningMethod) Alg() string {
@@ -35,7 +38,9 @@ func (r *rsaSigningMethod) SignTo(dst []byte, signingString string, key any) (in
 		return 0, fmt.Errorf("hash function %v not available", r.HashFunc)
 	}
 
-	hasher := r.HashFunc.New()
+	hasher := r.hashPool.Get().(hash.Hash)
+	defer r.hashPool.Put(hasher)
+	hasher.Reset()
 	hasher.Write(stringToBytes(signingString))
 
 	var hashBuf [64]byte
@@ -67,10 +72,11 @@ func (r *rsaSigningMethod) Sign(signingString string, key any) (string, error) {
 		return "", fmt.Errorf("hash function %v not available", r.HashFunc)
 	}
 
-	hasher := r.HashFunc.New()
+	hasher := r.hashPool.Get().(hash.Hash)
+	defer r.hashPool.Put(hasher)
+	hasher.Reset()
 	hasher.Write(stringToBytes(signingString))
 
-	// Stack-allocated hash output buffer
 	var hashBuf [64]byte
 	hashed := hasher.Sum(hashBuf[:0])
 
@@ -107,7 +113,7 @@ func (r *rsaSigningMethod) Verify(signingString string, signature string, key an
 	var sigBuf [512]byte
 	decodedLen := base64.RawURLEncoding.DecodedLen(len(signature))
 	if decodedLen > len(sigBuf) {
-		return errors.New("RSA signature verification failed")
+		return errors.New("signature verification failed")
 	}
 	sigBytes := sigBuf[:decodedLen]
 	n, err := base64.RawURLEncoding.Decode(sigBytes, stringToBytes(signature))
@@ -118,10 +124,12 @@ func (r *rsaSigningMethod) Verify(signingString string, signature string, key an
 
 	expectedSigLen := rsaKey.Size()
 	if len(sigBytes) != expectedSigLen {
-		return errors.New("RSA signature verification failed")
+		return errors.New("signature verification failed")
 	}
 
-	hasher := r.HashFunc.New()
+	hasher := r.hashPool.Get().(hash.Hash)
+	defer r.hashPool.Put(hasher)
+	hasher.Reset()
 	hasher.Write(stringToBytes(signingString))
 
 	var hashBuf [64]byte
@@ -129,22 +137,33 @@ func (r *rsaSigningMethod) Verify(signingString string, signature string, key an
 
 	err = rsa.VerifyPKCS1v15(rsaKey, r.HashFunc, hashed, sigBytes)
 	if err != nil {
-		return errors.New("RSA signature verification failed")
+		return errors.New("signature verification failed")
 	}
 
 	return nil
 }
 
+func newRSAMethod(name string, hash crypto.Hash) *rsaSigningMethod {
+	return &rsaSigningMethod{
+		Name:     name,
+		HashFunc: hash,
+		hashPool: sync.Pool{
+			New: func() any { return hash.New() },
+		},
+	}
+}
+
 var (
-	rsaRS256 = &rsaSigningMethod{"RS256", crypto.SHA256}
-	rsaRS384 = &rsaSigningMethod{"RS384", crypto.SHA384}
-	rsaRS512 = &rsaSigningMethod{"RS512", crypto.SHA512}
+	rsaRS256 = newRSAMethod("RS256", crypto.SHA256)
+	rsaRS384 = newRSAMethod("RS384", crypto.SHA384)
+	rsaRS512 = newRSAMethod("RS512", crypto.SHA512)
 )
 
 type rsaPSSSigningMethod struct {
 	Name     string
 	HashFunc crypto.Hash
 	opts     rsa.PSSOptions
+	hashPool sync.Pool
 }
 
 func (r *rsaPSSSigningMethod) Alg() string {
@@ -168,7 +187,9 @@ func (r *rsaPSSSigningMethod) SignTo(dst []byte, signingString string, key any) 
 		return 0, fmt.Errorf("hash function %v not available", r.HashFunc)
 	}
 
-	hasher := r.HashFunc.New()
+	hasher := r.hashPool.Get().(hash.Hash)
+	defer r.hashPool.Put(hasher)
+	hasher.Reset()
 	hasher.Write(stringToBytes(signingString))
 
 	var hashBuf [64]byte
@@ -200,7 +221,9 @@ func (r *rsaPSSSigningMethod) Sign(signingString string, key any) (string, error
 		return "", fmt.Errorf("hash function %v not available", r.HashFunc)
 	}
 
-	hasher := r.HashFunc.New()
+	hasher := r.hashPool.Get().(hash.Hash)
+	defer r.hashPool.Put(hasher)
+	hasher.Reset()
 	hasher.Write(stringToBytes(signingString))
 
 	var hashBuf [64]byte
@@ -239,7 +262,7 @@ func (r *rsaPSSSigningMethod) Verify(signingString string, signature string, key
 	var sigBuf [512]byte
 	decodedLen := base64.RawURLEncoding.DecodedLen(len(signature))
 	if decodedLen > len(sigBuf) {
-		return errors.New("RSA-PSS signature verification failed")
+		return errors.New("signature verification failed")
 	}
 	sigBytes := sigBuf[:decodedLen]
 	n, err := base64.RawURLEncoding.Decode(sigBytes, stringToBytes(signature))
@@ -250,10 +273,12 @@ func (r *rsaPSSSigningMethod) Verify(signingString string, signature string, key
 
 	expectedSigLen := rsaKey.Size()
 	if len(sigBytes) != expectedSigLen {
-		return errors.New("RSA-PSS signature verification failed")
+		return errors.New("signature verification failed")
 	}
 
-	hasher := r.HashFunc.New()
+	hasher := r.hashPool.Get().(hash.Hash)
+	defer r.hashPool.Put(hasher)
+	hasher.Reset()
 	hasher.Write(stringToBytes(signingString))
 
 	var hashBuf [64]byte
@@ -261,14 +286,25 @@ func (r *rsaPSSSigningMethod) Verify(signingString string, signature string, key
 
 	err = rsa.VerifyPSS(rsaKey, r.HashFunc, hashed, sigBytes, &r.opts)
 	if err != nil {
-		return errors.New("RSA-PSS signature verification failed")
+		return errors.New("signature verification failed")
 	}
 
 	return nil
 }
 
+func newRSSMethod(name string, hash crypto.Hash) *rsaPSSSigningMethod {
+	return &rsaPSSSigningMethod{
+		Name:     name,
+		HashFunc: hash,
+		opts:     rsa.PSSOptions{SaltLength: rsa.PSSSaltLengthEqualsHash},
+		hashPool: sync.Pool{
+			New: func() any { return hash.New() },
+		},
+	}
+}
+
 var (
-	rsaPS256 = &rsaPSSSigningMethod{"PS256", crypto.SHA256, rsa.PSSOptions{SaltLength: rsa.PSSSaltLengthEqualsHash}}
-	rsaPS384 = &rsaPSSSigningMethod{"PS384", crypto.SHA384, rsa.PSSOptions{SaltLength: rsa.PSSSaltLengthEqualsHash}}
-	rsaPS512 = &rsaPSSSigningMethod{"PS512", crypto.SHA512, rsa.PSSOptions{SaltLength: rsa.PSSSaltLengthEqualsHash}}
+	rsaPS256 = newRSSMethod("PS256", crypto.SHA256)
+	rsaPS384 = newRSSMethod("PS384", crypto.SHA384)
+	rsaPS512 = newRSSMethod("PS512", crypto.SHA512)
 )
