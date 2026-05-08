@@ -25,7 +25,7 @@ func BenchmarkTokenCreation(b *testing.B) {
 	}
 	// Disable rate limiter for benchmarks
 	processor.rateLimiter = nil
-	defer processor.Close()
+	defer func() { _ = processor.Close() }() // best-effort cleanup
 
 	claims := Claims{
 		UserID:   "user123",
@@ -51,7 +51,7 @@ func BenchmarkTokenValidation(b *testing.B) {
 	}
 	// Disable rate limiter for benchmarks
 	processor.rateLimiter = nil
-	defer processor.Close()
+	defer func() { _ = processor.Close() }() // best-effort cleanup
 
 	claims := Claims{
 		UserID:   "user123",
@@ -82,7 +82,7 @@ func BenchmarkTokenCreationAndValidation(b *testing.B) {
 	}
 	// Disable rate limiter for benchmarks
 	processor.rateLimiter = nil
-	defer processor.Close()
+	defer func() { _ = processor.Close() }() // best-effort cleanup
 
 	claims := Claims{
 		UserID:   "user123",
@@ -116,7 +116,7 @@ func BenchmarkBlacklistOperations(b *testing.B) {
 	}
 	// Disable rate limiter for benchmarks
 	processor.rateLimiter = nil
-	defer processor.Close()
+	defer func() { _ = processor.Close() }() // best-effort cleanup
 
 	claims := Claims{
 		UserID:   "user123",
@@ -155,7 +155,7 @@ func BenchmarkBlacklistValidation(b *testing.B) {
 	}
 	// Disable rate limiter for benchmarks
 	processor.rateLimiter = nil
-	defer processor.Close()
+	defer func() { _ = processor.Close() }() // best-effort cleanup
 
 	claims := Claims{
 		UserID:   "user123",
@@ -200,7 +200,7 @@ func BenchmarkConcurrentTokenCreation(b *testing.B) {
 	}
 	// Disable rate limiter for benchmarks
 	processor.rateLimiter = nil
-	defer processor.Close()
+	defer func() { _ = processor.Close() }() // best-effort cleanup
 
 	claims := Claims{
 		UserID:   "user123",
@@ -228,7 +228,7 @@ func BenchmarkConcurrentTokenValidation(b *testing.B) {
 	}
 	// Disable rate limiter for benchmarks
 	processor.rateLimiter = nil
-	defer processor.Close()
+	defer func() { _ = processor.Close() }() // best-effort cleanup
 
 	claims := Claims{
 		UserID:   "user123",
@@ -283,7 +283,7 @@ func BenchmarkDifferentSigningMethods(b *testing.B) {
 			}
 			// Disable rate limiter for benchmarks
 			processor.rateLimiter = nil
-			defer processor.Close()
+			defer func() { _ = processor.Close() }() // best-effort cleanup
 
 			b.ResetTimer()
 			b.ReportAllocs()
@@ -310,7 +310,7 @@ func BenchmarkMemoryUsage(b *testing.B) {
 	}
 	// Disable rate limiter for benchmarks
 	processor.rateLimiter = nil
-	defer processor.Close()
+	defer func() { _ = processor.Close() }() // best-effort cleanup
 
 	claims := Claims{
 		UserID:   "user123",
@@ -357,7 +357,7 @@ func BenchmarkLargeClaimsToken(b *testing.B) {
 	}
 	// Disable rate limiter for benchmarks
 	processor.rateLimiter = nil
-	defer processor.Close()
+	defer func() { _ = processor.Close() }() // best-effort cleanup
 
 	// Create claims with large data (reduced size for stability)
 	permissions := make([]string, 20)
@@ -416,7 +416,7 @@ func BenchmarkProcessorCreation(b *testing.B) {
 		if err != nil {
 			b.Fatalf("Failed to create processor: %v", err)
 		}
-		processor.Close()
+		_ = processor.Close() // benchmark cleanup
 	}
 }
 
@@ -430,7 +430,7 @@ func BenchmarkHighConcurrencyMixed(b *testing.B) {
 	}
 	// Disable rate limiter for benchmarks
 	processor.rateLimiter = nil
-	defer processor.Close()
+	defer func() { _ = processor.Close() }() // best-effort cleanup
 
 	claims := Claims{
 		UserID:   "user123",
@@ -470,7 +470,7 @@ func BenchmarkHighConcurrencyMixed(b *testing.B) {
 			case 2: // Revoke token (occasionally)
 				if i%10 == 0 {
 					tokenIdx := i % numPreTokens
-					processor.Revoke(preTokens[tokenIdx])
+					_ = processor.Revoke(preTokens[tokenIdx]) // benchmark: error not actionable
 				}
 			case 3: // Create and validate
 				token, err := processor.Create(&claims)

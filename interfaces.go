@@ -10,6 +10,14 @@ import (
 // This interface allows for dependency injection and easier testing.
 // The default implementation is Processor.
 //
+// Consumers: define your own smaller interface with only the methods you need.
+// For example, if you only need Create and Validate:
+//
+//	type TokenCreator interface {
+//	    Create(claims jwt.CustomClaims) (string, error)
+//	    Validate(tokenString string) (jwt.Claims, bool, error)
+//	}
+//
 // Methods are organized into three groups:
 //   - Token Operations: Create, CreateRefresh (both accept CustomClaims)
 //   - Validation & Refresh: Validate, ValidateInto, Refresh, RefreshInto
@@ -58,9 +66,6 @@ type TokenManager interface {
 type RateLimitProvider interface {
 	// Allow checks if a single request is allowed for the given key.
 	Allow(key string) bool
-
-	// AllowN checks if n requests are allowed for the given key.
-	AllowN(key string, n int) bool
 
 	// Reset removes the rate limit state for the given key.
 	Reset(key string)

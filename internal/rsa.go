@@ -28,7 +28,7 @@ func (r *rsaSigningMethod) Hash() crypto.Hash {
 func (r *rsaSigningMethod) SignTo(dst []byte, signingString string, key any) (int, error) {
 	rsaKey, ok := key.(*rsa.PrivateKey)
 	if !ok {
-		return 0, fmt.Errorf("RSA key must be *rsa.PrivateKey, got %T", key)
+		return 0, errors.New("invalid key type: RSA signing requires *rsa.PrivateKey")
 	}
 	if rsaKey == nil {
 		return 0, fmt.Errorf("RSA key cannot be nil")
@@ -60,32 +60,12 @@ func (r *rsaSigningMethod) SignTo(dst []byte, signingString string, key any) (in
 }
 
 func (r *rsaSigningMethod) Sign(signingString string, key any) (string, error) {
-	rsaKey, ok := key.(*rsa.PrivateKey)
-	if !ok {
-		return "", fmt.Errorf("RSA key must be *rsa.PrivateKey, got %T", key)
-	}
-	if rsaKey == nil {
-		return "", fmt.Errorf("RSA key cannot be nil")
-	}
-
-	if !r.HashFunc.Available() {
-		return "", fmt.Errorf("hash function %v not available", r.HashFunc)
-	}
-
-	hasher := r.hashPool.Get().(hash.Hash)
-	defer r.hashPool.Put(hasher)
-	hasher.Reset()
-	hasher.Write(stringToBytes(signingString))
-
-	var hashBuf [64]byte
-	hashed := hasher.Sum(hashBuf[:0])
-
-	signature, err := rsa.SignPKCS1v15(rand.Reader, rsaKey, r.HashFunc, hashed)
+	var buf [684]byte // max RSA-4096: 512 bytes → 683 base64 chars
+	n, err := r.SignTo(buf[:], signingString, key)
 	if err != nil {
-		return "", fmt.Errorf("failed to sign with RSA: %w", err)
+		return "", err
 	}
-
-	return base64.RawURLEncoding.EncodeToString(signature), nil
+	return string(buf[:n]), nil
 }
 
 func (r *rsaSigningMethod) Verify(signingString string, signature string, key any) error {
@@ -93,7 +73,7 @@ func (r *rsaSigningMethod) Verify(signingString string, signature string, key an
 	if !ok {
 		privKey, ok := key.(*rsa.PrivateKey)
 		if !ok {
-			return fmt.Errorf("RSA key must be *rsa.PublicKey or *rsa.PrivateKey, got %T", key)
+			return errors.New("invalid key type: RSA verification requires *rsa.PublicKey or *rsa.PrivateKey")
 		}
 		if privKey == nil {
 			return fmt.Errorf("RSA key cannot be nil")
@@ -177,7 +157,7 @@ func (r *rsaPSSSigningMethod) Hash() crypto.Hash {
 func (r *rsaPSSSigningMethod) SignTo(dst []byte, signingString string, key any) (int, error) {
 	rsaKey, ok := key.(*rsa.PrivateKey)
 	if !ok {
-		return 0, fmt.Errorf("RSA key must be *rsa.PrivateKey, got %T", key)
+		return 0, errors.New("invalid key type: RSA-PSS signing requires *rsa.PrivateKey")
 	}
 	if rsaKey == nil {
 		return 0, fmt.Errorf("RSA key cannot be nil")
@@ -209,32 +189,12 @@ func (r *rsaPSSSigningMethod) SignTo(dst []byte, signingString string, key any) 
 }
 
 func (r *rsaPSSSigningMethod) Sign(signingString string, key any) (string, error) {
-	rsaKey, ok := key.(*rsa.PrivateKey)
-	if !ok {
-		return "", fmt.Errorf("RSA key must be *rsa.PrivateKey, got %T", key)
-	}
-	if rsaKey == nil {
-		return "", fmt.Errorf("RSA key cannot be nil")
-	}
-
-	if !r.HashFunc.Available() {
-		return "", fmt.Errorf("hash function %v not available", r.HashFunc)
-	}
-
-	hasher := r.hashPool.Get().(hash.Hash)
-	defer r.hashPool.Put(hasher)
-	hasher.Reset()
-	hasher.Write(stringToBytes(signingString))
-
-	var hashBuf [64]byte
-	hashed := hasher.Sum(hashBuf[:0])
-
-	signature, err := rsa.SignPSS(rand.Reader, rsaKey, r.HashFunc, hashed, &r.opts)
+	var buf [684]byte // max RSA-4096: 512 bytes → 683 base64 chars
+	n, err := r.SignTo(buf[:], signingString, key)
 	if err != nil {
-		return "", fmt.Errorf("failed to sign with RSA-PSS: %w", err)
+		return "", err
 	}
-
-	return base64.RawURLEncoding.EncodeToString(signature), nil
+	return string(buf[:n]), nil
 }
 
 func (r *rsaPSSSigningMethod) Verify(signingString string, signature string, key any) error {
@@ -242,7 +202,7 @@ func (r *rsaPSSSigningMethod) Verify(signingString string, signature string, key
 	if !ok {
 		privKey, ok := key.(*rsa.PrivateKey)
 		if !ok {
-			return fmt.Errorf("RSA key must be *rsa.PublicKey or *rsa.PrivateKey, got %T", key)
+			return errors.New("invalid key type: RSA-PSS verification requires *rsa.PublicKey or *rsa.PrivateKey")
 		}
 		if privKey == nil {
 			return fmt.Errorf("RSA key cannot be nil")

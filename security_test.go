@@ -20,7 +20,7 @@ func TestSecurityAlgorithmConfusion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create processor: %v", err)
 	}
-	defer processor.Close()
+	defer func() { _ = processor.Close() }() // best-effort cleanup
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -34,9 +34,9 @@ func TestSecurityAlgorithmConfusion(t *testing.T) {
 
 func TestSecurityWeakKeys(t *testing.T) {
 	tests := []struct {
-		name  string
-		key   string
-		weak  bool
+		name string
+		key  string
+		weak bool
 	}{
 		// Weak keys
 		{"common password", "password", true},
@@ -76,7 +76,7 @@ func TestSecurityMaliciousInput(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create processor: %v", err)
 	}
-	defer processor.Close()
+	defer func() { _ = processor.Close() }() // best-effort cleanup
 
 	tests := []struct {
 		name      string
@@ -125,7 +125,7 @@ func TestSecurityDoSProtection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create processor: %v", err)
 	}
-	defer processor.Close()
+	defer func() { _ = processor.Close() }() // best-effort cleanup
 
 	tests := []struct {
 		name   string
@@ -169,13 +169,12 @@ func TestSecurityDoSProtection(t *testing.T) {
 	}
 }
 
-
 func TestSecurityTokenValidation(t *testing.T) {
 	processor, err := newTestProcessor(testSecretKey)
 	if err != nil {
 		t.Fatalf("Failed to create processor: %v", err)
 	}
-	defer processor.Close()
+	defer func() { _ = processor.Close() }() // best-effort cleanup
 
 	tests := []struct {
 		name  string

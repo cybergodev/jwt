@@ -15,7 +15,7 @@ func TestCoreTokenParsing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create processor: %v", err)
 	}
-	defer processor.Close()
+	defer func() { _ = processor.Close() }() // best-effort cleanup
 
 	claims := Claims{
 		UserID:   "user123",
@@ -30,7 +30,7 @@ func TestCoreTokenParsing(t *testing.T) {
 	parsedClaims := &Claims{}
 	coreToken, err := internal.ParseWithClaims(token, parsedClaims, func(token *internal.Core) (any, error) {
 		return []byte(testSecretKey), nil
-	})
+	}, "")
 
 	if err != nil {
 		t.Fatalf("Failed to parse token with core: %v", err)
@@ -57,8 +57,11 @@ func TestCoreDecodeSegment(t *testing.T) {
 		check   func(t *testing.T, decoded map[string]any)
 	}{
 		{
-			name:  "valid base64url",
-			input: func() string { d, _ := json.Marshal(map[string]any{"test": "value", "num": 123}); return base64.RawURLEncoding.EncodeToString(d) }(),
+			name: "valid base64url",
+			input: func() string {
+				d, _ := json.Marshal(map[string]any{"test": "value", "num": 123})
+				return base64.RawURLEncoding.EncodeToString(d)
+			}(),
 			check: func(t *testing.T, decoded map[string]any) {
 				if decoded["test"] != "value" {
 					t.Errorf("Expected test=value, got test=%v", decoded["test"])
@@ -146,7 +149,7 @@ func TestClockProviderIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create processor: %v", err)
 	}
-	defer processor.Close()
+	defer func() { _ = processor.Close() }() // best-effort cleanup
 
 	claims := Claims{UserID: "clock-user", Username: "test"}
 	token, err := processor.Create(&claims)

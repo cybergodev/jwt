@@ -4,6 +4,55 @@ All notable changes to the cybergodev/jwt library will be documented in this fil
 
 ---
 
+## v1.2.1 - Security Hardening, Performance & Code Quality (2026-05-08)
+
+### Breaking
+
+- `AllowN` removed from `RateLimitProvider` interface — remains on concrete `RateLimiter` type
+
+### Added
+
+- `TokenType` field on `RegisteredClaims` with `TokenTypeAccess`/`TokenTypeRefresh` constants
+- `ErrTokenTypeMismatch` and `ErrStoreClosed` sentinel errors
+- `StringOrSlice.MarshalJSON` serializes single-element slice as JSON string (RFC 7519)
+- Internal `BlacklistVerified()` method for pre-verified token ID blacklisting
+
+### Changed
+
+- `Revoke()` verifies token signature, issuer, and audience before blacklisting
+- `Refresh()`/`RefreshInto()` reject access tokens — only refresh type allowed
+- `Close()` uses `sync.RWMutex` with `beginOp/endOp` for race-free concurrent shutdown
+- `Close()` only clears HMAC caches for HMAC processors (skips asymmetric)
+- `IsRevoked()` verifies signature and processor ownership before blacklist lookup
+- `ParseWithClaims`/`parseFastPath` accept `expectedAlg` for early algorithm mismatch detection
+- Signing method cached at construction time, eliminating per-sign map lookup
+- `Sign()` delegates to `SignTo()` across HMAC/RSA/ECDSA (code dedup)
+- `validateClaims()` deduplicates string-field validation (~12 lines removed)
+- Extra map validation errors include actual key name (e.g. "extra.role")
+- `memoryStore.mapCapacity` scales with `maxSize` instead of constant 8
+
+### Fixed
+
+- RSA minimum key size enforcement (2048 bits) — rejects insecure 512/1024-bit keys
+- `Revoke()`/`IsRevoked()` verify signature before blacklist ops — prevents probing via forged tokens
+- Data race between `Close()` and concurrent operations
+- Error wrapping: double `%w` → `%w: %v` so `errors.Is()` matches sentinels
+- Key type disclosure in HMAC/RSA/ECDSA error messages → generic "invalid key type"
+- `Close()` sets `secretKey` to nil after zeroing
+- `parseSlowPath` sets `token.Alg` for consistency with `parseFastPath`
+- golangci-lint errcheck/staticcheck issues across all test files
+
+### Performance
+
+- HMAC specialization: `SignToHMAC`/`VerifyHMAC`/`ParseWithClaimsHMAC` eliminate interface boxing (−3 allocs/op)
+- Pool-reused `hasherEntry` structs eliminate per-call key copy (−1 alloc/op sign + verify)
+- Pattern matching: O(n*39) → O(n) via uint64 bitmask with `bits.TrailingZeros64` (−22% Create latency)
+- Combined control char + dangerous pattern check into single string pass
+- Shallow copy replaces deep copy in validation path (−5 allocs, −13% memory)
+- Shallow struct copy replaces `copyClaims` for token creation
+
+---
+
 ## v1.2.0 - API Unification, Performance & Security Hardening (2026-04-22)
 
 ### Breaking
@@ -26,7 +75,7 @@ All notable changes to the cybergodev/jwt library will be documented in this fil
 - `RateLimitKeyer` optional interface — custom claims types can provide rate limit keys when Subject is empty
 - `BlacklistTokenString` TTL capped at 30 days (`MaxBlacklistTTL`) to prevent DoS via crafted exp claims
 - `RefreshInto` method for custom-claims refresh token flow
-- ECDSA curve validation — mismatched curves rejected at config time (e.g., ES256 requires P-256)
+- ECDSA curve validation — mismatched curves rejected at config time (e.g., AS256 requires P-256)
 - Examples: `7_testing_clock.go` (ClockProvider/FixedClock), `8_custom_store.go` (custom BlacklistStore)
 
 ### Changed
@@ -299,5 +348,3 @@ token, _ := processor.CreateToken(claims)
 - N/A (Initial release)
 
 ---
-
-

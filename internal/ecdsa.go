@@ -51,7 +51,7 @@ func (e *ecdsaSigningMethod) Hash() crypto.Hash {
 func (e *ecdsaSigningMethod) SignTo(dst []byte, signingString string, key any) (int, error) {
 	ecdsaKey, ok := key.(*ecdsa.PrivateKey)
 	if !ok {
-		return 0, fmt.Errorf("ECDSA key must be *ecdsa.PrivateKey, got %T", key)
+		return 0, errors.New("invalid key type: ECDSA signing requires *ecdsa.PrivateKey")
 	}
 	if ecdsaKey == nil {
 		return 0, fmt.Errorf("ECDSA key cannot be nil")
@@ -100,40 +100,12 @@ var (
 )
 
 func (e *ecdsaSigningMethod) Sign(signingString string, key any) (string, error) {
-	ecdsaKey, ok := key.(*ecdsa.PrivateKey)
-	if !ok {
-		return "", fmt.Errorf("ECDSA key must be *ecdsa.PrivateKey, got %T", key)
-	}
-	if ecdsaKey == nil {
-		return "", fmt.Errorf("ECDSA key cannot be nil")
-	}
-
-	if !e.HashFunc.Available() {
-		return "", fmt.Errorf("hash function %v not available", e.HashFunc)
-	}
-
-	hasher := e.hashPool.Get().(hash.Hash)
-	defer e.hashPool.Put(hasher)
-	hasher.Reset()
-	hasher.Write(stringToBytes(signingString))
-
-	var hashBuf [64]byte
-	hashed := hasher.Sum(hashBuf[:0])
-
-	r, s, err := ecdsa.Sign(rand.Reader, ecdsaKey, hashed)
+	var buf [176]byte // max ES512: 2*66=132 bytes → 176 base64 chars
+	n, err := e.SignTo(buf[:], signingString, key)
 	if err != nil {
-		return "", fmt.Errorf("failed to sign with ECDSA: %w", err)
+		return "", err
 	}
-
-	keyBytes := e.KeySize
-	sigPtr := e.sigPool.Get().(*[]byte)
-	defer e.sigPool.Put(sigPtr)
-
-	sig := (*sigPtr)[:2*keyBytes]
-	r.FillBytes(sig[:keyBytes])
-	s.FillBytes(sig[keyBytes:])
-
-	return base64.RawURLEncoding.EncodeToString(sig), nil
+	return string(buf[:n]), nil
 }
 
 func (e *ecdsaSigningMethod) Verify(signingString string, signature string, key any) error {
@@ -141,7 +113,7 @@ func (e *ecdsaSigningMethod) Verify(signingString string, signature string, key 
 	if !ok {
 		privKey, ok := key.(*ecdsa.PrivateKey)
 		if !ok {
-			return fmt.Errorf("ECDSA key must be *ecdsa.PublicKey or *ecdsa.PrivateKey, got %T", key)
+			return errors.New("invalid key type: ECDSA verification requires *ecdsa.PublicKey or *ecdsa.PrivateKey")
 		}
 		if privKey == nil {
 			return fmt.Errorf("ECDSA key cannot be nil")

@@ -23,7 +23,7 @@ func TestRSACreateAndValidateToken(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create processor: %v", err)
 	}
-	defer processor.Close()
+	defer func() { _ = processor.Close() }() // best-effort cleanup
 
 	claims := Claims{UserID: "rsa-user", Username: "rsa-username", Role: "admin"}
 
@@ -63,7 +63,7 @@ func TestRSAWithDifferentKeySizes(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Failed to create processor: %v", err)
 			}
-			defer processor.Close()
+			defer func() { _ = processor.Close() }() // best-effort cleanup
 
 			claims := Claims{UserID: "test-user", Username: "test-username"}
 			token, err := processor.Create(&claims)
@@ -97,7 +97,7 @@ func TestAllRSAMethods(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Failed to create processor: %v", err)
 			}
-			defer processor.Close()
+			defer func() { _ = processor.Close() }() // best-effort cleanup
 
 			claims := Claims{UserID: "test-user", Username: "test-username"}
 			token, err := processor.Create(&claims)
@@ -127,7 +127,7 @@ func TestECDSACreateAndValidateToken(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create processor: %v", err)
 	}
-	defer processor.Close()
+	defer func() { _ = processor.Close() }() // best-effort cleanup
 
 	claims := Claims{UserID: "ecdsa-user", Username: "ecdsa-username", Role: "user"}
 
@@ -171,7 +171,7 @@ func TestAllECDSAMethods(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Failed to create processor: %v", err)
 			}
-			defer processor.Close()
+			defer func() { _ = processor.Close() }() // best-effort cleanup
 
 			claims := Claims{UserID: "test-user", Username: "test-username"}
 			token, err := processor.Create(&claims)
@@ -203,7 +203,7 @@ func TestRSAWithPublicKeyVerification(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create processor: %v", err)
 	}
-	defer processor.Close()
+	defer func() { _ = processor.Close() }() // best-effort cleanup
 
 	claims := Claims{UserID: "test-user", Username: "test-username"}
 	token, err := processor.Create(&claims)
@@ -261,7 +261,7 @@ func TestAsymmetricAlgorithmConfusion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create RSA processor: %v", err)
 	}
-	defer rsaProc.Close()
+	defer func() { _ = rsaProc.Close() }() // best-effort cleanup
 
 	token, err := rsaProc.Create(&Claims{UserID: "confusion-user", Username: "test"})
 	if err != nil {
@@ -276,7 +276,7 @@ func TestAsymmetricAlgorithmConfusion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create ECDSA processor: %v", err)
 	}
-	defer ecdsaProc.Close()
+	defer func() { _ = ecdsaProc.Close() }() // best-effort cleanup
 
 	_, valid, err := ecdsaProc.Validate(token)
 	if valid || err == nil {
@@ -299,7 +299,7 @@ func TestECDSAWithPublicKeyVerification(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create processor: %v", err)
 	}
-	defer processor.Close()
+	defer func() { _ = processor.Close() }() // best-effort cleanup
 
 	claims := Claims{UserID: "ecdsa-pub-user", Username: "test"}
 	token, err := processor.Create(&claims)

@@ -65,22 +65,22 @@ func validateCustomClaims(claims CustomClaims) error {
 	if c, ok := claims.(*Claims); ok {
 		// validateClaims covers all fields including registered claims strings
 		if err := validateClaims(c); err != nil {
-			return fmt.Errorf("%w: %w", ErrInvalidClaims, err)
+			return fmt.Errorf("%w: %v", ErrInvalidClaims, err)
 		}
 		return nil
 	}
 	if err := claims.Validate(); err != nil {
-		return fmt.Errorf("%w: %w", ErrInvalidClaims, err)
+		return fmt.Errorf("%w: %v", ErrInvalidClaims, err)
 	}
 	if err := validateRegisteredClaimsStrings(claims.GetRegisteredClaims()); err != nil {
-		return fmt.Errorf("%w: %w", ErrInvalidClaims, err)
+		return fmt.Errorf("%w: %v", ErrInvalidClaims, err)
 	}
 	return nil
 }
 
 // createTokenWithCustomClaims creates a signed token from custom claims.
 // Caller must validate claims before calling this function.
-func createTokenWithCustomClaims(p *Processor, claims CustomClaims, ttl time.Duration) (string, error) {
+func createTokenWithCustomClaims(p *Processor, claims CustomClaims, ttl time.Duration, tokenType string) (string, error) {
 	rc := claims.GetRegisteredClaims()
 
 	// Rate limit check with fallback: Subject → *Claims.UserID → RateLimitKeyer
@@ -96,14 +96,19 @@ func createTokenWithCustomClaims(p *Processor, claims CustomClaims, ttl time.Dur
 		return "", err
 	}
 
-	// For *Claims, use pool copy to avoid mutating caller's struct
+	// For *Claims, use pool copy to avoid mutating caller's struct.
+	// Shallow struct copy is safe: we only modify scalar RegisteredClaims fields
+	// (IssuedAt, ExpiresAt, Issuer, ID, TokenType). Slice/map headers are shared
+	// with the caller's struct, but json.Encoder only reads them and the pool
+	// Claims is reset before reuse.
 	if c, ok := claims.(*Claims); ok {
 		claimsCopy := getClaims()
 		defer putClaims(claimsCopy)
-		copyClaims(claimsCopy, c)
+		*claimsCopy = *c
 		if err := p.setRegisteredDefaults(&claimsCopy.RegisteredClaims, ttl); err != nil {
 			return "", err
 		}
+		claimsCopy.TokenType = tokenType
 		return p.signClaims(claimsCopy)
 	}
 
@@ -115,6 +120,7 @@ func createTokenWithCustomClaims(p *Processor, claims CustomClaims, ttl time.Dur
 	if err := p.setRegisteredDefaults(rc, ttl); err != nil {
 		return "", err
 	}
+	rc.TokenType = tokenType
 	return p.signClaims(claims)
 }
 
@@ -122,7 +128,7 @@ func createTokenWithCustomClaims(p *Processor, claims CustomClaims, ttl time.Dur
 func validateTokenIntoCustomClaims(p *Processor, tokenString string, claims CustomClaims) error {
 	token, err := p.parseToken(tokenString, claims)
 	if err != nil {
-		return fmt.Errorf("%w: %w", ErrInvalidToken, err)
+		return fmt.Errorf("%w: %v", ErrInvalidToken, err)
 	}
 
 	defer internal.ReleaseCore(token)

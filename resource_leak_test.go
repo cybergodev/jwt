@@ -225,7 +225,7 @@ func TestProcessorCloseUnderLoad(t *testing.T) {
 
 		// Close after a brief delay
 		time.Sleep(time.Microsecond * 50)
-		processor.Close()
+		_ = processor.Close() // cleanup
 		wg.Wait()
 	}
 }
@@ -262,7 +262,7 @@ func TestNoGoroutineLeakAfterClose(t *testing.T) {
 		// Wait for auto-cleanup goroutine to be active
 		time.Sleep(100 * time.Millisecond)
 
-		processor.Close()
+		_ = processor.Close() // cleanup
 	}
 
 	// Allow goroutines to settle

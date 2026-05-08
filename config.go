@@ -20,10 +20,10 @@ type Config struct {
 	SigningMethod   SigningMethod // HS256, HS384, HS512, RS256, RS384, RS512, ES256, ES384, ES512
 
 	// Token configuration
-	AccessTokenTTL    time.Duration `yaml:"access_token_ttl" json:"access_token_ttl"`
-	RefreshTokenTTL   time.Duration `yaml:"refresh_token_ttl" json:"refresh_token_ttl"`
-	Issuer            string        `yaml:"issuer" json:"issuer"`
-	ExpectedAudience  string        `yaml:"expected_audience" json:"expected_audience"` // Optional: reject tokens without matching aud claim
+	AccessTokenTTL   time.Duration `yaml:"access_token_ttl" json:"access_token_ttl"`
+	RefreshTokenTTL  time.Duration `yaml:"refresh_token_ttl" json:"refresh_token_ttl"`
+	Issuer           string        `yaml:"issuer" json:"issuer"`
+	ExpectedAudience string        `yaml:"expected_audience" json:"expected_audience"` // Optional: reject tokens without matching aud claim
 
 	// Blacklist configuration (embedded)
 	Blacklist BlacklistConfig `yaml:"blacklist" json:"blacklist"`
@@ -83,8 +83,9 @@ func normalizeConfig(c Config) Config {
 		if c.Blacklist.CleanupInterval == 0 {
 			c.Blacklist.CleanupInterval = defaults.Blacklist.CleanupInterval
 		}
-		// bool zero-value is false — indistinguishable from "not set".
-		// Always enable for built-in store to prevent unbounded growth.
+		// For the built-in store, auto-cleanup is always enabled to prevent
+		// unbounded memory growth. EnableAutoCleanup only takes effect with
+		// a custom BlacklistStore.
 		c.Blacklist.EnableAutoCleanup = true
 	}
 
@@ -168,6 +169,9 @@ func validateAsymmetricSigningKey(method SigningMethod, key any) error {
 		if rsaKey == nil {
 			return fmt.Errorf("%w: RSA key cannot be nil", ErrInvalidSecretKey)
 		}
+		if rsaKey.N.BitLen() < 2048 {
+			return fmt.Errorf("%w: RSA key must be at least 2048 bits, got %d", ErrInvalidSecretKey, rsaKey.N.BitLen())
+		}
 	case SigningMethodES256, SigningMethodES384, SigningMethodES512:
 		ecdsaKey, ok := key.(*ecdsa.PrivateKey)
 		if !ok {
@@ -203,11 +207,6 @@ func validateECDSACurve(method SigningMethod, curve elliptic.Curve) error {
 	return nil
 }
 
-// isAsymmetric returns true if the signing method uses asymmetric keys.
-func (c *Config) isAsymmetric() bool {
-	return c.SigningMethod.isAsymmetric()
-}
-
 // validateVerificationKey validates the optional verification key for asymmetric methods.
 // When nil, the SigningKey is used for both signing and verification.
 func validateVerificationKey(method SigningMethod, key any) error {
@@ -223,6 +222,9 @@ func validateVerificationKey(method SigningMethod, key any) error {
 		}
 		if rsaKey == nil {
 			return fmt.Errorf("%w: RSA VerificationKey cannot be nil", ErrInvalidSecretKey)
+		}
+		if rsaKey.N.BitLen() < 2048 {
+			return fmt.Errorf("%w: RSA VerificationKey must be at least 2048 bits, got %d", ErrInvalidSecretKey, rsaKey.N.BitLen())
 		}
 	case SigningMethodES256, SigningMethodES384, SigningMethodES512:
 		ecdsaKey, ok := key.(*ecdsa.PublicKey)

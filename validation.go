@@ -2,6 +2,7 @@ package jwt
 
 import (
 	"fmt"
+	"math/bits"
 )
 
 const (
@@ -11,8 +12,12 @@ const (
 )
 
 func validateClaims(claims *Claims) error {
-	// Use Claims.Validate() for basic validation
 	if err := claims.Validate(); err != nil {
+		return err
+	}
+
+	// Reuse registered claims string validation (Issuer, Subject, ID, TokenType, Audience)
+	if err := validateRegisteredClaimsStrings(&claims.RegisteredClaims); err != nil {
 		return err
 	}
 
@@ -31,23 +36,11 @@ func validateClaims(claims *Claims) error {
 	if err := validateString("ClientID", claims.ClientID, maxStringLength); err != nil {
 		return err
 	}
-	if err := validateString("Issuer", claims.Issuer, maxStringLength); err != nil {
-		return err
-	}
-	if err := validateString("Subject", claims.Subject, maxStringLength); err != nil {
-		return err
-	}
-	if err := validateString("ID", claims.ID, maxStringLength); err != nil {
-		return err
-	}
 
 	if err := validateStringArray("permissions", claims.Permissions); err != nil {
 		return err
 	}
 	if err := validateStringArray("scopes", claims.Scopes); err != nil {
-		return err
-	}
-	if err := validateStringArray("audience", claims.Audience); err != nil {
 		return err
 	}
 
@@ -59,17 +52,17 @@ func validateClaims(claims *Claims) error {
 	}
 
 	for key, value := range claims.Extra {
-		if err := validateString("extra_key", key, maxStringLength); err != nil {
+		if err := validateString("extra."+key, key, maxStringLength); err != nil {
 			return err
 		}
 		switch v := value.(type) {
 		case string:
-			if err := validateString("extra_value", v, maxStringLength); err != nil {
+			if err := validateString("extra."+key, v, maxStringLength); err != nil {
 				return err
 			}
 		case []string:
 			for _, item := range v {
-				if err := validateString("extra_array_item", item, maxStringLength); err != nil {
+				if err := validateString("extra."+key, item, maxStringLength); err != nil {
 					return err
 				}
 			}
@@ -117,19 +110,26 @@ func validateString(fieldName, value string, maxLength int) error {
 		}
 	}
 
+	// Single pass: control char check + dangerous pattern detection.
+	// For positions where the first-byte index has no matching patterns
+	// (the common case for alphanumeric claims), the inner loop is skipped entirely.
+	patternEnd := valueLen - 2 // shortest pattern is 3 chars
 	for i := 0; i < valueLen; i++ {
-		if isControlChar(value[i]) {
+		c := value[i]
+		if isControlChar(c) {
 			return &ValidationError{
 				Field:   fieldName,
 				Message: "invalid control character",
 			}
 		}
-	}
-
-	if valueLen >= 3 && containsDangerousPattern(value) {
-		return &ValidationError{
-			Field:   fieldName,
-			Message: "suspicious pattern detected",
+		if i < patternEnd {
+			mask := patternMask[c]
+			if mask != 0 && matchPatternsAt(value, i, mask) {
+				return &ValidationError{
+					Field:   fieldName,
+					Message: "suspicious pattern detected",
+				}
+			}
 		}
 	}
 
@@ -160,24 +160,65 @@ var dangerousPatterns = []string{
 	"/etc/passwd",
 }
 
-// containsDangerousPattern checks if value contains any dangerous pattern.
-// Uses case-insensitive comparison without allocating a new string.
-func containsDangerousPattern(value string) bool {
-	if len(value) < 3 {
-		return false
-	}
+// patternMask maps each byte value to a bitmask of dangerousPatterns indices
+// whose first character matches (case-insensitive). This enables O(1) filtering:
+// for each position in the input, only patterns whose first byte matches the
+// current character are checked. For typical alphanumeric JWT claims, almost
+// every position has zero candidate patterns, reducing work from O(n*39) to
+// near O(n).
+var patternMask [256]uint64
 
-	// Fast path: check for patterns using case-insensitive substring search
-	// without allocating a new lowercase string
-	for _, pattern := range dangerousPatterns {
-		if len(value) < len(pattern) {
+func init() {
+	if len(dangerousPatterns) > 64 {
+		panic("dangerousPatterns exceeds 64 entries; widen patternMask type")
+	}
+	for i, p := range dangerousPatterns {
+		if len(p) == 0 {
 			continue
 		}
-		if hasSubstringIgnoreCase(value, pattern) {
+		c := p[0]
+		if c >= 'A' && c <= 'Z' {
+			c += 32
+		}
+		patternMask[c] |= 1 << uint(i)
+		if c >= 'a' && c <= 'z' {
+			patternMask[c-32] |= 1 << uint(i)
+		}
+	}
+}
+
+// matchPatternsAt checks all dangerous patterns whose first byte matches
+// value[pos], using the precomputed bitmask. Returns true if any pattern
+// matches case-insensitively at the given position.
+func matchPatternsAt(value string, pos int, mask uint64) bool {
+	n := len(value)
+	for mask != 0 {
+		bit := bits.TrailingZeros64(mask)
+		pattern := dangerousPatterns[bit]
+		mask &= mask - 1 // clear lowest set bit
+		pl := len(pattern)
+		if pos+pl > n {
+			continue
+		}
+		// First character already matched via patternMask; check remaining.
+		match := true
+		for j := 1; j < pl; j++ {
+			sc := value[pos+j]
+			pc := pattern[j]
+			if sc != pc {
+				if sc >= 'A' && sc <= 'Z' {
+					sc += 32
+				}
+				if sc != pc {
+					match = false
+					break
+				}
+			}
+		}
+		if match {
 			return true
 		}
 	}
-
 	return false
 }
 
@@ -194,54 +235,8 @@ func validateRegisteredClaimsStrings(rc *RegisteredClaims) error {
 	if err := validateString("ID", rc.ID, maxStringLength); err != nil {
 		return err
 	}
+	if err := validateString("TokenType", rc.TokenType, maxStringLength); err != nil {
+		return err
+	}
 	return validateStringArray("audience", rc.Audience)
-}
-
-// hasSubstringIgnoreCase performs case-insensitive substring search.
-// This avoids allocating a new string like strings.ToLower would.
-func hasSubstringIgnoreCase(s, substr string) bool {
-	substrLen := len(substr)
-	if substrLen == 0 {
-		return true
-	}
-	if len(s) < substrLen {
-		return false
-	}
-
-	firstChar := substr[0]
-	firstLower := firstChar
-	if firstChar >= 'A' && firstChar <= 'Z' {
-		firstLower = firstChar + 32
-	}
-
-	end := len(s) - substrLen + 1
-	for i := 0; i < end; i++ {
-		c := s[i]
-		if c >= 'A' && c <= 'Z' {
-			c += 32
-		}
-		if c != firstLower {
-			continue
-		}
-
-		// Check remaining characters
-		match := true
-		for j := 1; j < substrLen; j++ {
-			sc := s[i+j]
-			pc := substr[j]
-			// Fast case-insensitive comparison for ASCII letters
-			if sc != pc {
-				if (sc >= 'A' && sc <= 'Z' && sc+32 != pc) ||
-					(sc >= 'a' && sc <= 'z' && sc-32 != pc) ||
-					(sc < 'A' || sc > 'z' || (sc > 'Z' && sc < 'a')) {
-					match = false
-					break
-				}
-			}
-		}
-		if match {
-			return true
-		}
-	}
-	return false
 }

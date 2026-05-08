@@ -163,6 +163,67 @@ func SignToken(alg string, claims any, method Method, key any) (string, error) {
 	return string(fullBuf[:sigOffset+sigLen]), nil
 }
 
+// SignTokenHMAC is a type-specialized variant of SignToken for HMAC algorithms.
+// It accepts the HMAC key as []byte directly, avoiding the interface boxing that
+// causes the key to escape to heap.
+func SignTokenHMAC(alg string, claims any, method Method, key []byte) (string, error) {
+	headerEncoded := precomputedHeaders[alg]
+	if headerEncoded == "" {
+		return "", fmt.Errorf("no precomputed header for algorithm: %s", alg)
+	}
+
+	eb := encoderBufPool.Get().(*encoderBuf)
+	eb.buf.Reset()
+	if err := eb.enc.Encode(claims); err != nil {
+		encoderBufPool.Put(eb)
+		return "", fmt.Errorf("failed to marshal claims: %w", err)
+	}
+	claimsJSON := eb.buf.Bytes()
+	if n := len(claimsJSON); n > 0 && claimsJSON[n-1] == '\n' {
+		claimsJSON = claimsJSON[:n-1]
+	}
+
+	claimsEncodedLen := base64.RawURLEncoding.EncodedLen(len(claimsJSON))
+	signingStringLen := len(headerEncoded) + 1 + claimsEncodedLen
+
+	bufPtr := signingBufPool.Get().(*[]byte)
+	defer func() {
+		encoderBufPool.Put(eb)
+		if cap(*bufPtr) <= 4096 {
+			*bufPtr = (*bufPtr)[:0]
+			signingBufPool.Put(bufPtr)
+		}
+	}()
+
+	needed := signingStringLen + 1 + 1024
+	if cap(*bufPtr) < needed {
+		*bufPtr = make([]byte, 0, needed+128)
+	}
+
+	signingStringBuf := (*bufPtr)[:signingStringLen]
+	copy(signingStringBuf, stringToBytes(headerEncoded))
+	signingStringBuf[len(headerEncoded)] = '.'
+	base64.RawURLEncoding.Encode(signingStringBuf[len(headerEncoded)+1:], claimsJSON)
+
+	signingString := unsafe.String(&signingStringBuf[0], len(signingStringBuf))
+
+	fullBuf := (*bufPtr)[:cap(*bufPtr)]
+	sigOffset := signingStringLen + 1
+	fullBuf[sigOffset-1] = '.'
+
+	// Type-assert to HMAC method for direct []byte key usage.
+	hm, ok := method.(*hmacSigningMethod)
+	if !ok {
+		return "", fmt.Errorf("internal error: SignTokenHMAC called with non-HMAC method %T", method)
+	}
+	sigLen, err := hm.SignToHMAC(fullBuf[sigOffset:], signingString, key)
+	if err != nil {
+		return "", fmt.Errorf("failed to sign token: %w", err)
+	}
+
+	return string(fullBuf[:sigOffset+sigLen]), nil
+}
+
 // GetInternalSigningMethod retrieves a signing method by algorithm name.
 // All built-in methods are registered in init(), so this simply checks the registry.
 func GetInternalSigningMethod(alg string) (Method, error) {

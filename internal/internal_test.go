@@ -85,8 +85,8 @@ func TestHMACInvalidKey(t *testing.T) {
 	if err == nil {
 		t.Error("Expected error for non-[]byte key in Sign, got nil")
 	}
-	if !strings.Contains(err.Error(), "must be []byte") {
-		t.Errorf("Expected 'must be []byte' in error, got: %v", err)
+	if !strings.Contains(err.Error(), "invalid key type") {
+		t.Errorf("Expected 'invalid key type' in error, got: %v", err)
 	}
 
 	// Test Verify with non-[]byte key
@@ -94,8 +94,8 @@ func TestHMACInvalidKey(t *testing.T) {
 	if err == nil {
 		t.Error("Expected error for non-[]byte key in Verify, got nil")
 	}
-	if !strings.Contains(err.Error(), "must be []byte") {
-		t.Errorf("Expected 'must be []byte' in error, got: %v", err)
+	if !strings.Contains(err.Error(), "invalid key type") {
+		t.Errorf("Expected 'invalid key type' in error, got: %v", err)
 	}
 
 	// Test Verify with invalid base64 signature
@@ -105,7 +105,6 @@ func TestHMACInvalidKey(t *testing.T) {
 		t.Error("Expected error for invalid base64 signature, got nil")
 	}
 }
-
 
 func TestGetInternalSigningMethod(t *testing.T) {
 	tests := []struct {
@@ -384,7 +383,7 @@ func TestParseWithClaimsErrors(t *testing.T) {
 				return []byte("test-secret-key"), nil
 			}
 
-			_, err := ParseWithClaims(tt.tokenString, claims, keyFunc)
+			_, err := ParseWithClaims(tt.tokenString, claims, keyFunc, "")
 			if err == nil {
 				t.Error("Expected error, got nil")
 			} else if !strings.Contains(err.Error(), tt.wantErr) {
@@ -415,7 +414,7 @@ func TestParseWithClaimsKeyFuncError(t *testing.T) {
 	}
 
 	parsedClaims := make(map[string]any)
-	_, err = ParseWithClaims(tokenString, &parsedClaims, keyFunc)
+	_, err = ParseWithClaims(tokenString, &parsedClaims, keyFunc, "")
 	if err == nil {
 		t.Error("Expected error from key function")
 	}
@@ -446,7 +445,7 @@ func TestParseWithClaimsInvalidSignature(t *testing.T) {
 	}
 
 	parsedClaims := make(map[string]any)
-	parsedToken, err := ParseWithClaims(tokenString, &parsedClaims, keyFunc)
+	parsedToken, err := ParseWithClaims(tokenString, &parsedClaims, keyFunc, "")
 	if err != nil {
 		t.Fatalf("Parse should not return error, got %v", err)
 	}
@@ -607,7 +606,7 @@ func TestZeroBytes(t *testing.T) {
 
 func TestMemoryStoreBasicOperations(t *testing.T) {
 	store := NewMemoryStore(100, time.Minute, false, nil)
-	defer store.Close()
+	defer func() { _ = store.Close() }() // best-effort cleanup
 
 	tokenID := "test-token-123"
 	expiresAt := time.Now().Add(time.Hour)
@@ -639,7 +638,7 @@ func TestMemoryStoreBasicOperations(t *testing.T) {
 
 func TestMemoryStoreExpiration(t *testing.T) {
 	store := NewMemoryStore(100, time.Minute, false, nil)
-	defer store.Close()
+	defer func() { _ = store.Close() }() // best-effort cleanup
 
 	tokenID := "expired-token"
 	expiresAt := time.Now().Add(-time.Hour) // Already expired
@@ -661,20 +660,20 @@ func TestMemoryStoreExpiration(t *testing.T) {
 
 func TestMemoryStoreCleanup(t *testing.T) {
 	store := NewMemoryStore(100, time.Minute, false, nil)
-	defer store.Close()
+	defer func() { _ = store.Close() }() // best-effort cleanup
 
 	// Add expired tokens
 	for i := 0; i < 5; i++ {
 		tokenID := "expired-" + string(rune('0'+i))
 		expiresAt := time.Now().Add(-time.Hour)
-		store.Add(tokenID, expiresAt)
+		_ = store.Add(tokenID, expiresAt) // test setup
 	}
 
 	// Add valid tokens
 	for i := 0; i < 3; i++ {
 		tokenID := "valid-" + string(rune('0'+i))
 		expiresAt := time.Now().Add(time.Hour)
-		store.Add(tokenID, expiresAt)
+		_ = store.Add(tokenID, expiresAt) // test setup
 	}
 
 	// Run cleanup
@@ -691,7 +690,7 @@ func TestMemoryStoreCleanup(t *testing.T) {
 func TestMemoryStoreMaxSize(t *testing.T) {
 	maxSize := 10
 	store := NewMemoryStore(maxSize, time.Minute, false, nil)
-	defer store.Close()
+	defer func() { _ = store.Close() }() // best-effort cleanup
 
 	// Add more tokens than max size
 	for i := 0; i < maxSize+5; i++ {
@@ -716,12 +715,12 @@ func TestMemoryStoreMaxSize(t *testing.T) {
 
 func TestMemoryStoreAutoCleanup(t *testing.T) {
 	store := NewMemoryStore(100, 50*time.Millisecond, true, nil)
-	defer store.Close()
+	defer func() { _ = store.Close() }() // best-effort cleanup
 
 	// Add expired token
 	tokenID := "auto-cleanup-token"
 	expiresAt := time.Now().Add(-time.Hour)
-	store.Add(tokenID, expiresAt)
+	_ = store.Add(tokenID, expiresAt) // test setup
 
 	// Wait for auto cleanup
 	time.Sleep(100 * time.Millisecond)
@@ -742,7 +741,7 @@ func TestMemoryStoreClose(t *testing.T) {
 
 	tokenID := "test-token"
 	expiresAt := time.Now().Add(time.Hour)
-	store.Add(tokenID, expiresAt)
+	_ = store.Add(tokenID, expiresAt) // test setup
 
 	// Close store
 	err := store.Close()
@@ -752,18 +751,18 @@ func TestMemoryStoreClose(t *testing.T) {
 
 	// Operations after close should fail
 	err = store.Add("new-token", time.Now().Add(time.Hour))
-	if err != errStoreClosed {
-		t.Errorf("Expected errStoreClosed, got %v", err)
+	if err != ErrStoreClosed {
+		t.Errorf("Expected ErrStoreClosed, got %v", err)
 	}
 
 	_, err = store.Contains(tokenID)
-	if err != errStoreClosed {
-		t.Errorf("Expected errStoreClosed, got %v", err)
+	if err != ErrStoreClosed {
+		t.Errorf("Expected ErrStoreClosed, got %v", err)
 	}
 
 	_, err = store.Cleanup()
-	if err != errStoreClosed {
-		t.Errorf("Expected errStoreClosed, got %v", err)
+	if err != ErrStoreClosed {
+		t.Errorf("Expected ErrStoreClosed, got %v", err)
 	}
 
 	// Double close should be safe
@@ -775,7 +774,7 @@ func TestMemoryStoreClose(t *testing.T) {
 
 func TestMemoryStoreConcurrency(t *testing.T) {
 	store := NewMemoryStore(1000, time.Minute, false, nil)
-	defer store.Close()
+	defer func() { _ = store.Close() }() // best-effort cleanup
 
 	done := make(chan bool)
 	numGoroutines := 10
@@ -786,8 +785,8 @@ func TestMemoryStoreConcurrency(t *testing.T) {
 			for j := 0; j < tokensPerGoroutine; j++ {
 				tokenID := string(rune('a'+id)) + "-" + string(rune('0'+j))
 				expiresAt := time.Now().Add(time.Hour)
-				store.Add(tokenID, expiresAt)
-				store.Contains(tokenID)
+				_ = store.Add(tokenID, expiresAt) // stress test: error not actionable
+				_, _ = store.Contains(tokenID)    // stress test: result ignored
 			}
 			done <- true
 		}(i)
@@ -813,7 +812,7 @@ func TestMemoryStoreConcurrency(t *testing.T) {
 
 func TestManagerBlacklistToken(t *testing.T) {
 	store := NewMemoryStore(1000, 5*time.Minute, false, nil)
-	defer store.Close()
+	defer func() { _ = store.Close() }() // best-effort cleanup
 
 	manager := NewManagerWithClock(store, nil)
 
@@ -847,7 +846,7 @@ func TestManagerBlacklistToken(t *testing.T) {
 func TestManagerIsBlacklisted(t *testing.T) {
 	store := NewMemoryStore(1000, 5*time.Minute, false, nil)
 	manager := NewManagerWithClock(store, nil)
-	defer manager.Close()
+	defer func() { _ = manager.Close() }() // best-effort cleanup
 
 	// Test with empty token ID
 	isBlacklisted, err := manager.IsBlacklisted("")
@@ -871,7 +870,7 @@ func TestManagerIsBlacklisted(t *testing.T) {
 func TestManagerBlacklistTokenString(t *testing.T) {
 	store := NewMemoryStore(1000, 5*time.Minute, false, nil)
 	manager := NewManagerWithClock(store, nil)
-	defer manager.Close()
+	defer func() { _ = manager.Close() }() // best-effort cleanup
 
 	tests := []struct {
 		name        string
@@ -1039,8 +1038,8 @@ func TestRSAInvalidKeyType(t *testing.T) {
 	if err == nil {
 		t.Error("Expected error for non-RSA key in Sign, got nil")
 	}
-	if !strings.Contains(err.Error(), "must be *rsa.PrivateKey") {
-		t.Errorf("Expected 'must be *rsa.PrivateKey' in error, got: %v", err)
+	if !strings.Contains(err.Error(), "invalid key type") {
+		t.Errorf("Expected 'invalid key type' in error, got: %v", err)
 	}
 
 	// Test Verify with non-RSA key
@@ -1048,8 +1047,8 @@ func TestRSAInvalidKeyType(t *testing.T) {
 	if err == nil {
 		t.Error("Expected error for non-RSA key in Verify, got nil")
 	}
-	if !strings.Contains(err.Error(), "must be *rsa.PublicKey") {
-		t.Errorf("Expected 'must be *rsa.PublicKey' in error, got: %v", err)
+	if !strings.Contains(err.Error(), "invalid key type") {
+		t.Errorf("Expected 'invalid key type' in error, got: %v", err)
 	}
 
 	// Test Verify with invalid base64 signature
@@ -1145,8 +1144,8 @@ func TestECDSAInvalidKeyType(t *testing.T) {
 	if err == nil {
 		t.Error("Expected error for non-ECDSA key in Sign, got nil")
 	}
-	if !strings.Contains(err.Error(), "must be *ecdsa.PrivateKey") {
-		t.Errorf("Expected 'must be *ecdsa.PrivateKey' in error, got: %v", err)
+	if !strings.Contains(err.Error(), "invalid key type") {
+		t.Errorf("Expected 'invalid key type' in error, got: %v", err)
 	}
 
 	// Test Verify with non-ECDSA key
@@ -1154,8 +1153,8 @@ func TestECDSAInvalidKeyType(t *testing.T) {
 	if err == nil {
 		t.Error("Expected error for non-ECDSA key in Verify, got nil")
 	}
-	if !strings.Contains(err.Error(), "must be *ecdsa.PublicKey") {
-		t.Errorf("Expected 'must be *ecdsa.PublicKey' in error, got: %v", err)
+	if !strings.Contains(err.Error(), "invalid key type") {
+		t.Errorf("Expected 'invalid key type' in error, got: %v", err)
 	}
 
 	// Test Verify with invalid base64 signature
@@ -1227,7 +1226,7 @@ func TestSigningMethodHash(t *testing.T) {
 
 func TestNewManagerWithClock(t *testing.T) {
 	store := NewMemoryStore(100, time.Minute, false, nil)
-	defer store.Close()
+	defer func() { _ = store.Close() }() // best-effort cleanup
 
 	// With custom clock
 	fixedTime := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
@@ -1246,12 +1245,12 @@ func TestNewManagerWithClock(t *testing.T) {
 
 	// With nil clock (should use time.Now)
 	store2 := NewMemoryStore(100, time.Minute, false, nil)
-	defer store2.Close()
+	defer func() { _ = store2.Close() }() // best-effort cleanup
 	manager2 := NewManagerWithClock(store2, nil)
 	if manager2 == nil {
 		t.Fatal("NewManagerWithClock with nil clock returned nil")
 	}
-	manager2.Close()
+	_ = manager2.Close() // test cleanup
 }
 
 // =============================================================================
@@ -1260,10 +1259,10 @@ func TestNewManagerWithClock(t *testing.T) {
 
 func TestParseTokenID(t *testing.T) {
 	tests := []struct {
-		name       string
-		token      string
-		wantID     string
-		wantError  bool
+		name      string
+		token     string
+		wantID    string
+		wantError bool
 	}{
 		{
 			name:   "valid token with jti",
@@ -1330,12 +1329,12 @@ func TestKeyAnalysisEdgeCases(t *testing.T) {
 		}
 	})
 
-		t.Run("OnlyOneClass", func(t *testing.T) {
-			// Only lowercase letters - should be weak (only 1 class)
-			if !hasLowEntropy([]byte("abcdefghijklmnopqrstuvwx")) {
-				t.Error("Single-class keys should be detected as low entropy")
-			}
-		})
+	t.Run("OnlyOneClass", func(t *testing.T) {
+		// Only lowercase letters - should be weak (only 1 class)
+		if !hasLowEntropy([]byte("abcdefghijklmnopqrstuvwx")) {
+			t.Error("Single-class keys should be detected as low entropy")
+		}
+	})
 
 	t.Run("SequentialWindow", func(t *testing.T) {
 		// Key with sequential pattern in a window
@@ -1385,7 +1384,6 @@ func TestKeyAnalysisEdgeCases(t *testing.T) {
 		}
 	})
 }
-
 
 // =============================================================================
 // RSA-PSS Signing Method Tests
@@ -1504,8 +1502,8 @@ func TestPSSInvalidKeyType(t *testing.T) {
 	if err == nil {
 		t.Error("Expected error for non-RSA key in Sign, got nil")
 	}
-	if !strings.Contains(err.Error(), "must be *rsa.PrivateKey") {
-		t.Errorf("Expected 'must be *rsa.PrivateKey' in error, got: %v", err)
+	if !strings.Contains(err.Error(), "invalid key type") {
+		t.Errorf("Expected 'invalid key type' in error, got: %v", err)
 	}
 
 	_, err = method.Sign(signingString, (*rsa.PrivateKey)(nil))
@@ -1517,8 +1515,8 @@ func TestPSSInvalidKeyType(t *testing.T) {
 	if err == nil {
 		t.Error("Expected error for non-RSA key in Verify, got nil")
 	}
-	if !strings.Contains(err.Error(), "must be *rsa.PublicKey") {
-		t.Errorf("Expected 'must be *rsa.PublicKey' in error, got: %v", err)
+	if !strings.Contains(err.Error(), "invalid key type") {
+		t.Errorf("Expected 'invalid key type' in error, got: %v", err)
 	}
 
 	err = method.Verify(signingString, "signature", (*rsa.PublicKey)(nil))

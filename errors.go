@@ -3,6 +3,8 @@ package jwt
 import (
 	"errors"
 	"fmt"
+
+	"github.com/cybergodev/jwt/internal"
 )
 
 // Sentinel errors for common failure cases.
@@ -25,6 +27,8 @@ var (
 	ErrTokenRevoked = errors.New("token revoked")
 	// ErrTokenMissingID indicates that the token does not contain a jti (JWT ID) claim required for blacklist operations.
 	ErrTokenMissingID = errors.New("token missing ID")
+	// ErrTokenTypeMismatch indicates that a refresh operation received a token of the wrong type.
+	ErrTokenTypeMismatch = errors.New("token type mismatch")
 	// ErrTokenExpired indicates that the token's exp (expiration) claim has passed.
 	ErrTokenExpired = errors.New("token expired")
 	// ErrTokenNotValidYet indicates that the token's nbf (not-before) claim is in the future.
@@ -46,7 +50,7 @@ var (
 	// ErrProcessorClosed indicates that an operation was attempted on a closed Processor.
 	ErrProcessorClosed = errors.New("processor closed")
 	// ErrStoreClosed indicates that an operation was attempted on a closed store.
-	ErrStoreClosed = errors.New("store closed")
+	ErrStoreClosed = internal.ErrStoreClosed
 )
 
 // ValidationError represents a field-level validation failure.

@@ -59,7 +59,7 @@ func TestGenericCreateAndValidateToken(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create processor: %v", err)
 	}
-	defer processor.Close()
+	defer func() { _ = processor.Close() }() // best-effort cleanup
 
 	claims := &TestCustomClaims{
 		UserID:  "user123",
@@ -105,7 +105,7 @@ func TestGenericCreateRefreshToken(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create processor: %v", err)
 	}
-	defer processor.Close()
+	defer func() { _ = processor.Close() }() // best-effort cleanup
 
 	claims := &TestCustomClaims{UserID: "user123", Email: "test@example.com"}
 	token, err := processor.CreateRefresh(claims)
@@ -128,7 +128,7 @@ func TestGenericInvalidClaims(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create processor: %v", err)
 	}
-	defer processor.Close()
+	defer func() { _ = processor.Close() }() // best-effort cleanup
 
 	tests := []struct {
 		name   string
@@ -154,7 +154,7 @@ func TestGenericParseUnverified(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create processor: %v", err)
 	}
-	defer processor.Close()
+	defer func() { _ = processor.Close() }() // best-effort cleanup
 
 	claims := &TestCustomClaims{UserID: "user000", Email: "parse@example.com"}
 	token, err := processor.Create(claims)
@@ -179,7 +179,7 @@ func TestGenericClaimsImplementsInterface(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create processor: %v", err)
 	}
-	defer processor.Close()
+	defer func() { _ = processor.Close() }() // best-effort cleanup
 
 	claims := &Claims{UserID: "standard-user", Username: "standard-username", Role: "admin"}
 	token, err := processor.Create(claims)
@@ -204,7 +204,7 @@ func TestGenericExpiredToken(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create processor: %v", err)
 	}
-	defer processor.Close()
+	defer func() { _ = processor.Close() }() // best-effort cleanup
 
 	claims := &TestCustomClaims{
 		UserID: "expired-user",
@@ -214,7 +214,7 @@ func TestGenericExpiredToken(t *testing.T) {
 		},
 	}
 
-	token, err := createTokenWithCustomClaims(processor, claims, time.Hour)
+	token, err := createTokenWithCustomClaims(processor, claims, time.Hour, TokenTypeAccess)
 	if err != nil {
 		t.Fatalf("Failed to create token: %v", err)
 	}
@@ -238,7 +238,7 @@ func TestGenericCustomStore(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create processor with custom store: %v", err)
 	}
-	defer processor.Close()
+	defer func() { _ = processor.Close() }() // best-effort cleanup
 
 	claims := &TestCustomClaims{UserID: "store-user", Email: "store@example.com"}
 	token, err := processor.Create(claims)
@@ -252,4 +252,3 @@ func TestGenericCustomStore(t *testing.T) {
 		t.Fatalf("Token should be valid with custom store: %v", err)
 	}
 }
-

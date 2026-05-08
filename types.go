@@ -30,7 +30,7 @@ func NewNumericDate(t time.Time) NumericDate {
 // MarshalJSON implements json.Marshaler for NumericDate.
 // Returns the Unix timestamp as a JSON number, or "null" for zero time.
 func (date *NumericDate) MarshalJSON() ([]byte, error) {
-	if date.Time.IsZero() {
+	if date.IsZero() {
 		return nullBytes, nil
 	}
 
@@ -102,13 +102,23 @@ const (
 
 	// RSA-PSS signing methods (asymmetric, recommended over PKCS#1 v1.5)
 	SigningMethodPS256 SigningMethod = "PS256"
+	// SigningMethodPS384 uses RSA-PSS with SHA-384.
 	SigningMethodPS384 SigningMethod = "PS384"
+	// SigningMethodPS512 uses RSA-PSS with SHA-512.
 	SigningMethodPS512 SigningMethod = "PS512"
 
 	// ECDSA signing methods (asymmetric)
 	SigningMethodES256 SigningMethod = "ES256"
 	SigningMethodES384 SigningMethod = "ES384"
 	SigningMethodES512 SigningMethod = "ES512"
+)
+
+// Token type constants used in the RegisteredClaims TokenType field.
+// Access tokens are created by [Processor.Create]; refresh tokens by [Processor.CreateRefresh].
+// The [Processor.Refresh] and [Processor.RefreshInto] methods reject tokens with TokenTypeAccess.
+const (
+	TokenTypeAccess  = "access"
+	TokenTypeRefresh = "refresh"
 )
 
 // isHMAC returns true if the signing method uses HMAC (symmetric) algorithms.
@@ -139,13 +149,14 @@ func (m SigningMethod) isValid() bool {
 // RegisteredClaims contains the standard JWT claims defined in RFC 7519 §4.1.
 // These are set automatically during token creation and validated during verification.
 type RegisteredClaims struct {
-	Issuer    string      `json:"iss,omitempty"`
-	Subject   string      `json:"sub,omitempty"`
+	Issuer    string        `json:"iss,omitempty"`
+	Subject   string        `json:"sub,omitempty"`
 	Audience  StringOrSlice `json:"aud,omitempty"`
-	ExpiresAt NumericDate `json:"exp"`
-	NotBefore NumericDate `json:"nbf"`
-	IssuedAt  NumericDate `json:"iat"`
-	ID        string      `json:"jti,omitempty"`
+	ExpiresAt NumericDate   `json:"exp"`
+	NotBefore NumericDate   `json:"nbf"`
+	IssuedAt  NumericDate   `json:"iat"`
+	ID        string        `json:"jti,omitempty"`
+	TokenType string        `json:"token_type,omitempty"`
 }
 
 // StringOrSlice holds a []string that can be unmarshaled from either
@@ -174,6 +185,15 @@ func (s *StringOrSlice) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
+// MarshalJSON implements json.Marshaler for StringOrSlice.
+// A single-element slice is serialized as a JSON string per RFC 7519 §4.1.3.
+func (s StringOrSlice) MarshalJSON() ([]byte, error) {
+	if len(s) == 1 {
+		return json.Marshal(s[0])
+	}
+	return json.Marshal([]string(s))
+}
+
 func (c *RegisteredClaims) reset() {
 	c.Issuer = ""
 	c.Subject = ""
@@ -182,6 +202,7 @@ func (c *RegisteredClaims) reset() {
 	c.NotBefore = NumericDate{}
 	c.IssuedAt = NumericDate{}
 	c.ID = ""
+	c.TokenType = ""
 }
 
 // Claims represents JWT claims with custom application-specific fields.
@@ -204,9 +225,7 @@ func (c *Claims) reset() {
 	c.SessionID = ""
 	c.ClientID = ""
 
-	// Set to nil instead of reallocating: copyClaims uses [:0:0] which
-	// forces independent backing arrays, and JSON unmarshal creates new
-	// allocations regardless. Avoids ~4 allocations per reset call.
+	// Set to nil for GC: copyClaims deep-copies and JSON unmarshal allocates fresh.
 	c.Permissions = nil
 	c.Scopes = nil
 	c.Extra = nil

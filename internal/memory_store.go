@@ -8,7 +8,8 @@ import (
 )
 
 var (
-	errStoreClosed = errors.New("blacklist store is closed")
+	// ErrStoreClosed indicates that an operation was attempted on a closed store.
+	ErrStoreClosed = errors.New("blacklist store is closed")
 	errStoreFull   = errors.New("blacklist store is full")
 )
 
@@ -21,7 +22,7 @@ func mapCapacity(maxSize int) int {
 	if maxSize < 8 {
 		return maxSize
 	}
-	return 8
+	return min(maxSize, 64)
 }
 
 type memoryStore struct {
@@ -64,7 +65,7 @@ func (m *memoryStore) Add(tokenID string, expiresAt time.Time) error {
 	defer m.mu.Unlock()
 
 	if m.closed {
-		return errStoreClosed
+		return ErrStoreClosed
 	}
 
 	if len(m.tokens) >= m.maxSize {
@@ -87,7 +88,7 @@ func (m *memoryStore) Contains(tokenID string) (bool, error) {
 	defer m.mu.RUnlock()
 
 	if m.closed {
-		return false, errStoreClosed
+		return false, ErrStoreClosed
 	}
 
 	expiresAt, exists := m.tokens[tokenID]
@@ -109,7 +110,7 @@ func (m *memoryStore) Cleanup() (int, error) {
 	defer m.mu.Unlock()
 
 	if m.closed {
-		return 0, errStoreClosed
+		return 0, ErrStoreClosed
 	}
 
 	return m.cleanupExpiredUnsafe(m.nowFunc()), nil
@@ -195,7 +196,7 @@ func (m *memoryStore) startAutoCleanup(interval time.Duration) {
 		for {
 			select {
 			case <-m.cleanupTicker.C:
-				m.Cleanup()
+				_, _ = m.Cleanup() // best-effort background cleanup
 			case <-m.stopCleanup:
 				return
 			}

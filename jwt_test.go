@@ -43,7 +43,7 @@ func TestProcessorCreation(t *testing.T) {
 				t.Error("Expected processor to be created")
 				return
 			}
-			defer processor.Close()
+			defer func() { _ = processor.Close() }() // best-effort cleanup
 		})
 	}
 }
@@ -56,7 +56,7 @@ func TestTokenLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create processor: %v", err)
 	}
-	defer processor.Close()
+	defer func() { _ = processor.Close() }() // best-effort cleanup
 
 	claims := Claims{
 		UserID:      "user123",
@@ -104,7 +104,7 @@ func TestRefreshToken(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create processor: %v", err)
 	}
-	defer processor.Close()
+	defer func() { _ = processor.Close() }() // best-effort cleanup
 
 	claims := Claims{UserID: "user123", Username: "testuser", Role: "admin"}
 
@@ -157,7 +157,7 @@ func TestProcessorWithConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create processor with config: %v", err)
 	}
-	defer processor.Close()
+	defer func() { _ = processor.Close() }() // best-effort cleanup
 
 	claims := Claims{UserID: "test-user", Username: "testuser"}
 	token, err := processor.Create(&claims)
@@ -187,7 +187,7 @@ func TestTokenExpiration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create processor: %v", err)
 	}
-	defer processor.Close()
+	defer func() { _ = processor.Close() }() // best-effort cleanup
 
 	claims := Claims{UserID: "user123", Username: "testuser"}
 	token, err := processor.Create(&claims)

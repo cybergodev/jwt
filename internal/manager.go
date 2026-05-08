@@ -77,6 +77,30 @@ func (m *Manager) IsBlacklisted(tokenID string) (bool, error) {
 	return m.store.Contains(tokenID)
 }
 
+// BlacklistVerified adds a verified token ID to the blacklist.
+// Unlike BlacklistTokenString, this accepts a pre-verified token ID and expiration,
+// eliminating the risk of forged tokens polluting the blacklist.
+func (m *Manager) BlacklistVerified(tokenID string, expiresAt time.Time) error {
+	if tokenID == "" {
+		return fmt.Errorf("token ID cannot be empty")
+	}
+
+	blacklistExpiry := m.nowFunc().Add(DefaultBlacklistTTL)
+	if !expiresAt.IsZero() {
+		tokenExp := expiresAt
+		if tokenExp.After(blacklistExpiry) {
+			maxExp := m.nowFunc().Add(MaxBlacklistTTL)
+			if tokenExp.After(maxExp) {
+				blacklistExpiry = maxExp
+			} else {
+				blacklistExpiry = tokenExp
+			}
+		}
+	}
+
+	return m.blacklistToken(tokenID, blacklistExpiry)
+}
+
 func (m *Manager) BlacklistTokenString(tokenString string) error {
 	if tokenString == "" {
 		return fmt.Errorf("token string cannot be empty")

@@ -69,7 +69,7 @@ func TestNumericDateUnmarshalJSON(t *testing.T) {
 			}
 
 			if tt.wantZero {
-				if !nd.Time.IsZero() {
+				if !nd.IsZero() {
 					t.Error("Expected zero time")
 				}
 			} else {
@@ -168,7 +168,7 @@ func TestRegisteredClaimsFields(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create processor: %v", err)
 	}
-	defer processor.Close()
+	defer func() { _ = processor.Close() }() // best-effort cleanup
 
 	claims := Claims{UserID: "test_user", Username: "test"}
 	token, err := processor.Create(&claims)
@@ -194,11 +194,11 @@ func TestRegisteredClaimsFields(t *testing.T) {
 
 func TestSigningMethodClassification(t *testing.T) {
 	tests := []struct {
-		name        string
-		method      SigningMethod
-		isHMAC      bool
-		isAsym      bool
-		isValid     bool
+		name    string
+		method  SigningMethod
+		isHMAC  bool
+		isAsym  bool
+		isValid bool
 	}{
 		{"HS256", SigningMethodHS256, true, false, true},
 		{"HS384", SigningMethodHS384, true, false, true},
