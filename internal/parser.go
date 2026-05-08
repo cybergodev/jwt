@@ -1,6 +1,7 @@
 package internal
 
 import (
+	"errors"
 	"fmt"
 	"sync"
 	"unsafe"
@@ -16,6 +17,10 @@ var (
 	errInvalidTokenFormat = fmt.Errorf("invalid token format: expected 3 parts separated by dots")
 	errEmptyHeader        = fmt.Errorf("empty header: JWT must have a valid header")
 	errEmptySignature     = fmt.Errorf("empty signature: JWT must have a valid signature")
+
+	// ErrAlgorithmMismatch indicates that the token's algorithm does not match
+	// the expected signing method.
+	ErrAlgorithmMismatch = errors.New("token algorithm does not match configured signing method")
 )
 
 // parseBufPool pools byte slices for parsing operations.
@@ -80,7 +85,7 @@ func fastSplit3(s string, sep byte) (string, string, string, bool) {
 	return s[:first], s[first+1 : second], s[second+1:], true
 }
 
-func ParseWithClaims(tokenString string, claims any, keyFunc func(*Core) (any, error)) (*Core, error) {
+func ParseWithClaims(tokenString string, claims any, keyFunc func(*Core) (any, error), expectedAlg string) (*Core, error) {
 	if len(tokenString) == 0 {
 		return nil, errEmptyToken
 	}
@@ -97,19 +102,46 @@ func ParseWithClaims(tokenString string, claims any, keyFunc func(*Core) (any, e
 		return nil, errEmptySignature
 	}
 
-	// Fast path: extract algorithm without full JSON decode of header.
-	// This avoids map[string]any allocation for the happy path since
-	// we only need alg for method lookup and keyFunc typically only reads alg.
 	alg := DecodeHeaderAlg(part1)
 	if alg != "" {
-		return parseFastPath(part1, part2, part3, tokenString, alg, claims, keyFunc)
+		return parseFastPath(part1, part2, part3, tokenString, alg, claims, keyFunc, expectedAlg)
 	}
 
-	// Slow path: full header decode for malformed/unusual headers
-	return parseSlowPath(part1, part2, part3, tokenString, claims, keyFunc)
+	return parseSlowPath(part1, part2, part3, tokenString, claims, keyFunc, expectedAlg)
 }
 
-func parseFastPath(part1, part2, part3, tokenString, alg string, claims any, keyFunc func(*Core) (any, error)) (*Core, error) {
+// ParseWithClaimsHMAC is a type-specialized variant of ParseWithClaims for HMAC.
+// It accepts the HMAC key as []byte directly, avoiding interface boxing overhead
+// that causes the key to escape to heap on every call.
+func ParseWithClaimsHMAC(tokenString string, claims any, hmacKey []byte, expectedAlg string) (*Core, error) {
+	if len(tokenString) == 0 {
+		return nil, errEmptyToken
+	}
+	if len(tokenString) > maxTokenLength {
+		return nil, errTokenTooLarge
+	}
+
+	part1, part2, part3, ok := fastSplit3(tokenString, '.')
+	if !ok {
+		return nil, errInvalidTokenFormat
+	}
+
+	if part3 == "" {
+		return nil, errEmptySignature
+	}
+
+	alg := DecodeHeaderAlg(part1)
+	if alg == "" {
+		return parseSlowPathHMAC(part1, part2, part3, tokenString, claims, hmacKey, expectedAlg)
+	}
+
+	return parseFastPathHMAC(part1, part2, part3, tokenString, alg, claims, hmacKey, expectedAlg)
+}
+
+func parseFastPath(part1, part2, part3, tokenString, alg string, claims any, keyFunc func(*Core) (any, error), expectedAlg string) (*Core, error) {
+	if expectedAlg != "" && alg != expectedAlg {
+		return nil, ErrAlgorithmMismatch
+	}
 	if isInsecureAlgorithm(alg) {
 		return nil, fmt.Errorf("insecure algorithm not allowed: %s", alg)
 	}
@@ -129,9 +161,6 @@ func parseFastPath(part1, part2, part3, tokenString, alg string, claims any, key
 	token.Claims = claims
 	token.Valid = false
 	token.Method = method
-
-	// Cache alg on the struct to avoid string→interface boxing in Header map,
-	// which costs one heap allocation per parse. keyFunc reads Core.Alg first.
 	token.Alg = alg
 
 	key, err := keyFunc(token)
@@ -143,7 +172,35 @@ func parseFastPath(part1, part2, part3, tokenString, alg string, claims any, key
 	return verifyAndReturn(token, part1, part2, part3, method, key)
 }
 
-func parseSlowPath(part1, part2, part3, tokenString string, claims any, keyFunc func(*Core) (any, error)) (*Core, error) {
+func parseFastPathHMAC(part1, part2, part3, tokenString, alg string, claims any, hmacKey []byte, expectedAlg string) (*Core, error) {
+	if alg != expectedAlg {
+		return nil, ErrAlgorithmMismatch
+	}
+	if isInsecureAlgorithm(alg) {
+		return nil, fmt.Errorf("insecure algorithm not allowed: %s", alg)
+	}
+
+	method, err := GetInternalSigningMethod(alg)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := DecodeSegment(part2, claims); err != nil {
+		return nil, fmt.Errorf("failed to decode claims: %w", err)
+	}
+
+	token := corePool.Get().(*Core)
+	token.Raw = tokenString
+	token.Signature = part3
+	token.Claims = claims
+	token.Valid = false
+	token.Method = method
+	token.Alg = alg
+
+	return verifyAndReturnHMAC(token, part1, part2, part3, method, hmacKey)
+}
+
+func parseSlowPath(part1, part2, part3, tokenString string, claims any, keyFunc func(*Core) (any, error), expectedAlg string) (*Core, error) {
 	token := corePool.Get().(*Core)
 	token.Raw = tokenString
 	token.Signature = part3
@@ -166,6 +223,10 @@ func parseSlowPath(part1, part2, part3, tokenString string, claims any, keyFunc 
 		ReleaseCore(token)
 		return nil, fmt.Errorf("missing or invalid algorithm in header")
 	}
+	if expectedAlg != "" && algVal != expectedAlg {
+		ReleaseCore(token)
+		return nil, ErrAlgorithmMismatch
+	}
 	if isInsecureAlgorithm(algVal) {
 		ReleaseCore(token)
 		return nil, fmt.Errorf("insecure algorithm not allowed: %s", algVal)
@@ -177,6 +238,7 @@ func parseSlowPath(part1, part2, part3, tokenString string, claims any, keyFunc 
 		return nil, err
 	}
 	token.Method = method
+	token.Alg = algVal
 
 	if err := DecodeSegment(part2, claims); err != nil {
 		ReleaseCore(token)
@@ -190,6 +252,54 @@ func parseSlowPath(part1, part2, part3, tokenString string, claims any, keyFunc 
 	}
 
 	return verifyAndReturn(token, part1, part2, part3, method, key)
+}
+
+func parseSlowPathHMAC(part1, part2, part3, tokenString string, claims any, hmacKey []byte, expectedAlg string) (*Core, error) {
+	token := corePool.Get().(*Core)
+	token.Raw = tokenString
+	token.Signature = part3
+	token.Claims = claims
+	token.Valid = false
+	token.Method = nil
+
+	if err := DecodeSegment(part1, &token.Header); err != nil {
+		ReleaseCore(token)
+		return nil, fmt.Errorf("failed to decode header: %w", err)
+	}
+
+	if len(token.Header) == 0 {
+		ReleaseCore(token)
+		return nil, errEmptyHeader
+	}
+
+	algVal, ok := token.Header["alg"].(string)
+	if !ok || algVal == "" {
+		ReleaseCore(token)
+		return nil, fmt.Errorf("missing or invalid algorithm in header")
+	}
+	if algVal != expectedAlg {
+		ReleaseCore(token)
+		return nil, ErrAlgorithmMismatch
+	}
+	if isInsecureAlgorithm(algVal) {
+		ReleaseCore(token)
+		return nil, fmt.Errorf("insecure algorithm not allowed: %s", algVal)
+	}
+
+	method, err := GetInternalSigningMethod(algVal)
+	if err != nil {
+		ReleaseCore(token)
+		return nil, err
+	}
+	token.Method = method
+	token.Alg = algVal
+
+	if err := DecodeSegment(part2, claims); err != nil {
+		ReleaseCore(token)
+		return nil, fmt.Errorf("failed to decode claims: %w", err)
+	}
+
+	return verifyAndReturnHMAC(token, part1, part2, part3, method, hmacKey)
 }
 
 func verifyAndReturn(token *Core, part1, part2, part3 string, method Method, key any) (*Core, error) {
@@ -207,12 +317,40 @@ func verifyAndReturn(token *Core, part1, part2, part3 string, method Method, key
 	signingStringBuf[len(part1)] = '.'
 	copy(signingStringBuf[len(part1)+1:], part2)
 
-	// SAFETY: signingString references bufPtr's pooled memory, valid until
-	// deferred putParseBuf returns it to the pool. method.Verify only reads
-	// the string and does not retain a reference after returning.
 	signingString := unsafe.String(&signingStringBuf[0], len(signingStringBuf))
 
 	if err := method.Verify(signingString, part3, key); err != nil {
+		token.Valid = false
+		return token, nil
+	}
+
+	token.Valid = true
+	return token, nil
+}
+
+func verifyAndReturnHMAC(token *Core, part1, part2, part3 string, method Method, hmacKey []byte) (*Core, error) {
+	hm, ok := method.(*hmacSigningMethod)
+	if !ok {
+		return nil, fmt.Errorf("internal error: HMAC parse path used with non-HMAC method %T", method)
+	}
+
+	signingStringLen := len(part1) + 1 + len(part2)
+
+	bufPtr := getParseBuf()
+	defer putParseBuf(bufPtr)
+
+	if cap(*bufPtr) < signingStringLen {
+		*bufPtr = make([]byte, 0, signingStringLen)
+	}
+
+	signingStringBuf := (*bufPtr)[:signingStringLen]
+	copy(signingStringBuf, part1)
+	signingStringBuf[len(part1)] = '.'
+	copy(signingStringBuf[len(part1)+1:], part2)
+
+	signingString := unsafe.String(&signingStringBuf[0], len(signingStringBuf))
+
+	if err := hm.VerifyHMAC(signingString, part3, hmacKey); err != nil {
 		token.Valid = false
 		return token, nil
 	}
@@ -279,8 +417,6 @@ func isInsecureAlgorithm(alg string) bool {
 	if _, ok := insecureAlgorithms[alg]; ok {
 		return true
 	}
-	// Slow path: byte-level case-insensitive comparison without allocation.
-	// Only reached for non-standard algorithm strings.
 	for insecure := range insecureAlgorithms {
 		if len(insecure) > 0 && equalFoldASCII(trimSpaceBytes(alg), insecure) {
 			return true
@@ -289,7 +425,6 @@ func isInsecureAlgorithm(alg string) bool {
 	return false
 }
 
-// trimSpaceBytes trims leading and trailing ASCII spaces without allocation.
 func trimSpaceBytes(s string) string {
 	start, end := 0, len(s)
 	for start < end && s[start] == ' ' {
@@ -301,7 +436,6 @@ func trimSpaceBytes(s string) string {
 	return s[start:end]
 }
 
-// equalFoldASCII reports whether a and b are equal under ASCII case-folding.
 func equalFoldASCII(a, b string) bool {
 	if len(a) != len(b) {
 		return false

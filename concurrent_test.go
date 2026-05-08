@@ -13,7 +13,7 @@ func TestProcessorConcurrentCreateValidate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create processor: %v", err)
 	}
-	defer processor.Close()
+	defer func() { _ = processor.Close() }() // best-effort cleanup
 
 	const numGoroutines = 100
 	const numOperations = 50
@@ -106,7 +106,7 @@ func TestProcessorConcurrentClose(t *testing.T) {
 			defer wg.Done()
 			time.Sleep(time.Microsecond * 100)
 			closeOnce.Do(func() {
-				processor.Close()
+				_ = processor.Close() // cleanup
 			})
 		}()
 
@@ -119,7 +119,7 @@ func TestProcessorConcurrentRefresh(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create processor: %v", err)
 	}
-	defer processor.Close()
+	defer func() { _ = processor.Close() }() // best-effort cleanup
 
 	const numGoroutines = 50
 
@@ -168,7 +168,7 @@ func TestProcessorConcurrentRevoke(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create processor: %v", err)
 	}
-	defer processor.Close()
+	defer func() { _ = processor.Close() }() // best-effort cleanup
 
 	const numTokens = 100
 
@@ -364,7 +364,7 @@ func TestClaimsPoolConcurrentAccess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create processor: %v", err)
 	}
-	defer processor.Close()
+	defer func() { _ = processor.Close() }() // best-effort cleanup
 
 	const numGoroutines = 200
 	const numOperations = 100
@@ -425,7 +425,7 @@ func TestStressHighLoad(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create processor: %v", err)
 	}
-	defer processor.Close()
+	defer func() { _ = processor.Close() }() // best-effort cleanup
 
 	const numGoroutines = 500
 	const numOperations = 100

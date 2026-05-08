@@ -171,8 +171,12 @@ func isSequential(key []byte) bool {
 	if len(key) < 2 {
 		return false
 	}
-	for i := 0; i < len(key)-1; i++ {
-		if key[i+1] != key[i]+1 && key[i+1] != key[i]-1 {
+	dir := int(key[1]) - int(key[0])
+	if dir != 1 && dir != -1 {
+		return false
+	}
+	for i := 1; i < len(key)-1; i++ {
+		if int(key[i+1])-int(key[i]) != dir {
 			return false
 		}
 	}

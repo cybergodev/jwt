@@ -1,6 +1,9 @@
 package jwt
 
 import (
+	"crypto/rand"
+	"crypto/rsa"
+	"errors"
 	"testing"
 	"time"
 )
@@ -207,4 +210,45 @@ func TestConfigValidateNil(t *testing.T) {
 	if err != ErrInvalidConfig {
 		t.Errorf("Expected ErrInvalidConfig for nil config, got %v", err)
 	}
+}
+
+func TestConfigRSAKeySize(t *testing.T) {
+	smallKey, err := rsa.GenerateKey(rand.Reader, 1024)
+	if err != nil {
+		t.Fatalf("Failed to generate small RSA key: %v", err)
+	}
+
+	t.Run("signing key too small", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.SigningKey = smallKey
+		cfg.SigningMethod = SigningMethodRS256
+
+		_, err := New(cfg)
+		if !errors.Is(err, ErrInvalidSecretKey) {
+			t.Errorf("Expected ErrInvalidSecretKey, got %v", err)
+		}
+	})
+
+	t.Run("verification key too small", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.SigningKey = smallKey
+		cfg.VerificationKey = &smallKey.PublicKey
+		cfg.SigningMethod = SigningMethodRS256
+
+		_, err := New(cfg)
+		if !errors.Is(err, ErrInvalidSecretKey) {
+			t.Errorf("Expected ErrInvalidSecretKey, got %v", err)
+		}
+	})
+
+	t.Run("PSS signing key too small", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.SigningKey = smallKey
+		cfg.SigningMethod = SigningMethodPS256
+
+		_, err := New(cfg)
+		if !errors.Is(err, ErrInvalidSecretKey) {
+			t.Errorf("Expected ErrInvalidSecretKey, got %v", err)
+		}
+	})
 }

@@ -206,7 +206,7 @@ func TestProcessorIsClosed(t *testing.T) {
 	if processor.IsClosed() {
 		t.Error("Processor should not be closed initially")
 	}
-	processor.Close()
+	_ = processor.Close() // cleanup
 	if !processor.IsClosed() {
 		t.Error("Processor should be closed after Close()")
 	}
@@ -217,7 +217,7 @@ func TestProcessorOperationsAfterClose(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create processor: %v", err)
 	}
-	processor.Close()
+	_ = processor.Close() // cleanup
 
 	claims := Claims{UserID: "user1", Username: "test"}
 
@@ -255,7 +255,7 @@ func TestRefreshTokenEdgeCases(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create processor: %v", err)
 	}
-	defer processor.Close()
+	defer func() { _ = processor.Close() }() // best-effort cleanup
 
 	tests := []struct {
 		name      string
@@ -290,7 +290,7 @@ func TestRevokeAndIsRevokedEdgeCases(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create processor: %v", err)
 	}
-	defer processor.Close()
+	defer func() { _ = processor.Close() }() // best-effort cleanup
 
 	t.Run("RevokeEmptyToken", func(t *testing.T) {
 		if err := processor.Revoke(""); err != ErrEmptyToken {
@@ -327,7 +327,7 @@ func TestIsTokenRevokedInvalidToken(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create processor: %v", err)
 	}
-	defer processor.Close()
+	defer func() { _ = processor.Close() }() // best-effort cleanup
 
 	revoked, err := processor.IsRevoked("invalid-token")
 	if err == nil {
@@ -353,7 +353,7 @@ func TestProcessorRateLimiting(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create processor: %v", err)
 	}
-	defer processor.Close()
+	defer func() { _ = processor.Close() }() // best-effort cleanup
 
 	claims := Claims{UserID: "ratelimited-user", Username: "test"}
 
@@ -380,7 +380,7 @@ func TestProcessorWithCustomRateLimiter(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create processor: %v", err)
 	}
-	defer processor.Close()
+	defer func() { _ = processor.Close() }() // best-effort cleanup
 
 	claims := Claims{UserID: "custom-rl-user", Username: "test"}
 
@@ -407,7 +407,7 @@ func TestRegisteredClaimsValidation(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to create processor: %v", err)
 		}
-		defer proc.Close()
+		defer func() { _ = proc.Close() }() // best-effort cleanup
 
 		claims := Claims{UserID: "issuer-user", Username: "test"}
 		token, err := proc.Create(&claims)
@@ -422,7 +422,7 @@ func TestRegisteredClaimsValidation(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to create processor: %v", err)
 		}
-		defer proc2.Close()
+		defer func() { _ = proc2.Close() }() // best-effort cleanup
 
 		_, valid, err := proc2.Validate(token)
 		if valid || err == nil {
@@ -438,7 +438,7 @@ func TestRegisteredClaimsValidation(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to create processor: %v", err)
 		}
-		defer proc.Close()
+		defer func() { _ = proc.Close() }() // best-effort cleanup
 
 		// Token without audience should fail
 		claims := Claims{UserID: "aud-user", Username: "test"}
@@ -477,7 +477,7 @@ func TestRegisteredClaimsValidation(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to create processor: %v", err)
 		}
-		defer proc.Close()
+		defer func() { _ = proc.Close() }() // best-effort cleanup
 
 		claims := Claims{
 			UserID:   "nbf-user",
@@ -486,7 +486,7 @@ func TestRegisteredClaimsValidation(t *testing.T) {
 				NotBefore: NewNumericDate(time.Date(2025, 1, 1, 13, 0, 0, 0, time.UTC)),
 			},
 		}
-		token, err := createTokenWithCustomClaims(proc, &claims, time.Hour)
+		token, err := createTokenWithCustomClaims(proc, &claims, time.Hour, TokenTypeAccess)
 		if err != nil {
 			t.Fatalf("Failed to create token: %v", err)
 		}
@@ -510,7 +510,7 @@ func TestRefreshTokenForEdgeCases(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create processor: %v", err)
 	}
-	defer processor.Close()
+	defer func() { _ = processor.Close() }() // best-effort cleanup
 
 	claims := &TestCustomClaims{UserID: "rtf-user", Email: "rtf@example.com"}
 	refreshToken, err := processor.CreateRefresh(claims)
@@ -542,7 +542,7 @@ func TestAlgorithmMismatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create HS256 processor: %v", err)
 	}
-	defer proc1.Close()
+	defer func() { _ = proc1.Close() }() // best-effort cleanup
 
 	token, err := proc1.Create(&Claims{UserID: "mismatch-user", Username: "test"})
 	if err != nil {
@@ -556,7 +556,7 @@ func TestAlgorithmMismatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create HS384 processor: %v", err)
 	}
-	defer proc2.Close()
+	defer func() { _ = proc2.Close() }() // best-effort cleanup
 
 	_, valid, err := proc2.Validate(token)
 	if valid || err == nil {
@@ -569,7 +569,7 @@ func TestValidateTokenIntoCustomClaimsInvalidSignature(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create processor: %v", err)
 	}
-	defer processor.Close()
+	defer func() { _ = processor.Close() }() // best-effort cleanup
 
 	claims := &TestCustomClaims{UserID: "tamper-user", Email: "tamper@example.com"}
 	token, err := processor.Create(claims)
@@ -594,7 +594,7 @@ func TestValidateTokenForCustomClaims(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create processor: %v", err)
 	}
-	defer processor.Close()
+	defer func() { _ = processor.Close() }() // best-effort cleanup
 
 	claims := &TestCustomClaims{UserID: "vtw-user", Email: "vtw@example.com"}
 	token, err := processor.Create(claims)
@@ -617,7 +617,7 @@ func TestParseUnverifiedEdgeCases(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create processor: %v", err)
 	}
-	defer processor.Close()
+	defer func() { _ = processor.Close() }() // best-effort cleanup
 
 	claims := Claims{UserID: "parse-user", Username: "test"}
 	token, err := processor.Create(&claims)
@@ -651,7 +651,6 @@ func TestParseUnverifiedEdgeCases(t *testing.T) {
 		})
 	}
 }
-
 
 // ============================================================================
 // VALIDATION REGISTERED CLAIMS STRINGS TESTS
@@ -701,7 +700,7 @@ func TestRateLimitKeyer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create processor: %v", err)
 	}
-	defer processor.Close()
+	defer func() { _ = processor.Close() }() // best-effort cleanup
 
 	// TestCustomClaims doesn't implement RateLimitKeyer, so rate limiting
 	// should be skipped (no Subject set)
@@ -712,7 +711,6 @@ func TestRateLimitKeyer(t *testing.T) {
 		}
 	}
 }
-
 
 // ============================================================================
 // TOKEN MANAGER INTERFACE COMPLIANCE
@@ -727,5 +725,3 @@ func TestTokenManagerInterface(t *testing.T) {
 	var _ CustomClaims = (*Claims)(nil)
 	var _ CustomClaims = (*TestCustomClaims)(nil)
 }
-
-

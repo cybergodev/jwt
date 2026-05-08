@@ -8,7 +8,7 @@
 
 一个**生产就绪的 Go JWT 库**，专注于安全性、性能和易用性。提供清晰的结构化配置 API，内置令牌撤销和速率限制功能。
 
-**[📖 English Documentation](README.md)**
+**[English Documentation](README.md)** | **[www.cybergo.dev/jwt](https://www.cybergo.dev/jwt)**
 
 ---
 

@@ -8,7 +8,7 @@
 
 A **production-ready Go JWT library** with a focus on security, performance, and ease of use. Provides a clean, struct-based configuration API with built-in token revocation and rate limiting.
 
-**[📖 中文文档](README_zh_CN.md)**
+**[中文文档](README_zh-CN.md)** | **[www.cybergo.dev/jwt](https://www.cybergo.dev/jwt)**
 
 ---
 

@@ -22,8 +22,8 @@ package jwt
 
 import (
 	"fmt"
-	"maps"
 	"slices"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -35,19 +35,21 @@ import (
 // All methods are goroutine-safe. Call Close() when done to zero the secret key
 // and release pooled resources.
 type Processor struct {
-	secretKey        []byte // For HMAC algorithms
-	asymmetricKey    any    // For RSA/ECDSA algorithms (private key)
-	verificationKey  any    // For RSA/ECDSA verification (public key)
-	accessTokenTTL   time.Duration
-	refreshTokenTTL  time.Duration
-	issuer           string
-	audience         string
-	signingMethod    SigningMethod
-	blacklistManager *internal.Manager
-	rateLimiter      RateLimitProvider
-	clock            ClockProvider
-	isAsymmetric     bool
-	closed           atomic.Bool
+	secretKey         []byte // For HMAC algorithms
+	asymmetricKey     any    // For RSA/ECDSA algorithms (private key)
+	verificationKey   any    // For RSA/ECDSA verification (public key)
+	accessTokenTTL    time.Duration
+	refreshTokenTTL   time.Duration
+	issuer            string
+	audience          string
+	signingMethod     SigningMethod
+	signingMethodImpl internal.Method // Cached at construction to avoid per-call map lookup
+	blacklistManager  *internal.Manager
+	rateLimiter       RateLimitProvider
+	clock             ClockProvider
+	isAsymmetric      bool
+	closed            atomic.Bool
+	mu                sync.RWMutex
 }
 
 // New creates a new JWT Processor with the given configuration.
@@ -113,7 +115,7 @@ func New(cfg Config) (*Processor, error) {
 		blacklistManager: manager,
 		rateLimiter:      rateLimiter,
 		clock:            clock,
-		isAsymmetric:     config.isAsymmetric(),
+		isAsymmetric:     config.SigningMethod.isAsymmetric(),
 	}
 
 	// Set up keys based on algorithm type
@@ -130,6 +132,9 @@ func New(cfg Config) (*Processor, error) {
 		p.secretKey = make([]byte, len(config.SecretKey))
 		copy(p.secretKey, config.SecretKey)
 	}
+	// Cache signing method implementation to avoid per-call map lookup.
+	// Error safely discarded: Validate() already confirmed SigningMethod is valid.
+	p.signingMethodImpl, _ = internal.GetInternalSigningMethod(string(p.signingMethod))
 
 	return p, nil
 }
@@ -155,15 +160,16 @@ func New(cfg Config) (*Processor, error) {
 //	claims := &MyClaims{UserID: "123"}
 //	token, err := processor.Create(claims)
 func (p *Processor) Create(claims CustomClaims) (string, error) {
-	if err := p.checkActive(); err != nil {
+	if err := p.beginOp(); err != nil {
 		return "", err
 	}
+	defer p.endOp()
 
 	if err := validateCustomClaims(claims); err != nil {
 		return "", err
 	}
 
-	return createTokenWithCustomClaims(p, claims, p.accessTokenTTL)
+	return createTokenWithCustomClaims(p, claims, p.accessTokenTTL, TokenTypeAccess)
 }
 
 // Validate validates a JWT access token and returns the parsed Claims.
@@ -190,9 +196,10 @@ func (p *Processor) Create(claims CustomClaims) (string, error) {
 //	    fmt.Println(claims.UserID)
 //	}
 func (p *Processor) Validate(tokenString string) (Claims, bool, error) {
-	if err := p.checkActive(); err != nil {
+	if err := p.beginOp(); err != nil {
 		return Claims{}, false, err
 	}
+	defer p.endOp()
 	if err := requireToken(tokenString); err != nil {
 		return Claims{}, false, err
 	}
@@ -215,21 +222,26 @@ func (p *Processor) Validate(tokenString string) (Claims, bool, error) {
 //	claims := &jwt.Claims{UserID: "user123", Username: "alice"}
 //	refreshToken, err := processor.CreateRefresh(claims)
 func (p *Processor) CreateRefresh(claims CustomClaims) (string, error) {
-	if err := p.checkActive(); err != nil {
+	if err := p.beginOp(); err != nil {
 		return "", err
 	}
+	defer p.endOp()
 
 	if err := validateCustomClaims(claims); err != nil {
 		return "", err
 	}
 
-	return createTokenWithCustomClaims(p, claims, p.refreshTokenTTL)
+	return createTokenWithCustomClaims(p, claims, p.refreshTokenTTL, TokenTypeRefresh)
 }
 
 // Refresh refreshes an existing refresh token and returns a new access token.
 // The refresh token is validated (signature, expiration, blacklist) before
 // a new access token is created. The original refresh token's claims are copied;
 // IssuedAt, ExpiresAt, and ID are reset and regenerated for the new token.
+//
+// Tokens with token_type "access" are rejected to prevent access tokens from
+// being used to obtain new tokens. Tokens without a token_type (created before
+// this field was added) are accepted for backward compatibility.
 //
 // Returns errors:
 //   - [ErrProcessorClosed]: processor has been closed
@@ -242,6 +254,7 @@ func (p *Processor) CreateRefresh(claims CustomClaims) (string, error) {
 //   - [ErrTokenInvalidAudience]: token audience does not match configured audience
 //   - [ErrTokenRevoked]: refresh token has been revoked
 //   - [ErrInvalidClaims]: claims failed validation
+//   - [ErrTokenTypeMismatch]: token is an access token, not a refresh token
 //
 // Security note: Claims from the refresh token are validated for standard
 // JWT fields (exp, nbf, iss, aud, blacklist) and basic structural validity
@@ -252,9 +265,10 @@ func (p *Processor) CreateRefresh(claims CustomClaims) (string, error) {
 //
 //	newAccessToken, err := processor.Refresh(refreshTokenString)
 func (p *Processor) Refresh(refreshTokenString string) (string, error) {
-	if err := p.checkActive(); err != nil {
+	if err := p.beginOp(); err != nil {
 		return "", err
 	}
+	defer p.endOp()
 	if err := requireToken(refreshTokenString); err != nil {
 		return "", err
 	}
@@ -264,11 +278,15 @@ func (p *Processor) Refresh(refreshTokenString string) (string, error) {
 		return "", err
 	}
 
+	if claims.TokenType == TokenTypeAccess {
+		return "", fmt.Errorf("%w: expected refresh token, got access token", ErrTokenTypeMismatch)
+	}
+
 	claims.IssuedAt = NumericDate{}
 	claims.ExpiresAt = NumericDate{}
 	claims.ID = ""
 
-	return createTokenWithCustomClaims(p, &claims, p.accessTokenTTL)
+	return createTokenWithCustomClaims(p, &claims, p.accessTokenTTL, TokenTypeAccess)
 }
 
 // RefreshInto refreshes a custom-claims refresh token into a new access token.
@@ -276,6 +294,10 @@ func (p *Processor) Refresh(refreshTokenString string) (string, error) {
 // The original claims object is not modified; timing fields (IssuedAt, ExpiresAt, ID)
 // are temporarily reset during token creation and restored afterward,
 // even if an error or panic occurs.
+//
+// Tokens with token_type "access" are rejected to prevent access tokens from
+// being used to obtain new tokens. Tokens without a token_type are accepted
+// for backward compatibility.
 //
 // Security note: Claims from the refresh token are validated for standard
 // JWT fields (exp, nbf, iss, aud, blacklist) and basic structural validity.
@@ -287,9 +309,10 @@ func (p *Processor) Refresh(refreshTokenString string) (string, error) {
 //	claims := &MyClaims{}
 //	newToken, err := processor.RefreshInto(refreshToken, claims)
 func (p *Processor) RefreshInto(refreshTokenString string, claims CustomClaims) (string, error) {
-	if err := p.checkActive(); err != nil {
+	if err := p.beginOp(); err != nil {
 		return "", err
 	}
+	defer p.endOp()
 	if err := requireToken(refreshTokenString); err != nil {
 		return "", err
 	}
@@ -299,6 +322,9 @@ func (p *Processor) RefreshInto(refreshTokenString string, claims CustomClaims) 
 	}
 
 	rc := claims.GetRegisteredClaims()
+	if rc.TokenType == TokenTypeAccess {
+		return "", fmt.Errorf("%w: expected refresh token, got access token", ErrTokenTypeMismatch)
+	}
 
 	// Save original timing fields; restore via defer for panic safety.
 	origIssuedAt := rc.IssuedAt
@@ -315,7 +341,7 @@ func (p *Processor) RefreshInto(refreshTokenString string, claims CustomClaims) 
 	rc.ExpiresAt = NumericDate{}
 	rc.ID = ""
 
-	return createTokenWithCustomClaims(p, claims, p.accessTokenTTL)
+	return createTokenWithCustomClaims(p, claims, p.accessTokenTTL, TokenTypeAccess)
 }
 
 // Close releases resources and securely clears sensitive data.
@@ -325,6 +351,9 @@ func (p *Processor) Close() error {
 	if !p.closed.CompareAndSwap(false, true) {
 		return ErrProcessorClosed
 	}
+
+	// Acquire write lock to wait for all in-flight operations to complete.
+	p.mu.Lock()
 
 	var closeErr error
 
@@ -340,10 +369,19 @@ func (p *Processor) Close() error {
 
 	if p.secretKey != nil {
 		internal.ZeroBytes(p.secretKey)
-		internal.ClearHMACCaches()
+		p.secretKey = nil
 	}
 	p.asymmetricKey = nil
 	p.verificationKey = nil
+
+	// Clear HMAC hasher pools to prevent stale key material from persisting
+	// after key rotation. Global pool is safe to drain — all Processor instances
+	// are closed before creating new ones with a different key.
+	if !p.isAsymmetric {
+		internal.ClearHMACCaches()
+	}
+
+	p.mu.Unlock()
 
 	return closeErr
 }
@@ -364,9 +402,10 @@ func (p *Processor) IsClosed() bool {
 // SECURITY: Claims parsed by this method may have been tampered with.
 // Always use Validate or ValidateInto for security-sensitive operations.
 func (p *Processor) ParseUnverified(tokenString string, claims any) error {
-	if err := p.checkActive(); err != nil {
+	if err := p.beginOp(); err != nil {
 		return err
 	}
+	defer p.endOp()
 	if err := requireToken(tokenString); err != nil {
 		return err
 	}
@@ -393,9 +432,10 @@ func (p *Processor) ParseUnverified(tokenString string, claims any) error {
 //		fmt.Println(result.(*MyClaims).UserID)
 //	}
 func (p *Processor) ValidateInto(tokenString string, claims CustomClaims) (CustomClaims, bool, error) {
-	if err := p.checkActive(); err != nil {
+	if err := p.beginOp(); err != nil {
 		return nil, false, err
 	}
+	defer p.endOp()
 	if err := requireToken(tokenString); err != nil {
 		return nil, false, err
 	}
@@ -407,15 +447,6 @@ func (p *Processor) ValidateInto(tokenString string, claims CustomClaims) (Custo
 	return claims, true, nil
 }
 
-// getSigningKey returns the appropriate signing key based on algorithm type.
-// Returns nil if the key is not configured.
-func (p *Processor) getSigningKey() any {
-	if p.isAsymmetric {
-		return p.asymmetricKey
-	}
-	return p.secretKey
-}
-
 // getVerificationKey returns the appropriate key for token verification.
 func (p *Processor) getVerificationKey() any {
 	if p.isAsymmetric {
@@ -424,12 +455,21 @@ func (p *Processor) getVerificationKey() any {
 	return p.secretKey
 }
 
-// checkActive returns ErrProcessorClosed if the processor has been closed.
-func (p *Processor) checkActive() error {
+// beginOp acquires a read lock and checks that the processor is active.
+// The read lock is held for the duration of the operation, preventing Close()
+// from clearing fields while the operation is in flight.
+func (p *Processor) beginOp() error {
+	p.mu.RLock()
 	if p.closed.Load() {
+		p.mu.RUnlock()
 		return ErrProcessorClosed
 	}
 	return nil
+}
+
+// endOp releases the read lock acquired by beginOp.
+func (p *Processor) endOp() {
+	p.mu.RUnlock()
 }
 
 // requireToken returns ErrEmptyToken if the token string is empty.
@@ -472,21 +512,31 @@ func (p *Processor) setRegisteredDefaults(rc *RegisteredClaims, ttl time.Duratio
 }
 
 func (p *Processor) signClaims(claims any) (string, error) {
-	signingMethod, err := internal.GetInternalSigningMethod(string(p.signingMethod))
-	if err != nil {
-		return "", err
+	if p.signingMethodImpl == nil {
+		return "", fmt.Errorf("signing method not initialized")
 	}
 
-	key := p.getSigningKey()
+	// Use typed path for HMAC to avoid interface boxing of p.secretKey.
+	if !p.isAsymmetric {
+		if p.secretKey == nil {
+			return "", fmt.Errorf("signing key not configured")
+		}
+		return internal.SignTokenHMAC(string(p.signingMethod), claims, p.signingMethodImpl, p.secretKey)
+	}
+
+	key := p.asymmetricKey
 	if key == nil {
 		return "", fmt.Errorf("signing key not configured")
 	}
 
-	return internal.SignToken(string(p.signingMethod), claims, signingMethod, key)
+	return internal.SignToken(string(p.signingMethod), claims, p.signingMethodImpl, key)
 }
 
 func (p *Processor) parseToken(tokenString string, claims any) (*internal.Core, error) {
-	return internal.ParseWithClaims(tokenString, claims, p.keyFunc)
+	if !p.isAsymmetric {
+		return internal.ParseWithClaimsHMAC(tokenString, claims, p.secretKey, string(p.signingMethod))
+	}
+	return internal.ParseWithClaims(tokenString, claims, p.keyFunc, string(p.signingMethod))
 }
 
 // keyFunc validates the algorithm header and returns the verification key.
@@ -537,44 +587,13 @@ func (p *Processor) checkBlacklist(tokenID string) error {
 	return nil
 }
 
-func copyClaims(dst, src *Claims) {
-	*dst = *src
-	// Pre-allocate with known capacity for independent backing arrays.
-	if n := len(src.Permissions); n > 0 {
-		dst.Permissions = make([]string, n)
-		copy(dst.Permissions, src.Permissions)
-	} else {
-		dst.Permissions = nil
-	}
-	if n := len(src.Scopes); n > 0 {
-		dst.Scopes = make([]string, n)
-		copy(dst.Scopes, src.Scopes)
-	} else {
-		dst.Scopes = nil
-	}
-	if n := len(src.Audience); n > 0 {
-		dst.Audience = make([]string, n)
-		copy(dst.Audience, src.Audience)
-	} else {
-		dst.Audience = nil
-	}
-
-	// Always allocate a new map to avoid sharing with src after *dst = *src.
-	if len(src.Extra) > 0 {
-		dst.Extra = make(map[string]any, len(src.Extra))
-		maps.Copy(dst.Extra, src.Extra)
-	} else {
-		dst.Extra = nil
-	}
-}
-
 func (p *Processor) validateTokenInternal(tokenString string) (Claims, error) {
 	claims := getClaims()
 	defer putClaims(claims)
 
 	token, err := p.parseToken(tokenString, claims)
 	if err != nil {
-		return Claims{}, fmt.Errorf("%w: %w", ErrInvalidToken, err)
+		return Claims{}, fmt.Errorf("%w: %v", ErrInvalidToken, err)
 	}
 
 	defer internal.ReleaseCore(token)
@@ -587,9 +606,10 @@ func (p *Processor) validateTokenInternal(tokenString string) (Claims, error) {
 		return Claims{}, err
 	}
 
-	var result Claims
-	copyClaims(&result, claims)
-	return result, nil
+	// json.Unmarshal creates fresh backing arrays for slices and maps,
+	// and pool Claims is reset (fields nil'd) before reuse,
+	// so returned value never shares mutable data with a subsequent pool user.
+	return *claims, nil
 }
 
 // validateTokenFully performs complete token validation: parse, verify signature,
@@ -627,16 +647,25 @@ func (p *Processor) validateCustomTokenFully(tokenString string, claims CustomCl
 	return claims.Validate()
 }
 
-// Revoke adds a token to the blacklist by its string representation.
+// Revoke adds a token to the blacklist by verifying its signature and
+// extracting the token ID (jti). Only tokens with a valid signature can be
+// revoked, preventing malicious actors from blacklisting arbitrary token IDs.
+//
+// The token's expiration is used to determine the blacklist entry TTL, bounded
+// by [DefaultBlacklistTTL] and [MaxBlacklistTTL]. Expired tokens can still be
+// revoked since the blacklist entry will be cleaned up automatically.
 //
 // Returns errors:
 //   - [ErrProcessorClosed]: processor has been closed
 //   - [ErrEmptyToken]: empty token string
 //   - [ErrBlacklistNotConfigured]: blacklist is not configured
+//   - [ErrInvalidToken]: invalid signature or malformed token
+//   - [ErrTokenMissingID]: token does not contain a jti claim
 func (p *Processor) Revoke(tokenString string) error {
-	if err := p.checkActive(); err != nil {
+	if err := p.beginOp(); err != nil {
 		return err
 	}
+	defer p.endOp()
 	if err := requireToken(tokenString); err != nil {
 		return err
 	}
@@ -645,31 +674,74 @@ func (p *Processor) Revoke(tokenString string) error {
 		return ErrBlacklistNotConfigured
 	}
 
-	return p.blacklistManager.BlacklistTokenString(tokenString)
+	// Verify signature before extracting jti to prevent forgery.
+	claims := getClaims()
+	defer putClaims(claims)
+
+	token, err := p.parseToken(tokenString, claims)
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrInvalidToken, err)
+	}
+	defer internal.ReleaseCore(token)
+
+	if !token.Valid {
+		return ErrInvalidToken
+	}
+
+	// Verify the token belongs to this processor's issuer/audience.
+	if p.issuer != "" && claims.Issuer != p.issuer {
+		return ErrTokenInvalidIssuer
+	}
+	if p.audience != "" && !slices.Contains(claims.Audience, p.audience) {
+		return ErrTokenInvalidAudience
+	}
+
+	if claims.ID == "" {
+		return ErrTokenMissingID
+	}
+
+	return p.blacklistManager.BlacklistVerified(claims.ID, claims.ExpiresAt.Time)
 }
 
-// IsRevoked checks if a token has been revoked by looking up its ID in the blacklist.
-// Returns false if the blacklist is not configured or the token ID is empty.
+// IsRevoked checks if a token has been revoked by verifying its signature and
+// looking up its ID in the blacklist. Returns false if the blacklist is not configured.
 func (p *Processor) IsRevoked(tokenString string) (bool, error) {
-	if err := p.checkActive(); err != nil {
+	if err := p.beginOp(); err != nil {
 		return false, err
 	}
+	defer p.endOp()
 	if err := requireToken(tokenString); err != nil {
 		return false, err
-	}
-
-	tokenID, err := internal.ParseTokenID(tokenString)
-	if err != nil {
-		return false, err
-	}
-
-	if tokenID == "" {
-		return false, ErrTokenMissingID
 	}
 
 	if p.blacklistManager == nil {
 		return false, nil
 	}
 
-	return p.blacklistManager.IsBlacklisted(tokenID)
+	// Verify signature before extracting jti to prevent forgery.
+	claims := getClaims()
+	defer putClaims(claims)
+
+	token, err := p.parseToken(tokenString, claims)
+	if err != nil {
+		return false, fmt.Errorf("%w: %v", ErrInvalidToken, err)
+	}
+	defer internal.ReleaseCore(token)
+
+	if !token.Valid {
+		return false, ErrInvalidToken
+	}
+
+	if p.issuer != "" && claims.Issuer != p.issuer {
+		return false, ErrTokenInvalidIssuer
+	}
+	if p.audience != "" && !slices.Contains(claims.Audience, p.audience) {
+		return false, ErrTokenInvalidAudience
+	}
+
+	if claims.ID == "" {
+		return false, ErrTokenMissingID
+	}
+
+	return p.blacklistManager.IsBlacklisted(claims.ID)
 }

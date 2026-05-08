@@ -46,6 +46,8 @@ func (rl *RateLimiter) Allow(key string) bool {
 }
 
 // AllowN checks if n requests are allowed for the given key.
+// Returns false if n is negative, exceeds the configured max rate, or the rate limit
+// has been exceeded. An empty key always returns false.
 func (rl *RateLimiter) AllowN(key string, n int) bool {
 	if n < 0 {
 		return false

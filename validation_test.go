@@ -11,7 +11,7 @@ func TestValidationClaimsEdgeCases(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create processor: %v", err)
 	}
-	defer processor.Close()
+	defer func() { _ = processor.Close() }() // best-effort cleanup
 
 	tests := []struct {
 		name      string
@@ -56,9 +56,9 @@ func TestValidationClaimsEdgeCases(t *testing.T) {
 
 func TestControlCharDetection(t *testing.T) {
 	tests := []struct {
-		name    string
-		char    byte
-		isCtrl  bool
+		name   string
+		char   byte
+		isCtrl bool
 	}{
 		{"null byte", 0x00, true},
 		{"SOH", 0x01, true},
@@ -85,9 +85,9 @@ func TestControlCharDetection(t *testing.T) {
 
 func TestValidateStringArray(t *testing.T) {
 	tests := []struct {
-		name   string
-		items  []string
-		err    bool
+		name  string
+		items []string
+		err   bool
 	}{
 		{"nil slice", nil, false},
 		{"empty slice", []string{}, false},

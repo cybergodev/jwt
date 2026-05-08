@@ -44,7 +44,9 @@ type BlacklistConfig struct {
 	MaxSize int
 
 	// EnableAutoCleanup enables automatic removal of expired tokens.
-	// Only used when Store is nil.
+	// Only used when Store is nil. For the built-in store, auto-cleanup is
+	// always enabled regardless of this value to prevent unbounded memory growth.
+	// This field only takes effect when using a custom BlacklistStore.
 	EnableAutoCleanup bool
 
 	// Store is an optional custom blacklist storage backend.

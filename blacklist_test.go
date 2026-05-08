@@ -14,7 +14,7 @@ func TestBlacklistOperationsBasic(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create processor: %v", err)
 	}
-	defer processor.Close()
+	defer func() { _ = processor.Close() }() // best-effort cleanup
 
 	const numTokens = 10
 	tokens := make([]string, numTokens)
@@ -64,7 +64,7 @@ func TestBlacklistCleanupMechanism(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create processor: %v", err)
 	}
-	defer processor.Close()
+	defer func() { _ = processor.Close() }() // best-effort cleanup
 
 	claims := Claims{UserID: "user123", Username: "testuser"}
 	token, err := processor.Create(&claims)
@@ -97,7 +97,7 @@ func TestIsRevokedFunction(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create processor: %v", err)
 	}
-	defer processor.Close()
+	defer func() { _ = processor.Close() }() // best-effort cleanup
 
 	claims := Claims{UserID: "user123", Username: "testuser"}
 	token, err := processor.Create(&claims)
@@ -134,7 +134,7 @@ func TestIsRevokedNoBlacklist(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create processor: %v", err)
 	}
-	defer processor.Close()
+	defer func() { _ = processor.Close() }() // best-effort cleanup
 
 	claims := Claims{UserID: "user123", Username: "testuser"}
 	token, err := processor.Create(&claims)
@@ -151,7 +151,6 @@ func TestIsRevokedNoBlacklist(t *testing.T) {
 		t.Error("Token should not be revoked when no blacklist is configured")
 	}
 }
-
 
 func TestBlacklistConfigDefaults(t *testing.T) {
 	cfg := DefaultBlacklistConfig()
@@ -182,7 +181,7 @@ func TestBlacklistConfigCreateManager(t *testing.T) {
 			if manager == nil {
 				t.Error("createManager should return non-nil manager")
 			}
-			manager.Close()
+			_ = manager.Close() // test cleanup
 		})
 	}
 }
@@ -195,7 +194,7 @@ func TestBlacklistDuplicateRevoke(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create processor: %v", err)
 	}
-	defer processor.Close()
+	defer func() { _ = processor.Close() }() // best-effort cleanup
 
 	claims := Claims{UserID: "dup-user", Username: "testuser"}
 	token, err := processor.Create(&claims)
