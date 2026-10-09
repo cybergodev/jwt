@@ -5,9 +5,17 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 )
 
+// Concurrency tests for the Processor. RateLimiter concurrency tests live in
+// ratelimit_test.go. TestProcessorCloseUnderLoad's goroutine-leak angle is
+// covered more strongly by TestNoGoroutineLeakAfterClose in
+// resource_leak_test.go, which counts goroutines; the close race itself is
+// covered by TestProcessorConcurrentClose below.
+
+// TestProcessorConcurrentCreateValidate drives concurrent Create/Validate
+// pairs with rich claims (permissions, scopes, extra map), which also
+// exercises the pooled Claims reset path under contention.
 func TestProcessorConcurrentCreateValidate(t *testing.T) {
 	processor, err := newTestProcessor(testSecretKey)
 	if err != nil {
@@ -19,7 +27,6 @@ func TestProcessorConcurrentCreateValidate(t *testing.T) {
 	const numOperations = 50
 
 	var wg sync.WaitGroup
-	var successCount atomic.Int64
 	var errorCount atomic.Int64
 
 	wg.Add(numGoroutines)
@@ -29,9 +36,15 @@ func TestProcessorConcurrentCreateValidate(t *testing.T) {
 			defer wg.Done()
 			for j := 0; j < numOperations; j++ {
 				claims := Claims{
-					UserID:   fmt.Sprintf("g%d_op%d", id, j),
-					Username: fmt.Sprintf("user_g%d_op%d", id, j),
-					Role:     "user",
+					UserID:      fmt.Sprintf("g%d_op%d", id, j),
+					Username:    fmt.Sprintf("user_g%d_op%d", id, j),
+					Role:        "user",
+					Permissions: []string{"read", "write"},
+					Scopes:      []string{"api", "admin"},
+					Extra: map[string]any{
+						"department": "engineering",
+						"level":      fmt.Sprintf("%d", id%10),
+					},
 				}
 
 				token, err := processor.Create(&claims)
@@ -46,22 +59,19 @@ func TestProcessorConcurrentCreateValidate(t *testing.T) {
 					continue
 				}
 
-				if validated.UserID != claims.UserID {
+				if validated.UserID != claims.UserID || validated.Extra == nil {
 					errorCount.Add(1)
 					continue
 				}
-
-				successCount.Add(1)
 			}
 		}(i)
 	}
 
 	wg.Wait()
 
-	totalOps := int64(numGoroutines * numOperations)
 	if errorCount.Load() > 0 {
 		t.Errorf("Concurrent operations had %d errors out of %d operations",
-			errorCount.Load(), totalOps)
+			errorCount.Load(), numGoroutines*numOperations)
 	}
 }
 
@@ -104,7 +114,6 @@ func TestProcessorConcurrentClose(t *testing.T) {
 
 		go func() {
 			defer wg.Done()
-			time.Sleep(time.Microsecond * 100)
 			closeOnce.Do(func() {
 				_ = processor.Close() // cleanup
 			})
@@ -208,268 +217,5 @@ func TestProcessorConcurrentRevoke(t *testing.T) {
 
 	if revokeCount.Load() != numTokens {
 		t.Errorf("Expected %d revocations, got %d", numTokens, revokeCount.Load())
-	}
-}
-
-func TestRateLimiterHighConcurrency(t *testing.T) {
-	rl := NewRateLimiter(1000, time.Minute)
-	defer rl.Close()
-
-	const numGoroutines = 200
-	const numRequests = 100
-
-	var wg sync.WaitGroup
-	var allowedCount atomic.Int64
-	var deniedCount atomic.Int64
-
-	wg.Add(numGoroutines)
-
-	for i := 0; i < numGoroutines; i++ {
-		go func(id int) {
-			defer wg.Done()
-			key := fmt.Sprintf("user-%d", id%26)
-
-			for j := 0; j < numRequests; j++ {
-				if rl.Allow(key) {
-					allowedCount.Add(1)
-				} else {
-					deniedCount.Add(1)
-				}
-			}
-		}(i)
-	}
-
-	wg.Wait()
-
-	total := allowedCount.Load() + deniedCount.Load()
-	if total != numGoroutines*numRequests {
-		t.Errorf("Expected %d total operations, got %d", numGoroutines*numRequests, total)
-	}
-}
-
-func TestRateLimiterConcurrentAllowN(t *testing.T) {
-	rl := NewRateLimiter(100, time.Minute)
-	defer rl.Close()
-
-	const numGoroutines = 50
-
-	var wg sync.WaitGroup
-	var successCount atomic.Int64
-
-	wg.Add(numGoroutines)
-
-	for i := 0; i < numGoroutines; i++ {
-		go func(id int) {
-			defer wg.Done()
-			key := "batch-user"
-
-			for j := 0; j < 20; j++ {
-				n := (j % 5) + 1
-				if rl.AllowN(key, n) {
-					successCount.Add(1)
-				}
-			}
-		}(i)
-	}
-
-	wg.Wait()
-
-	if successCount.Load() == 0 {
-		t.Error("Expected at least one successful AllowN batch")
-	}
-}
-
-func TestRateLimiterConcurrentResetAndAllow(t *testing.T) {
-	rl := NewRateLimiter(10, time.Second)
-	defer rl.Close()
-
-	const numGoroutines = 100
-	const numOperations = 50
-
-	var wg sync.WaitGroup
-	var allowedCount atomic.Int64
-
-	wg.Add(numGoroutines)
-
-	for i := 0; i < numGoroutines; i++ {
-		go func(id int) {
-			defer wg.Done()
-			key := "shared-key"
-
-			for j := 0; j < numOperations; j++ {
-				switch j % 3 {
-				case 0:
-					if rl.Allow(key) {
-						allowedCount.Add(1)
-					}
-				case 1:
-					rl.Reset(key)
-				case 2:
-					if rl.AllowN(key, 2) {
-						allowedCount.Add(1)
-					}
-				}
-			}
-		}(i)
-	}
-
-	wg.Wait()
-
-	// After Reset clears the bucket, Allow should succeed again.
-	// With 100 goroutines doing 50 ops each, some Allow/AllowN must succeed.
-	if allowedCount.Load() == 0 {
-		t.Error("Expected at least one successful allow after resets")
-	}
-}
-
-func TestRateLimiterConcurrentClose(t *testing.T) {
-	const numIterations = 30
-
-	for iter := 0; iter < numIterations; iter++ {
-		rl := NewRateLimiter(100, time.Minute)
-
-		const numGoroutines = 20
-		var wg sync.WaitGroup
-		var closeOnce sync.Once
-		var opsSuccess atomic.Int64
-
-		wg.Add(numGoroutines + 1)
-
-		for i := 0; i < numGoroutines; i++ {
-			go func(id int) {
-				defer wg.Done()
-				key := fmt.Sprintf("user-%d", id)
-				for j := 0; j < 50; j++ {
-					if rl.Allow(key) {
-						opsSuccess.Add(1)
-					}
-				}
-			}(i)
-		}
-
-		go func() {
-			defer wg.Done()
-			time.Sleep(time.Microsecond * 10)
-			closeOnce.Do(func() {
-				rl.Close()
-			})
-		}()
-
-		wg.Wait()
-	}
-}
-
-func TestClaimsPoolConcurrentAccess(t *testing.T) {
-	processor, err := newTestProcessor(testSecretKey)
-	if err != nil {
-		t.Fatalf("Failed to create processor: %v", err)
-	}
-	defer func() { _ = processor.Close() }() // best-effort cleanup
-
-	const numGoroutines = 200
-	const numOperations = 100
-
-	var wg sync.WaitGroup
-	var errorCount atomic.Int64
-
-	wg.Add(numGoroutines)
-
-	for i := 0; i < numGoroutines; i++ {
-		go func(id int) {
-			defer wg.Done()
-			for j := 0; j < numOperations; j++ {
-				claims := Claims{
-					UserID:      fmt.Sprintf("g%d_op%d", id, j),
-					Username:    fmt.Sprintf("user_g%d_op%d", id, j),
-					Permissions: []string{"read", "write"},
-					Scopes:      []string{"api", "admin"},
-					Extra: map[string]any{
-						"department": "engineering",
-						"level":      fmt.Sprintf("%d", id%10),
-					},
-				}
-
-				token, err := processor.Create(&claims)
-				if err != nil {
-					errorCount.Add(1)
-					return
-				}
-
-				validated, valid, err := processor.Validate(token)
-				if err != nil || !valid {
-					errorCount.Add(1)
-					return
-				}
-
-				if validated.Extra == nil {
-					errorCount.Add(1)
-					return
-				}
-			}
-		}(i)
-	}
-
-	wg.Wait()
-
-	if errorCount.Load() > 0 {
-		t.Errorf("Claims pool concurrent test had %d errors", errorCount.Load())
-	}
-}
-
-func TestStressHighLoad(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping stress test in short mode")
-	}
-
-	processor, err := newTestProcessor(testSecretKey)
-	if err != nil {
-		t.Fatalf("Failed to create processor: %v", err)
-	}
-	defer func() { _ = processor.Close() }() // best-effort cleanup
-
-	const numGoroutines = 500
-	const numOperations = 100
-
-	var wg sync.WaitGroup
-	var totalOps atomic.Int64
-	var errorOps atomic.Int64
-
-	wg.Add(numGoroutines)
-
-	start := time.Now()
-
-	for i := 0; i < numGoroutines; i++ {
-		go func(id int) {
-			defer wg.Done()
-			for j := 0; j < numOperations; j++ {
-				totalOps.Add(1)
-
-				claims := Claims{UserID: fmt.Sprintf("g%d_op%d", id, j)}
-
-				token, err := processor.Create(&claims)
-				if err != nil {
-					errorOps.Add(1)
-					continue
-				}
-
-				_, valid, err := processor.Validate(token)
-				if err != nil || !valid {
-					errorOps.Add(1)
-				}
-			}
-		}(i)
-	}
-
-	wg.Wait()
-
-	elapsed := time.Since(start)
-	total := totalOps.Load()
-	errs := errorOps.Load()
-
-	t.Logf("Stress test: %d ops in %v (%.0f ops/sec), %d errors (%.2f%%)",
-		total, elapsed, float64(total)/elapsed.Seconds(), errs, float64(errs)/float64(total)*100)
-
-	if errs > 0 {
-		t.Errorf("Stress test had %d errors", errs)
 	}
 }

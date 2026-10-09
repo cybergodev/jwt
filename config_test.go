@@ -1,6 +1,8 @@
 package jwt
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
 	"errors"
@@ -92,6 +94,78 @@ func TestConfigValidateBasic(t *testing.T) {
 			},
 			wantError: true,
 		},
+		{
+			name: "Negative access token TTL",
+			config: Config{
+				SecretKey:       testSecretKey,
+				AccessTokenTTL:  -time.Minute,
+				RefreshTokenTTL: 24 * time.Hour,
+				SigningMethod:   SigningMethodHS256,
+			},
+			wantError: true,
+		},
+		{
+			name: "Negative refresh token TTL",
+			config: Config{
+				SecretKey:       testSecretKey,
+				AccessTokenTTL:  15 * time.Minute,
+				RefreshTokenTTL: -time.Hour,
+				SigningMethod:   SigningMethodHS256,
+			},
+			wantError: true,
+		},
+		{
+			name: "Negative rate limit rate",
+			config: Config{
+				SecretKey:       testSecretKey,
+				AccessTokenTTL:  15 * time.Minute,
+				RefreshTokenTTL: 24 * time.Hour,
+				SigningMethod:   SigningMethodHS256,
+				EnableRateLimit: true,
+				RateLimitRate:   -1,
+				RateLimitWindow: time.Minute,
+			},
+			wantError: true,
+		},
+		{
+			name: "Negative rate limit window",
+			config: Config{
+				SecretKey:       testSecretKey,
+				AccessTokenTTL:  15 * time.Minute,
+				RefreshTokenTTL: 24 * time.Hour,
+				SigningMethod:   SigningMethodHS256,
+				EnableRateLimit: true,
+				RateLimitRate:   100,
+				RateLimitWindow: -time.Minute,
+			},
+			wantError: true,
+		},
+		{
+			name: "Rate limit rate above maximum",
+			config: Config{
+				SecretKey:       testSecretKey,
+				AccessTokenTTL:  15 * time.Minute,
+				RefreshTokenTTL: 24 * time.Hour,
+				SigningMethod:   SigningMethodHS256,
+				EnableRateLimit: true,
+				RateLimitRate:   1_000_001,
+				RateLimitWindow: time.Minute,
+			},
+			wantError: true,
+		},
+		{
+			name: "Rate limit window above maximum",
+			config: Config{
+				SecretKey:       testSecretKey,
+				AccessTokenTTL:  15 * time.Minute,
+				RefreshTokenTTL: 24 * time.Hour,
+				SigningMethod:   SigningMethodHS256,
+				EnableRateLimit: true,
+				RateLimitRate:   100,
+				RateLimitWindow: 31 * 24 * time.Hour,
+			},
+			wantError: true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -103,6 +177,26 @@ func TestConfigValidateBasic(t *testing.T) {
 				t.Errorf("Unexpected validation error: %v", err)
 			}
 		})
+	}
+}
+
+// TestConfigValidateSigningMethodPriority guards the check order in Validate:
+// an unrecognized signing method must be reported even when other fields are
+// also invalid. Previously the TTL error masked it, because validateSigningKey
+// matches neither the HMAC nor the asymmetric family for an unknown method
+// and silently passed.
+func TestConfigValidateSigningMethodPriority(t *testing.T) {
+	cfg := Config{
+		SecretKey:       testSecretKey,
+		AccessTokenTTL:  0, // also invalid
+		RefreshTokenTTL: 24 * time.Hour,
+		SigningMethod:   "INVALID",
+		Blacklist:       DefaultBlacklistConfig(),
+	}
+
+	err := cfg.Validate()
+	if !errors.Is(err, ErrInvalidSigningMethod) {
+		t.Errorf("Expected ErrInvalidSigningMethod to take priority, got %v", err)
 	}
 }
 
@@ -251,4 +345,54 @@ func TestConfigRSAKeySize(t *testing.T) {
 			t.Errorf("Expected ErrInvalidSecretKey, got %v", err)
 		}
 	})
+}
+
+// TestConfigDegenerateKeysNoPanic guards the nil-modulus/nil-curve checks in
+// the key validators: type-correct but empty key structs previously panicked
+// in BitLen()/Params() during Validate instead of returning ErrInvalidSecretKey.
+func TestConfigDegenerateKeysNoPanic(t *testing.T) {
+	validRSAKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("Failed to generate RSA key: %v", err)
+	}
+	validECDSAKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("Failed to generate ECDSA key: %v", err)
+	}
+
+	tests := []struct {
+		name   string
+		modify func(*Config)
+	}{
+		{"empty RSA signing key", func(c *Config) {
+			c.SigningKey = &rsa.PrivateKey{}
+			c.SigningMethod = SigningMethodRS256
+		}},
+		{"empty RSA verification key", func(c *Config) {
+			c.SigningKey = validRSAKey
+			c.VerificationKey = &rsa.PublicKey{}
+			c.SigningMethod = SigningMethodRS256
+		}},
+		{"empty ECDSA signing key", func(c *Config) {
+			c.SigningKey = &ecdsa.PrivateKey{}
+			c.SigningMethod = SigningMethodES256
+		}},
+		{"empty ECDSA verification key", func(c *Config) {
+			c.SigningKey = validECDSAKey
+			c.VerificationKey = &ecdsa.PublicKey{}
+			c.SigningMethod = SigningMethodES256
+		}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := DefaultConfig()
+			tt.modify(&cfg)
+
+			_, err := New(cfg)
+			if !errors.Is(err, ErrInvalidSecretKey) {
+				t.Errorf("Expected ErrInvalidSecretKey, got %v", err)
+			}
+		})
+	}
 }

@@ -64,6 +64,8 @@ type Config struct {
     Issuer            string        // Default: "jwt-service" (supports YAML/JSON: issuer)
     ExpectedAudience  string        // Optional: reject tokens without matching aud claim (supports YAML/JSON: expected_audience)
     RequireExpiration bool          // Optional: reject tokens missing exp with ErrExpirationRequired (Default: false; supports YAML/JSON: require_expiration)
+    RejectRefreshAsAccess bool      // Optional: Validate/ValidateInto reject token_type "refresh" tokens with ErrTokenTypeMismatch; Refresh/RefreshInto are unaffected (Default: false; supports YAML/JSON: reject_refresh_as_access)
+    RotateRefreshTokens bool        // Optional: one-time-use refresh — Refresh/RefreshInto revoke the old jti before minting, fail-closed (Default: false; supports YAML/JSON: rotate_refresh_tokens)
     ClockSkew        time.Duration  // Optional: leeway for exp/nbf to tolerate issuer/validator clock drift (Default: 0; supports YAML/JSON: clock_skew)
 
     // Blacklist configuration (embedded)
@@ -106,10 +108,10 @@ Configuration for the token blacklist.
 
 ```go
 type BlacklistConfig struct {
-    CleanupInterval   time.Duration  // Cleanup interval (default: 5 minutes)
-    MaxSize           int            // Maximum entries (default: 100000)
-    EnableAutoCleanup bool           // Enable automatic cleanup (default: true)
-    Store             BlacklistStore // Optional: custom store implementation
+    CleanupInterval   time.Duration  // Cleanup interval (default: 5 minutes; built-in store only)
+    MaxSize           int            // Maximum entries (default: 100000; built-in store only)
+    EnableAutoCleanup bool           // Enable automatic cleanup (default: true; forced true for the built-in store, so setting it false only takes effect with a custom Store)
+    Store             BlacklistStore // Optional: custom store; when set, CleanupInterval, MaxSize, and EnableAutoCleanup are ignored
 }
 ```
 
@@ -189,11 +191,44 @@ Uses `RefreshTokenTTL` for expiration instead of `AccessTokenTTL`.
 
 ### Token Validation
 
-#### Validate
+#### Parse
 
-Validates a token and returns the claims.
+Verifies a token and returns the claims; a nil error means the token is valid.
+This is the error-only counterpart of `Validate` — the redundant bool is dropped.
 
 ```go
+func (p *Processor) Parse(tokenString string) (Claims, error)
+```
+
+**Returns:**
+- `Claims` - Parsed claims (value copy; zero value on error)
+- `error` - Error if validation fails (nil means valid)
+
+**Example:**
+```go
+claims, err := processor.Parse(token)
+if err != nil {
+    switch {
+    case errors.Is(err, jwt.ErrTokenExpired):
+        // Handle expired token
+    case errors.Is(err, jwt.ErrTokenRevoked):
+        // Handle revoked token
+    default:
+        // Handle other errors
+    }
+    return
+}
+// Token is valid, use claims
+fmt.Println(claims.Username)
+```
+
+#### Validate (deprecated)
+
+Deprecated in favor of [`Parse`](#parse) — the `bool` result is always equivalent
+to `err == nil`. ; behavior is unchanged (it delegates to `Parse`).
+
+```go
+// Deprecated: use Parse instead.
 func (p *Processor) Validate(tokenString string) (Claims, bool, error)
 ```
 
@@ -225,11 +260,41 @@ if err != nil {
 fmt.Println(claims.Username)
 ```
 
-#### ValidateInto
+#### ParseInto
 
-Validates a token and populates the provided custom claims.
+Verifies a token and populates the provided custom claims; a nil error means
+the token is valid. This is the error-only counterpart of `ValidateInto`.
 
 ```go
+func (p *Processor) ParseInto(tokenString string, claims CustomClaims) (CustomClaims, error)
+```
+
+**Parameters:**
+- `tokenString` - JWT token string
+- `claims` - Must be a pointer to a type implementing `CustomClaims`. Populated in place.
+
+**Returns:**
+- `CustomClaims` - The same claims pointer on success
+- `error` - Error if validation fails (nil means valid)
+
+**Example:**
+```go
+parsedClaims := &MyClaims{}
+result, err := processor.ParseInto(token, parsedClaims)
+if err != nil {
+    log.Fatal(err)
+}
+fmt.Println(result.(*MyClaims).TeamID)
+```
+
+#### ValidateInto (deprecated)
+
+Deprecated in favor of [`ParseInto`](#parseinto) — the `bool` result is always
+equivalent to `err == nil`. behavior is unchanged (it
+delegates to `ParseInto`).
+
+```go
+// Deprecated: use ParseInto instead.
 func (p *Processor) ValidateInto(tokenString string, claims CustomClaims) (CustomClaims, bool, error)
 ```
 
@@ -334,6 +399,11 @@ func (p *Processor) IsRevoked(tokenString string) (bool, error)
 
 ### Lifecycle
 
+All `*Processor` methods are nil-receiver safe: on a nil processor they report
+`ErrProcessorClosed` (`IsClosed` reports `true`) instead of panicking. The same
+guarantee covers a typed-nil `*RateLimiter` injected via `Config.RateLimiter`
+(requests are denied, fail-closed).
+
 #### Close
 
 Releases resources and securely clears sensitive data.
@@ -353,7 +423,7 @@ defer processor.Close()
 
 #### IsClosed
 
-Checks if the processor has been closed.
+Checks if the processor has been closed. Returns `true` for a nil processor.
 
 ```go
 func (p *Processor) IsClosed() bool
@@ -382,6 +452,28 @@ type Claims struct {
     // Standard JWT claims (embedded)
     RegisteredClaims
 }
+```
+
+#### Claims JSON methods
+
+`Claims` implements `json.Marshaler` and `json.Unmarshaler` with fast paths
+that are byte-for-byte identical to `encoding/json`'s reflection encoding
+(anything the fast paths cannot reproduce exactly — escaped strings, nested
+objects in `extra`, malformed input — is delegated to `encoding/json`, which
+also owns the authoritative error values).
+
+```go
+// Identical output to encoding/json's reflection path.
+func (c *Claims) MarshalJSON() ([]byte, error)
+
+// Standard library unmarshal semantics, with a fast path for common payloads.
+func (c *Claims) UnmarshalJSON(data []byte) error
+
+// Append-style encoding for allocation-sensitive callers: appends the JSON
+// encoding to dst and returns the extended slice (advanced API — most
+// callers should rely on MarshalJSON). Used internally by the signing
+// pipeline to encode claims directly into a reusable buffer.
+func (c *Claims) AppendJSON(dst []byte) ([]byte, error)
 ```
 
 ### RegisteredClaims
@@ -473,7 +565,7 @@ var (
 
     // Lifecycle errors
     ErrProcessorClosed = errors.New("processor closed")
-    ErrStoreClosed     = errors.New("store closed")
+    ErrStoreClosed     = errors.New("blacklist store is closed")
 )
 ```
 
@@ -524,6 +616,10 @@ type ValidationError struct {
 
 The primary interface for JWT token operations. All methods must be safe for concurrent use.
 
+This is a wide aggregate interface kept for API compatibility. Where a narrower
+contract suffices, define a smaller interface in the consuming package with
+only the methods you call — `*Processor` satisfies it automatically.
+
 ```go
 type TokenManager interface {
     // Token operations (accept CustomClaims — use &Claims{} for built-in)
@@ -544,6 +640,10 @@ type TokenManager interface {
     IsClosed() bool
 }
 ```
+
+> The interface deliberately still carries `Validate`/`ValidateInto` although
+> those are deprecated on `*Processor` in favor of `Parse`/`ParseInto`:
+> swapping methods here would break third-party implementations. 
 
 ### RateLimitProvider
 
@@ -657,6 +757,12 @@ Creates a new rate limiter with the specified parameters.
 func NewRateLimiter(maxRate int, window time.Duration) *RateLimiter
 ```
 
+Most callers do not need this constructor: set `Config.EnableRateLimit` (with
+`RateLimitRate` / `RateLimitWindow`) and the `Processor` builds its limiter
+internally. Use `NewRateLimiter` directly only for a standalone limiter or to
+inject a pre-configured one via `Config.RateLimiter` — note that
+`Processor.Close` closes an injected limiter.
+
 ---
 
 ## Type Assertions
@@ -668,8 +774,9 @@ switch cfg.SigningMethod {
 case jwt.SigningMethodHS256, jwt.SigningMethodHS384, jwt.SigningMethodHS512:
     // HMAC - symmetric key
     cfg.SecretKey = "Kx9#mP2$vL8@nQ5!wR7&tY3^uI6*oE4%aS1+dF0-gH9~"
-case jwt.SigningMethodRS256, jwt.SigningMethodRS384, jwt.SigningMethodRS512:
-    // RSA - asymmetric key
+case jwt.SigningMethodRS256, jwt.SigningMethodRS384, jwt.SigningMethodRS512,
+    jwt.SigningMethodPS256, jwt.SigningMethodPS384, jwt.SigningMethodPS512:
+    // RSA / RSA-PSS - asymmetric key
     cfg.SigningKey = rsaPrivateKey
 case jwt.SigningMethodES256, jwt.SigningMethodES384, jwt.SigningMethodES512:
     // ECDSA - asymmetric key

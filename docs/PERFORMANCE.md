@@ -22,30 +22,35 @@ throttling; allocations are deterministic). HMAC-SHA256 (HS256), minimal claims.
 
 | Operation | Time | Memory | Allocations |
 |-----------|------|--------|-------------|
-| Token Creation | ~2.4µs | ~451 B | 4 allocs |
-| Token Validation | ~3.8µs | ~337 B | 11 allocs |
-| Create + Validate | ~6.8µs | ~792 B | 15 allocs |
-| Concurrent Creation | ~620ns | ~460 B | 4 allocs |
-| Concurrent Validation | ~800ns | ~340 B | 11 allocs |
-| Blacklist Validation | ~3.5µs | ~337 B | 11 allocs |
+| Token Creation | ~1.1µs | ~401 B | 2 allocs |
+| Token Validation | ~2.8µs | ~241 B | 8 allocs |
+| Create + Validate | ~4.1µs | ~645 B | 10 allocs |
+| Concurrent Creation | ~660ns | ~408 B | 2 allocs |
+| Concurrent Validation | ~505ns | ~242 B | 8 allocs |
+| Blacklist Validation | ~2.7µs | ~241 B | 8 allocs |
 
 ### Throughput
 
 | Scenario | Operations/sec |
 |----------|----------------|
-| Single-threaded token creation | ~420,000 |
-| Single-threaded validation | ~260,000 |
-| Concurrent operations (22 cores) | ~1,000,000+ |
+| Single-threaded token creation | ~880,000 |
+| Single-threaded validation | ~360,000 |
+| Concurrent mixed operations (22 cores) | ~1,000,000+ |
 
 ### Algorithm Comparison
 
 | Algorithm | Create + Validate | Notes |
 |-----------|-------------------|-------|
-| HS256 | ~10µs | Fastest, recommended for HMAC |
-| HS384 | ~12µs | More secure, slightly slower |
-| HS512 | ~12µs | Most secure HMAC option |
-| RS256 | ~15ms | Asymmetric, slower due to RSA |
-| ES256 | ~8ms | Asymmetric, faster than RSA |
+| HS256 | ~3.8µs | Fastest, recommended for HMAC |
+| HS384 | ~4.9µs | More secure, slightly slower |
+| HS512 | ~5.0µs | Most secure HMAC option |
+| RS256 | ~0.9ms | Asymmetric; RSA-2048 signing dominates the cost |
+| ES256 | ~110µs | Asymmetric, much faster than RSA |
+
+> HS figures come from `BenchmarkDifferentSigningMethods`, which covers the
+> HMAC family only. RS256/ES256 figures come from an equivalent Create +
+> Validate benchmark (2048-bit RSA / P-256 key) — asymmetric algorithms are
+> not part of `BenchmarkDifferentSigningMethods`.
 
 ---
 
@@ -83,7 +88,7 @@ go test -race -bench=. -benchmem ./...
 | `BenchmarkBlacklistValidation` | Validation with blacklist check |
 | `BenchmarkConcurrentTokenCreation` | Parallel token creation |
 | `BenchmarkConcurrentTokenValidation` | Parallel validation |
-| `BenchmarkDifferentSigningMethods` | Algorithm comparison |
+| `BenchmarkDifferentSigningMethods` | Algorithm comparison (HS256/HS384/HS512 only) |
 | `BenchmarkLargeClaimsToken` | Performance with large claims |
 | `BenchmarkHighConcurrencyMixed` | Mixed concurrent operations |
 | `BenchmarkMemoryUsage` | Memory allocation profiling |
@@ -133,11 +138,11 @@ The library uses `sync.Pool` for frequently allocated objects:
 
 | Component | Allocation Source |
 |-----------|-------------------|
-| Header encoding | Precomputed (zero allocation for standard headers) |
-| Claims marshaling | JSON encoder allocation |
-| Base64 encoding | Buffer pool allocation |
-| Signature computation | HMAC hasher allocation |
-| String building | strings.Builder allocation |
+| Header encoding | Precomputed base64 constants (zero allocation for standard headers) |
+| Claims marshaling | Appended into the pooled signing buffer via `Claims.AppendJSON` (pooled `json.Encoder` fallback for other claims types) |
+| Base64 encoding | Encoded in place into the pooled signing buffer |
+| Signature computation | Pooled HMAC hashers (built once per key, reused) |
+| Token string | A single string allocation for the final token |
 
 ### Memory Optimization Features
 
@@ -148,9 +153,7 @@ The library uses `sync.Pool` for frequently allocated objects:
 ### Parse-Path CPU Fast-Paths
 
 Profiling (baseline → pprof → optimize → verify) drove these validate-path
-optimizations. Together they cut `BenchmarkTokenValidation` ~11% (interleaved
-A/B, both orderings) with no change in allocations, which remain at the
-`encoding/json` reflect-decode floor:
+optimizations:
 
 1. **SIMD token split**: `fastSplit3` uses `strings.IndexByte` (vectorized on
    amd64/arm64) instead of a byte-by-byte loop to find the two `.` separators —
@@ -159,12 +162,18 @@ A/B, both orderings) with no change in allocations, which remain at the
    read-only method registry (`globalMethods`), so the common case — a valid
    standard algorithm — returns in one O(1) lookup instead of an 11-entry
    case-insensitive scan on every validation.
+3. **Specialized claims decoder** (`claims_json.go`): a strict, allocation-light
+   JSON scanner fills the known `Claims` fields directly, replacing
+   `encoding/json`'s reflection decode on the payload hot path. Any input the
+   scanner cannot fully verify — escaped strings, unusual numbers, trailing
+   garbage, ... — falls back to `encoding/json`, which owns the authoritative
+   decoded values and error messages (pinned by differential tests and fuzzing).
 
-The remaining validate CPU is fundamental: `encoding/json` reflect decoding
-(`decodeState.object`, `checkValid`) and the SHA-256 HMAC. A controlled
-micro-benchmark showed `json.NewDecoder` is *slower* and allocates *more* than
-`json.Unmarshal` for these small payloads, so no further stdlib win is available
-without a third-party JSON library (not used here) or custom claims marshaling.
+Items 1–2 cut `BenchmarkTokenValidation` ~11% (interleaved A/B, both orderings)
+when they landed, with no change in allocations. Item 3 later removed the
+payload's `encoding/json` decode entirely, dropping validation allocations
+from 11 to 8 per operation. The remaining validate CPU is the claims scanner,
+the header decode, and the SHA-256 HMAC.
 
 ---
 
@@ -479,14 +488,20 @@ func handler(w http.ResponseWriter, r *http.Request) {
 ### ❌ String Concatenation
 
 ```go
-// BAD
+// BAD: intermediate strings at every step
 token := header + "." + payload + "." + signature
 
-// GOOD (library does this internally)
-var builder strings.Builder
-builder.Grow(totalLen)
-builder.WriteString(header)
-// ...
+// GOOD (what the library does internally): assemble "header.payload" in a
+// pooled byte buffer with capacity reserved for the signature, write the
+// signature in place right after the trailing '.', and convert to a string
+// once — one allocation for the whole token, no intermediate strings.
+buf := make([]byte, 0, len(header)+1+len(payload)+1+sigReserve) // pooled
+buf = append(buf, header...)
+buf = append(buf, '.')
+buf = append(buf, payload...)
+buf = append(buf, '.')
+// ... signature is base64-encoded directly after the trailing '.'
+token := string(buf) // the only string allocation
 ```
 
 ---
@@ -496,7 +511,7 @@ builder.WriteString(header)
 - [ ] Processor created once at startup
 - [ ] Processor closed on shutdown
 - [ ] Rate limiting disabled if not needed
-- [ ] Blacklist disabled if not using revocation
+- [ ] Blacklist size minimized if not using revocation (it cannot be disabled, only sized down)
 - [ ] Appropriate algorithm selected
 - [ ] Minimal claims size
 - [ ] Benchmarks run for critical paths

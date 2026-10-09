@@ -63,6 +63,9 @@ if errors.Is(err, jwt.ErrTokenExpired) {
 
 // Prevent expiration by setting appropriate TTL
 cfg.AccessTokenTTL = 15 * time.Minute
+
+// Note: Config.ClockSkew also tolerates clock drift on exp — a token is
+// accepted up to ClockSkew past its expiration time.
 ```
 
 ### ErrTokenRevoked
@@ -103,9 +106,11 @@ token not valid yet
 
 **Solution:**
 ```go
-// Add clock skew tolerance
-// Note: This should be minimal (seconds, not minutes)
-// If needed, implement custom validation
+// Add clock skew tolerance via Config.ClockSkew.
+// It applies to both exp and nbf: a token is accepted from ClockSkew
+// before its nbf and up to ClockSkew after its exp.
+// Keep it minimal — seconds, not minutes.
+cfg.ClockSkew = 30 * time.Second
 
 // Check server time synchronization
 // Ensure NTP is configured on all servers
@@ -152,9 +157,18 @@ cfg := jwt.DefaultConfig()
 cfg.SecretKey = os.Getenv("JWT_SECRET")
 
 if err := cfg.Validate(); err != nil {
-    var validationErr *jwt.ValidationError
-    if errors.As(err, &validationErr) {
-        log.Printf("Field: %s, Message: %s", validationErr.Field, validationErr.Message)
+    // Config errors wrap a sentinel and carry the concrete reason in the
+    // message. (*jwt.ValidationError is only produced by claims validation
+    // during Create/Validate — never by Config.Validate.)
+    switch {
+    case errors.Is(err, jwt.ErrInvalidSecretKey):
+        log.Printf("Secret key problem: %v", err)
+    case errors.Is(err, jwt.ErrInvalidSigningMethod):
+        log.Printf("Signing method problem: %v", err)
+    case errors.Is(err, jwt.ErrInvalidConfig):
+        log.Printf("Configuration problem: %v", err)
+    default:
+        log.Printf("Configuration invalid: %v", err)
     }
 }
 ```
@@ -384,8 +398,10 @@ func BenchmarkValidation(b *testing.B) {
 // Reuse processor (it has internal pooling)
 // Limit blacklist size
 cfg.Blacklist.MaxSize = 10000
+```
 
-// Profile memory
+```bash
+# Profile memory
 go test -memprofile=mem.out -bench=.
 go tool pprof mem.out
 ```

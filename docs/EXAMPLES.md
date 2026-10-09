@@ -806,6 +806,12 @@ func (c *WSClient) handle() {
 
 ## Complete Web Server Example
 
-See [examples/web_server/main.go](../examples/web_server/main.go) for a complete working example.
+See [examples/web-server](../examples/web-server) for a complete working example (a standalone `main` package). Run it with:
+
+```bash
+go run ./examples/web-server
+```
+
+The full example inventory — quickstart, processor, custom-claims, asymmetric, web-server, advanced, security, extensibility — is listed in [examples/README.md](../examples/README.md).
 
 ---

@@ -336,6 +336,7 @@ cfg.RefreshTokenTTL = 7 * 24 * time.Hour
 cfg.Issuer = "my-app"
 cfg.ExpectedAudience = "my-api"                              // Optional: reject tokens without matching aud
 cfg.RequireExpiration = true                                 // Optional: reject tokens missing exp (default false)
+cfg.RotateRefreshTokens = true                               // Optional: one-time-use refresh; revoke old token before minting (default false)
 cfg.ClockSkew = 30 * time.Second                             // Optional: leeway for exp/nbf vs clock drift (default 0)
 
 // === Blacklist settings (embedded in Config) ===
@@ -556,6 +557,7 @@ if err != nil {
 | `ErrTokenInvalidAudience` | Token audience does not match |
 | `ErrTokenMissingID` | Token missing jti claim |
 | `ErrTokenTypeMismatch` | Refresh received a token of the wrong type |
+| `ErrRefreshRotationFailed` | Rotation enabled and revoking the old refresh token failed |
 | `ErrExpirationRequired` | Token missing exp while `RequireExpiration` set |
 | `ErrInvalidClaims` | Claims validation failed |
 | `ErrRateLimitExceeded` | Rate limit exceeded |
@@ -704,6 +706,7 @@ blCfg := jwt.DefaultBlacklistConfig()
 | [Best Practices](docs/BEST_PRACTICES.md) | Production environment guide | Deployment |
 | [Troubleshooting](docs/TROUBLESHOOTING.md) | Common problem solutions | Issue diagnosis |
 | [Concurrency Guide](docs/CONCURRENCY.md) | Thread safety and patterns | Concurrent applications |
+| [Blacklist Guide](docs/BLACKLIST.md) | Revocation backends & Redis reference | Production revocation |
 
 ## License
 

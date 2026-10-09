@@ -2,6 +2,7 @@ package jwt
 
 import (
 	"errors"
+	"sync"
 	"testing"
 	"time"
 )
@@ -28,8 +29,12 @@ func (c *TestCustomClaims) Validate() error {
 	return nil
 }
 
-// testMockStore is a mock BlacklistStore for testing.
+// testMockStore is a mock BlacklistStore for testing. Mutex-guarded because
+// the BlacklistStore contract requires implementations to be safe for
+// concurrent use — an unsynchronized mock would model the contract wrongly
+// and trip the race detector the moment a test reused it concurrently.
 type testMockStore struct {
+	mu     sync.Mutex
 	tokens map[string]time.Time
 }
 
@@ -38,11 +43,15 @@ func newTestMockStore() *testMockStore {
 }
 
 func (m *testMockStore) Add(tokenID string, expiresAt time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.tokens[tokenID] = expiresAt
 	return nil
 }
 
 func (m *testMockStore) Contains(tokenID string) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	exp, exists := m.tokens[tokenID]
 	if !exists {
 		return false, nil

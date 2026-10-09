@@ -1,12 +1,18 @@
 package jwt
 
 import (
-	"sort"
+	"cmp"
+	"math/bits"
+	"slices"
 	"sync"
 	"time"
 )
 
 // RateLimiter provides rate limiting for JWT operations using token bucket algorithm.
+// All methods are nil-receiver safe: Allow/AllowN on a nil limiter deny the
+// request (fail-closed), Reset and Close are no-ops. A typed-nil *RateLimiter
+// injected through Config.RateLimiter is therefore rejected per request rather
+// than panicking inside the Processor.
 type RateLimiter struct {
 	mu         sync.Mutex
 	buckets    map[string]*bucket
@@ -24,6 +30,13 @@ type bucket struct {
 
 // NewRateLimiter creates a new rate limiter with the specified rate and window.
 // If maxRate <= 0, defaults to 100. If window <= 0, defaults to 1 minute.
+//
+// Most callers do not need this constructor: to rate-limit token creation,
+// set Config.EnableRateLimit (with Config.RateLimitRate and
+// Config.RateLimitWindow) and the Processor builds its limiter internally.
+// Use NewRateLimiter directly only for a standalone limiter or to inject a
+// pre-configured one via Config.RateLimiter — note that Processor.Close
+// closes an injected limiter.
 func NewRateLimiter(maxRate int, window time.Duration) *RateLimiter {
 	if maxRate <= 0 {
 		maxRate = 100
@@ -49,7 +62,11 @@ func (rl *RateLimiter) Allow(key string) bool {
 // AllowN checks if n requests are allowed for the given key.
 // Returns false if n is negative, exceeds the configured max rate, or the rate limit
 // has been exceeded. An empty key always returns false.
+// A nil limiter denies the request (fail-closed) instead of panicking.
 func (rl *RateLimiter) AllowN(key string, n int) bool {
+	if rl == nil {
+		return false
+	}
 	if n < 0 {
 		return false
 	}
@@ -100,15 +117,30 @@ func (rl *RateLimiter) AllowN(key string, n int) bool {
 		b.tokens = rl.maxRate
 		b.lastRefill = nowNano
 	} else if elapsed > 0 {
-		tokensToAdd := int((int64(rl.maxRate) * elapsed) / windowNano)
-		if tokensToAdd > 0 {
-			b.tokens += tokensToAdd
-			if b.tokens > rl.maxRate {
-				b.tokens = rl.maxRate
+		// Overflow guard: the int64 product maxRate*elapsed wraps negative for
+		// extreme (rate, window) configurations (e.g. rate=1<<31 with a 16s
+		// window), which permanently stalled the bucket. Compute in uint64 —
+		// products up to 2^64 are exact — and treat a 128-bit overflow as a
+		// full refill, matching the elapsed >= window branch above.
+		hi, lo := bits.Mul64(uint64(rl.maxRate), uint64(elapsed))
+		if hi != 0 {
+			b.tokens = rl.maxRate
+			b.lastRefill = nowNano
+		} else {
+			tokensToAdd := int(lo / uint64(windowNano))
+			if tokensToAdd > 0 {
+				b.tokens += tokensToAdd
+				if b.tokens > rl.maxRate {
+					b.tokens = rl.maxRate
+				}
+				// Preserve residual time instead of resetting. All math in
+				// uint64: floor(tokensToAdd*window) ≤ maxRate*elapsed < 2^64
+				// in this branch, and the quotient ≤ elapsed, so it fits int64.
+				// (The int64 form wrapped negative when maxRate*elapsed fell
+				// between 2^63 and 2^64, moving lastRefill backwards.)
+				consumedNano := int64((uint64(tokensToAdd) * uint64(windowNano)) / uint64(rl.maxRate))
+				b.lastRefill += consumedNano
 			}
-			// Preserve residual time instead of resetting
-			consumedNano := (int64(tokensToAdd) * windowNano) / int64(rl.maxRate)
-			b.lastRefill += consumedNano
 		}
 	}
 
@@ -121,7 +153,11 @@ func (rl *RateLimiter) AllowN(key string, n int) bool {
 }
 
 // Reset removes the rate limit bucket for the given key.
+// A nil limiter is a no-op.
 func (rl *RateLimiter) Reset(key string) {
+	if rl == nil {
+		return
+	}
 	if key == "" {
 		return
 	}
@@ -132,7 +168,11 @@ func (rl *RateLimiter) Reset(key string) {
 }
 
 // Close closes the rate limiter and releases all resources.
+// A nil limiter is a no-op.
 func (rl *RateLimiter) Close() {
+	if rl == nil {
+		return
+	}
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
 
@@ -177,8 +217,8 @@ func (rl *RateLimiter) evictOldestUnsafe(count int) {
 	for key, b := range rl.buckets {
 		entries = append(entries, entry{key, b.lastRefill})
 	}
-	sort.Slice(entries, func(i, j int) bool {
-		return entries[i].ts < entries[j].ts
+	slices.SortFunc(entries, func(a, b entry) int {
+		return cmp.Compare(a.ts, b.ts)
 	})
 	for i := 0; i < count; i++ {
 		delete(rl.buckets, entries[i].key)

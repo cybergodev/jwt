@@ -34,24 +34,28 @@ import (
 // It is the central type in the library, created via New() with a Config.
 // All methods are goroutine-safe. Call Close() when done to zero the secret key
 // and release pooled resources.
+// Methods are nil-receiver safe: calling any of them on a nil *Processor
+// reports ErrProcessorClosed (IsClosed reports true) rather than panicking.
 type Processor struct {
-	secretKey         []byte // For HMAC algorithms
-	asymmetricKey     any    // For RSA/ECDSA algorithms (private key)
-	verificationKey   any    // For RSA/ECDSA verification (public key)
-	accessTokenTTL    time.Duration
-	refreshTokenTTL   time.Duration
-	issuer            string
-	audience          string
-	requireExpiration bool
-	clockSkew         time.Duration
-	signingMethod     SigningMethod
-	signingMethodImpl internal.Method // Cached at construction to avoid per-call map lookup
-	blacklistManager  *internal.Manager
-	rateLimiter       RateLimitProvider
-	clock             ClockProvider
-	isAsymmetric      bool
-	closed            atomic.Bool
-	mu                sync.RWMutex
+	secretKey             []byte // For HMAC algorithms
+	asymmetricKey         any    // For RSA/ECDSA algorithms (private key)
+	verificationKey       any    // For RSA/ECDSA verification (public key)
+	accessTokenTTL        time.Duration
+	refreshTokenTTL       time.Duration
+	issuer                string
+	audience              string
+	requireExpiration     bool
+	rejectRefreshAsAccess bool
+	rotateRefreshTokens   bool
+	clockSkew             time.Duration
+	signingMethod         SigningMethod
+	signingMethodImpl     internal.Method // Cached at construction to avoid per-call map lookup
+	blacklistManager      *internal.Manager
+	rateLimiter           RateLimitProvider
+	clock                 ClockProvider
+	isAsymmetric          bool
+	closed                atomic.Bool
+	mu                    sync.RWMutex
 }
 
 // New creates a new JWT Processor with the given configuration.
@@ -109,17 +113,19 @@ func New(cfg Config) (*Processor, error) {
 	}
 
 	p := &Processor{
-		accessTokenTTL:    config.AccessTokenTTL,
-		refreshTokenTTL:   config.RefreshTokenTTL,
-		issuer:            config.Issuer,
-		audience:          config.ExpectedAudience,
-		requireExpiration: config.RequireExpiration,
-		clockSkew:         config.ClockSkew,
-		signingMethod:     config.SigningMethod,
-		blacklistManager:  manager,
-		rateLimiter:       rateLimiter,
-		clock:             clock,
-		isAsymmetric:      config.SigningMethod.isAsymmetric(),
+		accessTokenTTL:        config.AccessTokenTTL,
+		refreshTokenTTL:       config.RefreshTokenTTL,
+		issuer:                config.Issuer,
+		audience:              config.ExpectedAudience,
+		requireExpiration:     config.RequireExpiration,
+		rejectRefreshAsAccess: config.RejectRefreshAsAccess,
+		rotateRefreshTokens:   config.RotateRefreshTokens,
+		clockSkew:             config.ClockSkew,
+		signingMethod:         config.SigningMethod,
+		blacklistManager:      manager,
+		rateLimiter:           rateLimiter,
+		clock:                 clock,
+		isAsymmetric:          config.SigningMethod.isAsymmetric(),
 	}
 
 	// Set up keys based on algorithm type
@@ -176,8 +182,9 @@ func (p *Processor) Create(claims CustomClaims) (string, error) {
 	return createTokenWithCustomClaims(p, claims, p.accessTokenTTL, TokenTypeAccess)
 }
 
-// Validate validates a JWT access token and returns the parsed Claims.
-// Returns a value copy of the claims, whether the token is valid, and any error.
+// Parse verifies a JWT access token and returns the parsed Claims.
+// Returns a value copy of the claims. A nil error means the token is valid;
+// on error the returned Claims is the zero value.
 // The token is checked for signature validity, expiration, issuer, audience,
 // and blacklist status before claims validation.
 //
@@ -193,27 +200,83 @@ func (p *Processor) Create(claims CustomClaims) (string, error) {
 //   - [ErrTokenInvalidAudience]: token audience does not match configured audience
 //   - [ErrTokenRevoked]: token has been revoked
 //   - [ErrInvalidClaims]: claims failed validation
+//   - [ErrTokenTypeMismatch]: token is a refresh token and RejectRefreshAsAccess is enabled
 //
 // Example:
 //
-//	claims, valid, err := processor.Validate(tokenString)
-//	if valid {
-//	    fmt.Println(claims.UserID)
+//	claims, err := processor.Parse(tokenString)
+//	if err != nil {
+//	    log.Fatal(err)
 //	}
-func (p *Processor) Validate(tokenString string) (Claims, bool, error) {
+//	fmt.Println(claims.UserID)
+func (p *Processor) Parse(tokenString string) (Claims, error) {
 	if err := p.beginOp(); err != nil {
-		return Claims{}, false, err
+		return Claims{}, err
 	}
 	defer p.endOp()
 	if err := requireToken(tokenString); err != nil {
-		return Claims{}, false, err
+		return Claims{}, err
 	}
 
 	claims, err := p.validateTokenFully(tokenString)
 	if err != nil {
-		return Claims{}, false, err
+		return Claims{}, err
 	}
 
+	if err := p.checkRefreshAsAccess(claims.TokenType); err != nil {
+		return Claims{}, err
+	}
+
+	return claims, nil
+}
+
+// checkRefreshAsAccess enforces the opt-in RejectRefreshAsAccess rule shared by
+// the access-validation entry points (Parse/ParseInto and their deprecated
+// Validate wrappers): a token_type "refresh" token must not serve as an access
+// credential for its full (long) lifetime. The Refresh paths never call it,
+// and tokens without a token_type (pre-dating the field) stay accepted.
+func (p *Processor) checkRefreshAsAccess(tokenType string) error {
+	if p.rejectRefreshAsAccess && tokenType == TokenTypeRefresh {
+		return fmt.Errorf("%w: refresh token presented as access token", ErrTokenTypeMismatch)
+	}
+	return nil
+}
+
+// rotateRevoke implements Config.RotateRefreshTokens for the refresh paths:
+// it blacklists the supplied refresh token's jti before the new token is
+// minted. Fail-closed ordering — revocation precedes minting — guarantees an
+// accepted refresh token cannot be replayed after the fact, at the cost that
+// a later minting failure (rate limit, signing error) leaves the subject
+// without a valid refresh token. A missing jti cannot be revoked and is
+// rejected outright. See Config.RotateRefreshTokens for the full contract.
+func (p *Processor) rotateRevoke(rc *RegisteredClaims) error {
+	if !p.rotateRefreshTokens {
+		return nil
+	}
+	if p.blacklistManager == nil {
+		return ErrBlacklistNotConfigured
+	}
+	if rc.ID == "" {
+		return fmt.Errorf("%w: refresh rotation requires a jti claim", ErrTokenMissingID)
+	}
+	if err := p.blacklistManager.BlacklistVerified(rc.ID, rc.ExpiresAt.Time); err != nil {
+		return fmt.Errorf("%w: %w", ErrRefreshRotationFailed, err)
+	}
+	return nil
+}
+
+// Validate validates a JWT access token and returns the parsed Claims.
+// Returns a value copy of the claims, whether the token is valid, and any error.
+// The token is checked for signature validity, expiration, issuer, audience,
+// and blacklist status before claims validation.
+//
+// Deprecated: the bool result is always equivalent to err == nil. Use
+// [Processor.Parse], which returns (Claims, error); Validate will be removed
+func (p *Processor) Validate(tokenString string) (Claims, bool, error) {
+	claims, err := p.Parse(tokenString)
+	if err != nil {
+		return Claims{}, false, err
+	}
 	return claims, true, nil
 }
 
@@ -266,15 +329,19 @@ func (p *Processor) CreateRefresh(claims CustomClaims) (string, error) {
 //   - [ErrTokenRevoked]: refresh token has been revoked
 //   - [ErrInvalidClaims]: claims failed validation
 //   - [ErrTokenTypeMismatch]: token is an access token, not a refresh token
+//   - [ErrRefreshRotationFailed]: rotation enabled (Config.RotateRefreshTokens) and revoking the old token failed; no new token was issued
+//   - [ErrTokenMissingID]: rotation enabled and the token lacks a jti claim
 //
 // Security note: Claims from the refresh token are validated for standard
 // JWT fields (exp, nbf, iss, aud, blacklist) and basic structural validity
 // (UserID or Username must be present). Deep field constraints (length limits,
 // injection patterns) are not re-checked, trusting they were validated at creation.
 //
-// Rotation: Refresh does NOT revoke the supplied refresh token. The original
-// token remains valid until it expires or is explicitly revoked, so it can be
-// reused until then. For one-time-use refresh semantics, call
+// Rotation: by default Refresh does NOT revoke the supplied refresh token —
+// the original remains valid until it expires or is explicitly revoked, so it
+// can be reused until then. For one-time-use refresh semantics, either set
+// Config.RotateRefreshTokens (the old token's jti is revoked before the new
+// token is minted; fail-closed — see the field's documentation) or call
 // Revoke(refreshTokenString) after a successful Refresh.
 //
 // Example:
@@ -296,6 +363,10 @@ func (p *Processor) Refresh(refreshTokenString string) (string, error) {
 
 	if claims.TokenType == TokenTypeAccess {
 		return "", fmt.Errorf("%w: expected refresh token, got access token", ErrTokenTypeMismatch)
+	}
+
+	if err := p.rotateRevoke(&claims.RegisteredClaims); err != nil {
+		return "", err
 	}
 
 	claims.IssuedAt = NumericDate{}
@@ -328,9 +399,14 @@ func (p *Processor) Refresh(refreshTokenString string) (string, error) {
 //   - [ErrTokenRevoked]: refresh token has been revoked
 //   - [ErrInvalidClaims]: claims failed validation
 //   - [ErrTokenTypeMismatch]: token is an access token, not a refresh token
+//   - [ErrRefreshRotationFailed]: rotation enabled (Config.RotateRefreshTokens) and revoking the old token failed; no new token was issued
+//   - [ErrTokenMissingID]: rotation enabled and the token lacks a jti claim
 //
 // Security note: Claims from the refresh token are validated for standard
 // JWT fields (exp, nbf, iss, aud, blacklist) and basic structural validity.
+// Rotation: when Config.RotateRefreshTokens is set, the supplied token's jti
+// is revoked before the new token is minted (fail-closed; see the field's
+// documentation).
 // Deep field constraints (length limits, injection patterns) are not re-checked,
 // trusting they were validated at creation.
 //
@@ -346,14 +422,24 @@ func (p *Processor) RefreshInto(refreshTokenString string, claims CustomClaims) 
 	if err := requireToken(refreshTokenString); err != nil {
 		return "", err
 	}
+	if err := requireNonNilClaims(claims); err != nil {
+		return "", err
+	}
 
 	if err := p.validateCustomTokenFully(refreshTokenString, claims); err != nil {
 		return "", err
 	}
 
-	rc := claims.GetRegisteredClaims()
+	rc, err := requireRegisteredClaims(claims)
+	if err != nil {
+		return "", err
+	}
 	if rc.TokenType == TokenTypeAccess {
 		return "", fmt.Errorf("%w: expected refresh token, got access token", ErrTokenTypeMismatch)
+	}
+
+	if err := p.rotateRevoke(rc); err != nil {
+		return "", err
 	}
 
 	// Save original timing fields; restore via defer for panic safety.
@@ -377,7 +463,11 @@ func (p *Processor) RefreshInto(refreshTokenString string, claims CustomClaims) 
 // Close releases resources and securely clears sensitive data.
 // It is safe to call Close multiple times; subsequent calls return ErrProcessorClosed.
 // Always call Close when the processor is no longer needed to zero the secret key.
+// A nil receiver returns ErrProcessorClosed instead of panicking.
 func (p *Processor) Close() error {
+	if p == nil {
+		return ErrProcessorClosed
+	}
 	if !p.closed.CompareAndSwap(false, true) {
 		return ErrProcessorClosed
 	}
@@ -423,7 +513,11 @@ func (p *Processor) Close() error {
 }
 
 // IsClosed returns whether the processor has been closed.
+// A nil processor reports true: it is not usable for any operation.
 func (p *Processor) IsClosed() bool {
+	if p == nil {
+		return true
+	}
 	return p.closed.Load()
 }
 
@@ -459,11 +553,13 @@ func (p *Processor) ParseUnverified(tokenString string, claims any) error {
 	return nil
 }
 
-// ValidateInto validates a token and populates the provided custom claims.
+// ParseInto verifies a token and populates the provided custom claims.
 // The claims parameter must be a pointer to a type implementing CustomClaims.
-// Returns the same claims pointer on success for convenience.
+// Returns the same claims pointer on success; a nil error means the token is
+// valid. On error the claims struct may be partially populated and must not
+// be used.
 // Note: the provided claims struct is populated in place with parsed token data,
-// unlike Validate which returns a value copy.
+// unlike Parse which returns a value copy.
 //
 // Returns errors:
 //   - [ErrProcessorClosed]: processor has been closed
@@ -477,42 +573,66 @@ func (p *Processor) ParseUnverified(tokenString string, claims any) error {
 //   - [ErrTokenInvalidAudience]: token audience does not match configured audience
 //   - [ErrTokenRevoked]: token has been revoked
 //   - [ErrInvalidClaims]: claims failed validation
+//   - [ErrTokenTypeMismatch]: token is a refresh token and RejectRefreshAsAccess is enabled
 //
 // Example:
 //
 //	claims := &MyClaims{}
-//	result, valid, err := processor.ValidateInto(token, claims)
-//	if valid {
-//		fmt.Println(result.(*MyClaims).UserID)
+//	result, err := processor.ParseInto(token, claims)
+//	if err != nil {
+//		log.Fatal(err)
 //	}
-func (p *Processor) ValidateInto(tokenString string, claims CustomClaims) (CustomClaims, bool, error) {
+//	fmt.Println(result.(*MyClaims).UserID)
+func (p *Processor) ParseInto(tokenString string, claims CustomClaims) (CustomClaims, error) {
 	if err := p.beginOp(); err != nil {
-		return nil, false, err
+		return nil, err
 	}
 	defer p.endOp()
 	if err := requireToken(tokenString); err != nil {
-		return nil, false, err
+		return nil, err
+	}
+	if err := requireNonNilClaims(claims); err != nil {
+		return nil, err
 	}
 
 	if err := p.validateCustomTokenFully(tokenString, claims); err != nil {
-		return nil, false, err
+		return nil, err
 	}
 
-	return claims, true, nil
+	rc, err := requireRegisteredClaims(claims)
+	if err != nil {
+		return nil, err
+	}
+	if err := p.checkRefreshAsAccess(rc.TokenType); err != nil {
+		return nil, err
+	}
+
+	return claims, nil
 }
 
-// getVerificationKey returns the appropriate key for token verification.
-func (p *Processor) getVerificationKey() any {
-	if p.isAsymmetric {
-		return p.verificationKey
+// ValidateInto validates a token and populates the provided custom claims.
+// The claims parameter must be a pointer to a type implementing CustomClaims.
+// Returns the same claims pointer on success for convenience.
+//
+// Deprecated: the bool result is always equivalent to err == nil. Use
+// [Processor.ParseInto], which returns (CustomClaims, error);
+func (p *Processor) ValidateInto(tokenString string, claims CustomClaims) (CustomClaims, bool, error) {
+	parsed, err := p.ParseInto(tokenString, claims)
+	if err != nil {
+		return nil, false, err
 	}
-	return p.secretKey
+	return parsed, true, nil
 }
 
 // beginOp acquires a read lock and checks that the processor is active.
 // The read lock is held for the duration of the operation, preventing Close()
 // from clearing fields while the operation is in flight.
+// A nil receiver reports ErrProcessorClosed rather than panicking (SEC-003),
+// covering every public method that routes through beginOp.
 func (p *Processor) beginOp() error {
+	if p == nil {
+		return ErrProcessorClosed
+	}
 	p.mu.RLock()
 	if p.closed.Load() {
 		p.mu.RUnlock()
@@ -597,17 +717,21 @@ func (p *Processor) parseToken(tokenString string, claims any) (*internal.Core, 
 func (p *Processor) keyFunc(token *internal.Core) (any, error) {
 	// Read cached Alg from fast-path parsing first (avoids Header map lookup
 	// and string→any type assertion). Falls back to Header for slow-path tokens.
+	// The parse layer already enforces alg == expectedAlg, so this is a
+	// defensive re-check for direct Method use; a missing or non-string alg
+	// yields "", which cannot equal the (never empty) configured method, so a
+	// single comparison covers both branches.
 	alg := token.Alg
 	if alg == "" {
-		var ok bool
-		alg, ok = token.Header["alg"].(string)
-		if !ok || alg != string(p.signingMethod) {
-			return nil, ErrAlgorithmMismatch
-		}
-	} else if alg != string(p.signingMethod) {
+		alg, _ = token.Header["alg"].(string)
+	}
+	if alg != string(p.signingMethod) {
 		return nil, ErrAlgorithmMismatch
 	}
-	return p.getVerificationKey(), nil
+	// keyFunc runs only on the asymmetric parse path (HMAC parses via
+	// ParseWithClaimsHMAC with the raw key), and New always populates
+	// verificationKey for asymmetric methods.
+	return p.verificationKey, nil
 }
 
 func (p *Processor) validateRegistered(rc *RegisteredClaims) error {
@@ -621,10 +745,10 @@ func (p *Processor) validateRegistered(rc *RegisteredClaims) error {
 	// ClockSkew leeway: accept a token up to ClockSkew past its exp and from
 	// ClockSkew before its nbf, tolerating issuer/validator clock drift. A zero
 	// ClockSkew leaves these checks unchanged (Time.Add(0) is a no-op).
-	if !rc.ExpiresAt.IsZero() && now.After(rc.ExpiresAt.Time.Add(p.clockSkew)) {
+	if !rc.ExpiresAt.IsZero() && now.After(rc.ExpiresAt.Add(p.clockSkew)) {
 		return ErrTokenExpired
 	}
-	if !rc.NotBefore.IsZero() && now.Before(rc.NotBefore.Time.Add(-p.clockSkew)) {
+	if !rc.NotBefore.IsZero() && now.Before(rc.NotBefore.Add(-p.clockSkew)) {
 		return ErrTokenNotValidYet
 	}
 	return p.validateIssuerAudience(rc)
@@ -663,7 +787,9 @@ func (p *Processor) validateTokenInternal(tokenString string) (Claims, error) {
 
 	token, err := p.parseToken(tokenString, claims)
 	if err != nil {
-		return Claims{}, fmt.Errorf("%w: %v", ErrInvalidToken, err)
+		// %w twice (Go 1.20+): errors.Is reaches both ErrInvalidToken and the
+		// underlying parse-layer sentinel (e.g. ErrAlgorithmMismatch).
+		return Claims{}, fmt.Errorf("%w: %w", ErrInvalidToken, err)
 	}
 
 	defer internal.ReleaseCore(token)
@@ -691,13 +817,14 @@ func (p *Processor) validateTokenInternal(tokenString string) (Claims, error) {
 // Validate/ValidateInto and Refresh/RefreshInto. The concrete Validate methods
 // return descriptive errors rather than the sentinel itself (see [Claims.Validate]
 // docs), so wrapping does not double-wrap under the documented usage; the Create
-// path attaches the sentinel the same way in validateCustomClaims.
+// path attaches the sentinel the same way in validateCustomClaims. Both layers
+// are wrapped with %w, so errors.Is/As also reach the underlying cause.
 func (p *Processor) finalizeValidation(rc *RegisteredClaims, validate func() error) error {
 	if err := p.checkBlacklist(rc.ID); err != nil {
 		return err
 	}
 	if err := validate(); err != nil {
-		return fmt.Errorf("%w: %v", ErrInvalidClaims, err)
+		return fmt.Errorf("%w: %w", ErrInvalidClaims, err)
 	}
 	return nil
 }
@@ -723,7 +850,11 @@ func (p *Processor) validateCustomTokenFully(tokenString string, claims CustomCl
 	if err := validateTokenIntoCustomClaims(p, tokenString, claims); err != nil {
 		return err
 	}
-	return p.finalizeValidation(claims.GetRegisteredClaims(), claims.Validate)
+	rc, err := requireRegisteredClaims(claims)
+	if err != nil {
+		return err
+	}
+	return p.finalizeValidation(rc, claims.Validate)
 }
 
 // verifyAndExtractID verifies the token's signature, issuer, and audience, then
@@ -736,7 +867,9 @@ func (p *Processor) verifyAndExtractID(tokenString string) (string, time.Time, e
 
 	token, err := p.parseToken(tokenString, claims)
 	if err != nil {
-		return "", time.Time{}, fmt.Errorf("%w: %v", ErrInvalidToken, err)
+		// %w twice: keep the underlying sentinel (e.g. ErrAlgorithmMismatch)
+		// reachable via errors.Is, as on the Validate paths.
+		return "", time.Time{}, fmt.Errorf("%w: %w", ErrInvalidToken, err)
 	}
 	defer internal.ReleaseCore(token)
 

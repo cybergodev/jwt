@@ -40,7 +40,11 @@ type BlacklistConfig struct {
 	CleanupInterval time.Duration
 
 	// MaxSize is the maximum number of tokens in the in-memory store.
-	// Only used when Store is nil.
+	// Only used when Store is nil. When the store saturates, expired entries
+	// are removed first; if it is still full, the entries with the earliest
+	// expiry are evicted — which may drop still-active revocations (fail-open
+	// under saturation). Size the store for peak revocation volume, or supply
+	// a custom Store to control the policy.
 	MaxSize int
 
 	// EnableAutoCleanup enables automatic removal of expired tokens.
@@ -52,6 +56,8 @@ type BlacklistConfig struct {
 	// Store is an optional custom blacklist storage backend.
 	// If provided, CleanupInterval, MaxSize, and EnableAutoCleanup are ignored.
 	// The store must implement the BlacklistStore interface.
+	// Ownership note: Processor.Close closes this store; do not share one
+	// store instance across processors that may outlive each other.
 	Store BlacklistStore
 
 	// clock is set internally from Config.Clock to maintain testability.

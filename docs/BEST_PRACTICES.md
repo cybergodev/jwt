@@ -110,6 +110,24 @@ cfg.SigningMethod = jwt.SigningMethodES256
 
 ---
 
+### Security-Relevant Defaults
+
+Three protections are opt-in for backward compatibility and **should be
+enabled in new deployments**:
+
+| Config field | Default | Effect when enabled |
+|--------------|---------|---------------------|
+| `RejectRefreshAsAccess` | `false` | Refresh tokens cannot serve as access credentials for their full (long) TTL |
+| `RequireExpiration` | `false` | Tokens without an `exp` claim (which would otherwise never expire) are rejected |
+| `RotateRefreshTokens` | `false` | Refresh tokens become one-time-use: the old token is revoked before the new one is minted |
+
+```go
+cfg := jwt.DefaultConfig()
+cfg.RejectRefreshAsAccess = true
+cfg.RequireExpiration = true
+cfg.RotateRefreshTokens = true
+```
+
 ## Configuration Best Practices
 
 ### Complete Production Configuration
@@ -210,29 +228,37 @@ func (s *AuthService) CreateSession(userID string) (*Session, error) {
 
 ### Token Refresh Pattern
 
+Enable `RotateRefreshTokens` for one-time-use refresh semantics — the
+processor revokes the old refresh token (by its `jti`) before minting the new
+access token, so a presented-and-accepted refresh token can never be replayed:
+
 ```go
+cfg := jwt.DefaultConfig()
+cfg.SecretKey = os.Getenv("JWT_SECRET")
+cfg.RotateRefreshTokens = true // fail-closed: revoke old token before minting
+processor, err := jwt.New(cfg)
+
 func (s *AuthService) RefreshAccessToken(refreshToken string) (string, error) {
-    // 1. Validate refresh token
-    claims, valid, err := s.processor.Validate(refreshToken)
-    if err != nil || !valid {
-        return "", errors.New("invalid refresh token")
+    // Refresh validates the token; with rotation enabled it also revokes it,
+    // so a replayed token fails with jwt.ErrTokenRevoked.
+    newAccess, err := s.processor.Refresh(refreshToken)
+    if err != nil {
+        if errors.Is(err, jwt.ErrTokenRevoked) {
+            return "", errors.New("refresh token already used — possible replay")
+        }
+        return "", fmt.Errorf("refresh failed: %w", err)
     }
 
-    // 2. Check if user is still active (optional)
-    if !s.isUserActive(claims.UserID) {
-        s.processor.Revoke(refreshToken)
-        return "", errors.New("user account disabled")
-    }
-
-    // 3. Create new access token
-    newClaims := &jwt.Claims{
-        UserID:    claims.UserID,
-        SessionID: claims.SessionID,
-    }
-
-    return s.processor.Create(newClaims)
+    // Optionally check that the subject is still active before issuing.
+    return newAccess, nil
 }
 ```
+
+> **Note**: rotation revokes *before* minting (fail-closed). If minting then
+> fails — e.g. the rate limit trips — the subject must re-authenticate.
+> Size `RateLimitRate` accordingly, or keep rotation off and call
+> `Revoke(refreshToken)` manually after a successful `Refresh` when
+> best-effort semantics are acceptable.
 
 ### Token Revocation Pattern
 
@@ -554,6 +580,9 @@ func (m *LoggingMiddleware) Validate(token string) (jwt.Claims, bool, error) {
 - [ ] Access token TTL ≤ 15 minutes
 - [ ] Algorithm explicitly configured
 - [ ] Rate limiting enabled in production
+- [ ] RejectRefreshAsAccess enabled (refresh tokens rejected as access credentials)
+- [ ] RequireExpiration enabled (no never-expiring tokens)
+- [ ] RotateRefreshTokens enabled, or explicit Revoke after Refresh (one-time-use refresh)
 - [ ] Token revocation implemented
 - [ ] Graceful shutdown implemented
 

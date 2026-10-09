@@ -10,13 +10,21 @@ import (
 // This interface allows for dependency injection and easier testing.
 // The default implementation is Processor.
 //
-// Consumers: define your own smaller interface with only the methods you need.
+// This is a wide, aggregate interface — the library's historical facade
+// contract, kept for API compatibility. Depending on all twelve methods
+// couples a consumer to every operation, so where a narrower contract
+// suffices, define a smaller interface in the consuming package with only
+// the methods you actually call; *Processor satisfies it automatically.
 // For example, if you only need Create and Validate:
 //
 //	type TokenCreator interface {
 //	    Create(claims jwt.CustomClaims) (string, error)
 //	    Validate(tokenString string) (jwt.Claims, bool, error)
 //	}
+//
+// The interface deliberately still carries Validate/ValidateInto although
+// those are deprecated on *Processor in favor of Parse/ParseInto: adding or
+// swapping methods here would break third-party implementations.
 //
 // Methods are organized into three groups:
 //   - Token Operations: Create, CreateRefresh (both accept CustomClaims)
@@ -68,6 +76,8 @@ type RateLimitProvider interface {
 	Allow(key string) bool
 
 	// Reset removes the rate limit state for the given key.
+	// Part of the provider contract for custom limiters; the Processor
+	// itself never calls it.
 	Reset(key string)
 
 	// Close releases resources used by the rate limiter.

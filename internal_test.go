@@ -1,14 +1,15 @@
 package jwt
 
 import (
-	"encoding/base64"
-	"encoding/json"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/cybergodev/jwt/internal"
 )
+
+// Integration tests for the internal parse layer from the public package.
+// DecodeSegment's own table (valid/invalid/oversized base64) lives in the
+// internal package's TestDecodeSegmentErrors.
 
 func TestCoreTokenParsing(t *testing.T) {
 	processor, err := newTestProcessor(testSecretKey)
@@ -46,62 +47,6 @@ func TestCoreTokenParsing(t *testing.T) {
 
 	if parsedClaims.UserID != claims.UserID {
 		t.Errorf("Expected UserID=%s, got UserID=%s", claims.UserID, parsedClaims.UserID)
-	}
-}
-
-func TestCoreDecodeSegment(t *testing.T) {
-	tests := []struct {
-		name    string
-		input   string
-		wantErr bool
-		check   func(t *testing.T, decoded map[string]any)
-	}{
-		{
-			name: "valid base64url",
-			input: func() string {
-				d, _ := json.Marshal(map[string]any{"test": "value", "num": 123})
-				return base64.RawURLEncoding.EncodeToString(d)
-			}(),
-			check: func(t *testing.T, decoded map[string]any) {
-				if decoded["test"] != "value" {
-					t.Errorf("Expected test=value, got test=%v", decoded["test"])
-				}
-			},
-		},
-		{
-			name:    "invalid base64url",
-			input:   "invalid-base64!",
-			wantErr: true,
-		},
-		{
-			name:    "empty segment",
-			input:   "",
-			wantErr: true,
-		},
-		{
-			name:    "extremely long segment",
-			input:   strings.Repeat("a", 100000),
-			wantErr: true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			var decoded map[string]any
-			err := internal.DecodeSegment(tt.input, &decoded)
-			if tt.wantErr {
-				if err == nil {
-					t.Error("Expected error")
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("Unexpected error: %v", err)
-			}
-			if tt.check != nil {
-				tt.check(t, decoded)
-			}
-		})
 	}
 }
 

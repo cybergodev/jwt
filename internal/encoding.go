@@ -50,9 +50,36 @@ func stringToBytes(s string) []byte {
 	return unsafe.Slice(unsafe.StringData(s), len(s))
 }
 
+// FastUnmarshaler is implemented by claims types that decode their own JSON
+// with a hand-written scanner (the built-in jwt.Claims does). DecodeSegment
+// tries it before encoding/json: on success the payload is scanned once
+// instead of three times (encoding/json's validity pre-scan, its literal
+// skip pass, and the custom decoder itself), which profiling showed was the
+// dominant cost of the validate path. Any non-nil error means the
+// implementation declined or failed, and DecodeSegment MUST then re-derive
+// the result via encoding/json, which owns the authoritative decoded values
+// and error values.
+//
+// Nil-receiver contract: a typed-nil pointer boxes as a non-nil interface
+// value and therefore reaches UnmarshalFastJSON. Implementations with pointer
+// receivers MUST return an error in that case (the built-in *Claims declines,
+// letting encoding/json emit its canonical InvalidUnmarshalError) — writing
+// through the receiver would panic.
+type FastUnmarshaler interface {
+	// UnmarshalFastJSON decodes data into the receiver. On any error the
+	// receiver's contents are unspecified; the caller must re-decode with
+	// encoding/json.
+	UnmarshalFastJSON(data []byte) error
+}
+
 // DecodeSegment base64url-decodes a single JWT segment (header or payload) and
 // JSON-unmarshals the result into dest. Empty or oversized segments are rejected
 // as a DoS guard (see maxSegmentLength / maxDecodedSize).
+//
+// The decoded bytes are pooled (decodeBufPool), not stack-allocated: data flows
+// into the FastUnmarshaler interface call, which defeats escape analysis and
+// would force a per-call heap allocation of a stack buffer (measured: one
+// extra alloc and +1 KiB/op per parse when tried).
 func DecodeSegment(segment string, dest any) error {
 	segLen := len(segment)
 	if segLen == 0 {
@@ -81,12 +108,27 @@ func DecodeSegment(segment string, dest any) error {
 		return fmt.Errorf("base64 decode failed: %w", err)
 	}
 
-	if err := json.Unmarshal(buf[:n], dest); err != nil {
+	data := buf[:n]
+	if fu, ok := dest.(FastUnmarshaler); ok {
+		if err := fu.UnmarshalFastJSON(data); err == nil {
+			return nil
+		}
+		// Fast decode declined: fall through to encoding/json, which re-derives
+		// the authoritative result (decoded values and error values alike).
+	}
+
+	if err := json.Unmarshal(data, dest); err != nil {
 		return fmt.Errorf("json unmarshal failed: %w", err)
 	}
 
 	return nil
 }
+
+// headerStackBuf is the decoded-size budget for the common JWT header
+// ({"alg":"HS256","typ":"JWT"} decodes to 27 bytes); headers within it are
+// base64-decoded into a stack buffer, skipping two sync.Pool round-trips per
+// parse. Larger (rare) headers fall back to the pooled buffer.
+const headerStackBuf = 128
 
 // DecodeHeaderAlg extracts the "alg" field from a base64url-encoded JWT header
 // without fully decoding the header into a map. Returns empty string if alg is
@@ -104,14 +146,20 @@ func DecodeHeaderAlg(headerSegment string) string {
 		return ""
 	}
 
-	bufPtr := getDecodeBuf()
-	defer putDecodeBuf(bufPtr)
+	var stack [headerStackBuf]byte
+	var buf []byte
+	if bufLen <= headerStackBuf {
+		buf = stack[:bufLen]
+	} else {
+		bufPtr := getDecodeBuf()
+		defer putDecodeBuf(bufPtr)
 
-	if cap(*bufPtr) < bufLen {
-		*bufPtr = make([]byte, 0, bufLen)
+		if cap(*bufPtr) < bufLen {
+			*bufPtr = make([]byte, 0, bufLen)
+		}
+		buf = (*bufPtr)[:bufLen]
 	}
 
-	buf := (*bufPtr)[:bufLen]
 	n, err := base64.RawURLEncoding.Decode(buf, stringToBytes(headerSegment))
 	if err != nil {
 		return ""

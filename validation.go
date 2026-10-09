@@ -51,19 +51,25 @@ func validateClaims(claims *Claims) error {
 		}
 	}
 
+	// The extra-map loop validates each key/value with stringError and fills
+	// the Field lazily: the "extra."+key concatenation is paid only on the
+	// error path, not once (or per item) on the hot path.
 	for key, value := range claims.Extra {
-		if err := validateString("extra."+key, key, maxStringLength); err != nil {
-			return err
+		if e := stringError(key, maxStringLength); e != nil {
+			e.Field = "extra." + key
+			return e
 		}
 		switch v := value.(type) {
 		case string:
-			if err := validateString("extra."+key, v, maxStringLength); err != nil {
-				return err
+			if e := stringError(v, maxStringLength); e != nil {
+				e.Field = "extra." + key
+				return e
 			}
 		case []string:
 			for _, item := range v {
-				if err := validateString("extra."+key, item, maxStringLength); err != nil {
-					return err
+				if e := stringError(item, maxStringLength); e != nil {
+					e.Field = "extra." + key
+					return e
 				}
 			}
 		case map[string]any:
@@ -97,7 +103,12 @@ func validateStringArray(name string, items []string) error {
 	return nil
 }
 
-func validateString(fieldName, value string, maxLength int) error {
+// stringError returns a ValidationError for an invalid value with Field left
+// empty for the caller to fill in; nil means the value is valid. Splitting
+// the check from the field-name formatting lets the extra-map loop defer its
+// "extra."+key concatenation to the error path instead of paying it on every
+// validated key.
+func stringError(value string, maxLength int) *ValidationError {
 	valueLen := len(value)
 	if valueLen == 0 {
 		return nil
@@ -105,34 +116,40 @@ func validateString(fieldName, value string, maxLength int) error {
 
 	if valueLen > maxLength {
 		return &ValidationError{
-			Field:   fieldName,
 			Message: fmt.Sprintf("exceeds maximum length of %d", maxLength),
 		}
 	}
 
-	// Single pass: control char check + dangerous pattern detection.
-	// For positions where the first-byte index has no matching patterns
-	// (the common case for alphanumeric claims), the inner loop is skipped entirely.
+	// Single pass: control char check + dangerous pattern detection, merged
+	// into one claimByteFlags table load per byte. For positions where the
+	// byte is fully safe (the common case for alphanumeric claims), the
+	// pattern check is skipped entirely.
 	patternEnd := valueLen - 2 // shortest pattern is 3 chars
-	for i := 0; i < valueLen; i++ {
-		c := value[i]
-		if isControlChar(c) {
+	for i := range valueLen {
+		flags := claimByteFlags[value[i]]
+		if flags == 0 {
+			continue
+		}
+		if flags&flagControl != 0 {
 			return &ValidationError{
-				Field:   fieldName,
 				Message: "invalid control character",
 			}
 		}
-		if i < patternEnd {
-			mask := patternMask[c]
-			if mask != 0 && matchPatternsAt(value, i, mask) {
-				return &ValidationError{
-					Field:   fieldName,
-					Message: "suspicious pattern detected",
-				}
+		if i < patternEnd && matchPatternsAt(value, i, patternMask[value[i]]) {
+			return &ValidationError{
+				Message: "suspicious pattern detected",
 			}
 		}
 	}
 
+	return nil
+}
+
+func validateString(fieldName, value string, maxLength int) error {
+	if e := stringError(value, maxLength); e != nil {
+		e.Field = fieldName
+		return e
+	}
 	return nil
 }
 
@@ -168,6 +185,21 @@ var dangerousPatterns = []string{
 // near O(n).
 var patternMask [256]uint64
 
+// Bit flags stored in claimByteFlags.
+const (
+	// flagControl marks invalid control characters (see isControlChar).
+	flagControl uint8 = 1
+	// flagPatterns marks bytes that begin at least one dangerous pattern.
+	flagPatterns uint8 = 2
+)
+
+// claimByteFlags merges the two per-byte predicates stringError applies —
+// control-character rejection and pattern-candidate detection — into a single
+// table load, so fully safe bytes (the common case) cost one lookup and a
+// zero test instead of a multi-comparison control check plus a mask load.
+// Derived from isControlChar and patternMask in init so the tables cannot drift.
+var claimByteFlags [256]uint8
+
 func init() {
 	// Developer invariant guard — NOT a runtime panic reachable from any public
 	// API. dangerousPatterns is a package-level constant, so this fires only if a
@@ -193,6 +225,14 @@ func init() {
 		patternMask[c] |= 1 << uint(i)
 		if c >= 'a' && c <= 'z' {
 			patternMask[c-32] |= 1 << uint(i)
+		}
+	}
+	for c := range claimByteFlags {
+		if isControlChar(byte(c)) {
+			claimByteFlags[c] |= flagControl
+		}
+		if patternMask[c] != 0 {
+			claimByteFlags[c] |= flagPatterns
 		}
 	}
 }

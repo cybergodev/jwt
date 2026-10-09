@@ -1,11 +1,14 @@
 package jwt
 
 import (
+	"crypto/rand"
+	"crypto/rsa"
 	"errors"
-	"fmt"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/cybergodev/jwt/internal"
 )
 
 // ============================================================================
@@ -58,139 +61,6 @@ func TestClockProviders(t *testing.T) {
 		if !clock.Now().Equal(clock.Now()) {
 			t.Error("FixedClock.Now() should return same time on multiple calls")
 		}
-	})
-}
-
-// ============================================================================
-// RATE LIMITER TESTS (table-driven)
-// ============================================================================
-
-func TestRateLimiterBasic(t *testing.T) {
-	t.Run("Allow", func(t *testing.T) {
-		rl := NewRateLimiter(10, time.Second)
-		defer rl.Close()
-
-		for i := range 10 {
-			if !rl.Allow("key") {
-				t.Errorf("Allow should succeed at iteration %d", i)
-			}
-		}
-		if rl.Allow("key") {
-			t.Error("Should be rate limited after max")
-		}
-	})
-
-	t.Run("AllowN", func(t *testing.T) {
-		rl := NewRateLimiter(10, time.Second)
-		defer rl.Close()
-
-		tests := []struct {
-			n    int
-			want bool
-		}{
-			{0, true},
-			{-1, false},
-			{5, true},
-			{5, true},
-			{1, false},
-			{100, false},
-		}
-		for _, tt := range tests {
-			if got := rl.AllowN("key", tt.n); got != tt.want {
-				t.Errorf("AllowN(%d) = %v, want %v", tt.n, got, tt.want)
-			}
-		}
-	})
-
-	t.Run("AllowN_EmptyKey", func(t *testing.T) {
-		rl := NewRateLimiter(10, time.Second)
-		defer rl.Close()
-
-		if rl.AllowN("", 1) {
-			t.Error("AllowN should reject empty key with n > 0")
-		}
-		// n=0 always returns true regardless of key
-		if !rl.AllowN("", 0) {
-			t.Error("AllowN with n=0 should return true")
-		}
-	})
-
-	t.Run("Reset", func(t *testing.T) {
-		rl := NewRateLimiter(10, time.Second)
-		defer rl.Close()
-
-		for range 10 {
-			rl.Allow("key")
-		}
-		rl.Reset("key")
-		for i := range 10 {
-			if !rl.Allow("key") {
-				t.Errorf("Should allow after reset, failed at %d", i)
-			}
-		}
-
-		// Reset non-existent key should not panic
-		rl.Reset("nonexistent")
-		// Reset empty key should not panic
-		rl.Reset("")
-	})
-
-	t.Run("TokenRefill", func(t *testing.T) {
-		rl := NewRateLimiter(10, 100*time.Millisecond)
-		defer rl.Close()
-
-		for range 10 {
-			rl.Allow("key")
-		}
-		if rl.Allow("key") {
-			t.Error("Should be rate limited")
-		}
-		time.Sleep(150 * time.Millisecond)
-		if !rl.Allow("key") {
-			t.Error("Should have tokens after refill")
-		}
-	})
-
-	t.Run("ClosedOperations", func(t *testing.T) {
-		rl := NewRateLimiter(10, time.Second)
-		rl.Close()
-
-		if rl.Allow("test") {
-			t.Error("Should not allow after close")
-		}
-		if rl.AllowN("test", 1) {
-			t.Error("AllowN should not allow after close")
-		}
-		rl.Close() // double close should be safe
-	})
-
-	t.Run("Eviction", func(t *testing.T) {
-		rl := NewRateLimiter(10, time.Second)
-		defer rl.Close()
-
-		rl.mu.Lock()
-		rl.maxBuckets = 5
-		rl.mu.Unlock()
-
-		for i := range 6 {
-			rl.Allow(fmt.Sprintf("key-%d", i))
-			time.Sleep(time.Millisecond)
-		}
-
-		rl.mu.Lock()
-		size := len(rl.buckets)
-		rl.mu.Unlock()
-		if size > 5 {
-			t.Errorf("Expected max 5 buckets, got %d", size)
-		}
-	})
-
-	t.Run("ZeroParameters", func(t *testing.T) {
-		// NewRateLimiter tolerates zero rate/window; construction must not panic.
-		rl := NewRateLimiter(0, 0)
-		rl.Close()
-		rl = NewRateLimiter(100, 0)
-		rl.Close()
 	})
 }
 
@@ -534,36 +404,6 @@ func TestRefreshTokenForEdgeCases(t *testing.T) {
 	}
 }
 
-func TestAlgorithmMismatch(t *testing.T) {
-	cfg1 := DefaultConfig()
-	cfg1.SecretKey = testSecretKey
-	cfg1.SigningMethod = SigningMethodHS256
-	proc1, err := New(cfg1)
-	if err != nil {
-		t.Fatalf("Failed to create HS256 processor: %v", err)
-	}
-	defer func() { _ = proc1.Close() }() // best-effort cleanup
-
-	token, err := proc1.Create(&Claims{UserID: "mismatch-user", Username: "test"})
-	if err != nil {
-		t.Fatalf("Failed to create token: %v", err)
-	}
-
-	cfg2 := DefaultConfig()
-	cfg2.SecretKey = testSecretKey
-	cfg2.SigningMethod = SigningMethodHS384
-	proc2, err := New(cfg2)
-	if err != nil {
-		t.Fatalf("Failed to create HS384 processor: %v", err)
-	}
-	defer func() { _ = proc2.Close() }() // best-effort cleanup
-
-	_, valid, err := proc2.Validate(token)
-	if valid || err == nil {
-		t.Error("Should fail with algorithm mismatch")
-	}
-}
-
 func TestValidateTokenIntoCustomClaimsInvalidSignature(t *testing.T) {
 	processor, err := newTestProcessor(testSecretKey)
 	if err != nil {
@@ -650,6 +490,148 @@ func TestParseUnverifiedEdgeCases(t *testing.T) {
 			}
 		})
 	}
+}
+
+// ============================================================================
+// PROCESSOR INTERNAL BRANCH TESTS (white-box)
+// ============================================================================
+
+// TestRevokeWithoutJTICoversVerifyAndExtractID covers the missing-jti branch
+// of verifyAndExtractID shared by Revoke and IsRevoked: a token without a jti
+// cannot be revoked, because the blacklist is keyed by that ID. The token is
+// signed directly (signClaims does not auto-fill jti, unlike Create) with a
+// matching issuer so the earlier issuer/audience checks pass.
+func TestRevokeWithoutJTICoversVerifyAndExtractID(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.SecretKey = testSecretKey
+	cfg.Blacklist = DefaultBlacklistConfig()
+	processor, err := New(cfg)
+	if err != nil {
+		t.Fatalf("Failed to create processor: %v", err)
+	}
+	defer func() { _ = processor.Close() }() // best-effort cleanup
+
+	claims := &Claims{UserID: "nojti-user"}
+	claims.Issuer = processor.issuer
+	token, err := processor.signClaims(claims)
+	if err != nil {
+		t.Fatalf("signClaims failed: %v", err)
+	}
+
+	if err := processor.Revoke(token); !errors.Is(err, ErrTokenMissingID) {
+		t.Errorf("Revoke: errors.Is(err, ErrTokenMissingID) = false, err = %v", err)
+	}
+	if _, err := processor.IsRevoked(token); !errors.Is(err, ErrTokenMissingID) {
+		t.Errorf("IsRevoked: errors.Is(err, ErrTokenMissingID) = false, err = %v", err)
+	}
+}
+
+// TestKeyFuncHeaderAlgFallback covers keyFunc's defensive Header lookup: when
+// the cached fast-path Alg is empty, the header map is consulted, and a
+// non-string or mismatched alg must yield ErrAlgorithmMismatch. keyFunc runs
+// only on the asymmetric parse path, so an RSA processor is used.
+func TestKeyFuncHeaderAlgFallback(t *testing.T) {
+	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("Failed to generate RSA key: %v", err)
+	}
+	cfg := DefaultConfig()
+	cfg.SigningKey = rsaKey
+	cfg.SigningMethod = SigningMethodRS256
+	processor, err := New(cfg)
+	if err != nil {
+		t.Fatalf("Failed to create processor: %v", err)
+	}
+	defer func() { _ = processor.Close() }() // best-effort cleanup
+
+	tests := []struct {
+		name      string
+		headerAlg any
+		wantErr   error
+	}{
+		{"matching alg from header", "RS256", nil},
+		{"mismatched alg from header", "RS512", ErrAlgorithmMismatch},
+		{"non-string alg in header", 42, ErrAlgorithmMismatch},
+		{"missing alg in header", nil, ErrAlgorithmMismatch},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			core := &internal.Core{Header: map[string]any{"alg": tt.headerAlg}}
+			key, err := processor.keyFunc(core)
+			if tt.wantErr != nil {
+				if !errors.Is(err, tt.wantErr) {
+					t.Fatalf("keyFunc err = %v, want %v", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("keyFunc err = %v", err)
+			}
+			if key != processor.verificationKey {
+				t.Fatalf("keyFunc key = %T, want the configured verification key", key)
+			}
+		})
+	}
+}
+
+// TestSignClaimsDefensiveBranches covers signClaims' constructor-guaranteed
+// invariants (non-nil method impl, non-nil key) as returned errors rather
+// than panics, reachable only by direct field mutation.
+func TestSignClaimsDefensiveBranches(t *testing.T) {
+	t.Run("nil signing method", func(t *testing.T) {
+		processor, err := newTestProcessor(testSecretKey)
+		if err != nil {
+			t.Fatalf("Failed to create processor: %v", err)
+		}
+		defer func() { _ = processor.Close() }() // best-effort cleanup
+
+		method := processor.signingMethodImpl
+		processor.signingMethodImpl = nil
+		defer func() { processor.signingMethodImpl = method }()
+
+		if _, err := processor.signClaims(&Claims{UserID: "u"}); err == nil {
+			t.Error("signClaims with nil method impl should fail")
+		}
+	})
+
+	t.Run("nil HMAC secret", func(t *testing.T) {
+		processor, err := newTestProcessor(testSecretKey)
+		if err != nil {
+			t.Fatalf("Failed to create processor: %v", err)
+		}
+		defer func() { _ = processor.Close() }() // best-effort cleanup
+
+		key := processor.secretKey
+		processor.secretKey = nil
+		defer func() { processor.secretKey = key }()
+
+		if _, err := processor.signClaims(&Claims{UserID: "u"}); err == nil {
+			t.Error("signClaims with nil HMAC secret should fail")
+		}
+	})
+
+	t.Run("nil asymmetric key", func(t *testing.T) {
+		rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
+		if err != nil {
+			t.Fatalf("Failed to generate RSA key: %v", err)
+		}
+		cfg := DefaultConfig()
+		cfg.SigningKey = rsaKey
+		cfg.SigningMethod = SigningMethodRS256
+		processor, err := New(cfg)
+		if err != nil {
+			t.Fatalf("Failed to create processor: %v", err)
+		}
+		defer func() { _ = processor.Close() }() // best-effort cleanup
+
+		key := processor.asymmetricKey
+		processor.asymmetricKey = nil
+		defer func() { processor.asymmetricKey = key }()
+
+		if _, err := processor.signClaims(&Claims{UserID: "u"}); err == nil {
+			t.Error("signClaims with nil asymmetric key should fail")
+		}
+	})
 }
 
 // ============================================================================

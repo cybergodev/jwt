@@ -14,39 +14,9 @@ func newTestProcessor(secretKey string) (*Processor, error) {
 	return New(cfg)
 }
 
-func TestProcessorCreation(t *testing.T) {
-	tests := []struct {
-		name      string
-		secretKey string
-		wantError bool
-	}{
-		{"Valid secret key", testSecretKey, false},
-		{"Short secret key", "short", true},
-		{"Empty secret key", "", true},
-		{"Weak secret key", "passwordpasswordpasswordpassword", true},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			processor, err := newTestProcessor(tt.secretKey)
-			if tt.wantError {
-				if err == nil {
-					t.Errorf("Expected error for secret key: %s", tt.secretKey)
-				}
-				return
-			}
-			if err != nil {
-				t.Errorf("Unexpected error: %v", err)
-				return
-			}
-			if processor == nil {
-				t.Error("Expected processor to be created")
-				return
-			}
-			defer func() { _ = processor.Close() }() // best-effort cleanup
-		})
-	}
-}
+// Secret-key rejection (short/empty/weak) is covered by
+// TestSecurityWeakKeys in security_test.go; TTL-based expiry is covered
+// deterministically (FixedClock) by clockskew_test.go and parse_test.go.
 
 func TestTokenLifecycle(t *testing.T) {
 	cfg := DefaultConfig()
@@ -171,42 +141,5 @@ func TestProcessorWithConfig(t *testing.T) {
 	}
 	if parsedClaims.Issuer != "test-service" {
 		t.Errorf("Expected issuer 'test-service', got '%s'", parsedClaims.Issuer)
-	}
-}
-
-func TestTokenExpiration(t *testing.T) {
-	config := Config{
-		SecretKey:       testSecretKey,
-		AccessTokenTTL:  1 * time.Second,
-		RefreshTokenTTL: 24 * time.Hour,
-		Issuer:          "test-service",
-		SigningMethod:   SigningMethodHS256,
-	}
-
-	processor, err := New(config)
-	if err != nil {
-		t.Fatalf("Failed to create processor: %v", err)
-	}
-	defer func() { _ = processor.Close() }() // best-effort cleanup
-
-	claims := Claims{UserID: "user123", Username: "testuser"}
-	token, err := processor.Create(&claims)
-	if err != nil {
-		t.Fatalf("Failed to create token: %v", err)
-	}
-
-	// Token should be valid initially
-	_, valid, err := processor.Validate(token)
-	if err != nil || !valid {
-		t.Fatal("Token should be valid initially")
-	}
-
-	// Wait for token to expire
-	time.Sleep(1100 * time.Millisecond)
-
-	// Token should be invalid after expiration
-	_, valid, _ = processor.Validate(token)
-	if valid {
-		t.Error("Token should be invalid after expiration")
 	}
 }

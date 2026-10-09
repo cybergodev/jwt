@@ -4,6 +4,46 @@ All notable changes to the cybergodev/jwt library will be documented in this fil
 
 ---
 
+## v1.2.3 - Parse API, Refresh Rotation & Claims JSON Performance (2026-10-10)
+
+### Added
+
+- `Processor.Parse`/`Processor.ParseInto` — error-only counterparts of `Validate`/`ValidateInto` (nil error = valid; no redundant boolean)
+- `Config.RejectRefreshAsAccess` (default false) — all four validation entry points reject `token_type: "refresh"` tokens with `ErrTokenTypeMismatch`; `Refresh`/`RefreshInto` unaffected
+- `Config.RotateRefreshTokens` — opt-in one-time-use refresh semantics: the old jti is revoked before the new token is minted (fail-closed on store or minting failure)
+- `ErrRefreshRotationFailed` sentinel error; double-`%w` wrap keeps both the sentinel and the underlying blacklist store error `errors.Is`-reachable
+- Rate-limit sanity bounds validated when `EnableRateLimit` is set: rate ≤ 1e6, window ≤ 30 days, no negative values
+- `Claims` gains `MarshalJSON`/`UnmarshalJSON`/`UnmarshalFastJSON` fast paths — byte-identical wire format, `encoding/json` fallback for anything the scanner cannot reproduce
+- `docs/BLACKLIST.md` — revocation guide: built-in store saturation semantics, sizing guidance, Redis `BlacklistStore` reference implementation (zero new dependencies)
+- `examples/` restructured into runnable `examples/<name>/` programs compiled by `go build ./...` (old flat tagged files removed); new `examples/security` covers tampering, algorithm confusion, token-type confusion and refresh rotation
+
+### Changed
+
+- `Validate`/`ValidateInto` deprecated in favor of `Parse`/`ParseInto` per the Signature Change Protocol; behavior and signatures unchanged
+- `NumericDate.MarshalJSON` uses a value receiver so value-context marshaling also emits Unix numbers (pointer-path output unchanged)
+- Test suite deduplicated and consolidated (root-package wall time 52s → ~26s); combined coverage 91.7% → 94.6%
+- CI: govulncheck step added; coverage now measures library packages only (excludes `examples/`)
+
+### Fixed
+
+- `errors.Is(err, ErrAlgorithmMismatch)` now matches across the parse layer and public API — the documented contract was previously broken
+- `ErrInvalidClaims` wraps custom `Validate()` causes with `%w`, so `errors.Is`/`errors.As` traverse to root causes
+- RSA keys above 4096 bits round-trip: `Create` sizes the signature reserve from the key and `Verify` bounds the decode buffer by the modulus (previously signed successfully but failed every validation)
+- Empty/degenerate key structs (`&rsa.PublicKey{}`, nil ECDSA curve) return `ErrInvalidSecretKey` or a validation error instead of panicking, at both config validation and internal `Sign`/`Verify`
+- Nil-receiver safety: every `*Processor` method returns `ErrProcessorClosed`; a nil `*RateLimiter` (including typed-nil via `Config.RateLimiter`) fails closed with `ErrRateLimitExceeded` instead of panicking
+- A `CustomClaims` implementation whose `GetRegisteredClaims()` returns nil now gets `ErrInvalidClaims` at every consumption site instead of panicking
+- Rate limiter `AllowN` refills in uint64 with a 128-bit overflow guard — extreme (rate, window) configurations no longer wrap negative and stall the bucket
+- The header fast path falls back to the slow path when its `alg` scan cannot resolve the header (a nested object with an early `"alg"` key no longer fails otherwise-valid tokens)
+- `Config.Validate` reports an unrecognized signing method before other errors, so the root cause is no longer masked in doubly-invalid configs
+
+### Performance
+
+- Claims JSON fast paths cut `encoding/json` reflection from the sign/verify hot paths: `TokenCreation` −37% time / 4→2 allocs/op (the token-string + jti floor)
+- Single-scan decode, string slabs and token_type interning stack on top: validation ≈2× faster overall, 11→1 allocs/op; `LargeClaims` 129→23 allocs/op
+- `ConcurrentValidation` −48%; unchanged paths (RSA verify, `Processor` creation) verified regression-free via interleaved A/B benchstat
+
+---
+
 ## v1.2.2 - Security Fixes, Production-Readiness & Performance (2026-06-20)
 
 ### Added

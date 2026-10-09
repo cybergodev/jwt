@@ -12,9 +12,6 @@ import (
 // Timestamps beyond this value are considered invalid.
 const maxValidTimestamp = 253402300799
 
-// nullBytes is a pre-allocated byte slice for "null" JSON value.
-var nullBytes = []byte("null")
-
 // NumericDate represents a JSON numeric date value (Unix timestamp).
 // It is used for JWT timestamp claims (exp, nbf, iat).
 type NumericDate struct {
@@ -27,15 +24,30 @@ func NewNumericDate(t time.Time) NumericDate {
 }
 
 // MarshalJSON implements json.Marshaler for NumericDate.
-// Returns the Unix timestamp as a JSON number, or "null" for zero time.
-func (date *NumericDate) MarshalJSON() ([]byte, error) {
+// Returns the Unix timestamp as a JSON number. Returns "null" for the zero
+// time and for values outside [0, maxValidTimestamp] (pre-1970 dates and
+// far-future timestamps); UnmarshalJSON rejects such values outright, so
+// they cannot round-trip.
+//
+// The receiver is a value so that marshaling a Claims value (not a pointer)
+// also emits Unix numbers: with a pointer receiver, encoding/json cannot
+// find the method on non-addressable values and would fall back to
+// time.Time's RFC3339 string format, breaking interoperability. The library
+// itself always marshals claims through pointers, so its output is unchanged.
+//
+// The "null" results are freshly allocated per call: a shared pre-allocated
+// slice handed to callers would let one mutation of the returned buffer
+// corrupt every future "null" emitted package-wide. This method is off the
+// library's hot paths (AppendJSON emits the literal directly), so the cost
+// is confined to reflection-driven marshaling of user types.
+func (date NumericDate) MarshalJSON() ([]byte, error) {
 	if date.IsZero() {
-		return nullBytes, nil
+		return []byte("null"), nil
 	}
 
 	unix := date.Unix()
 	if unix < 0 || unix > maxValidTimestamp {
-		return nullBytes, nil
+		return []byte("null"), nil
 	}
 
 	// Format into a 20-byte buffer (max int64 is 19 digits). AppendInt returns a
@@ -225,17 +237,40 @@ type RegisteredClaims struct {
 type StringOrSlice []string
 
 // UnmarshalJSON implements json.Unmarshaler for StringOrSlice.
+// The common shapes — a plain unescaped-ASCII string, or an array of them —
+// decode via the same strict scanner the Claims fast path uses (see
+// claims_json.go), skipping encoding/json's machinery. Any other input
+// (escapes, non-ASCII, other JSON types) falls back to encoding/json, which
+// owns the authoritative result including error values.
 func (s *StringOrSlice) UnmarshalJSON(b []byte) error {
 	if len(b) == 0 {
 		*s = nil
 		return nil
 	}
 	if b[0] == '"' {
+		if end, err := scanJSONString(b, 0); err == nil && jsonTailIsSpace(b, end) == nil {
+			inner := b[1 : end-1]
+			plain := true
+			for k := range inner {
+				if inner[k] == '\\' || inner[k] >= 0x80 {
+					plain = false
+					break
+				}
+			}
+			if plain {
+				*s = []string{string(inner)}
+				return nil
+			}
+		}
 		var single string
 		if err := json.Unmarshal(b, &single); err != nil {
 			return err
 		}
 		*s = []string{single}
+		return nil
+	}
+	if items, ok := fastStringArray(b); ok {
+		*s = items
 		return nil
 	}
 	var multi []string
@@ -312,9 +347,11 @@ var claimsPool = sync.Pool{
 }
 
 func getClaims() *Claims {
-	c := claimsPool.Get().(*Claims)
-	c.reset()
-	return c
+	// No reset here: putClaims zeroes every *Claims before pooling it, and the
+	// pool's New returns a zero value, so a recycled object is already clean.
+	// The second reset this function used to perform was pure dead work on
+	// every parse (a full ~300-byte struct clear).
+	return claimsPool.Get().(*Claims)
 }
 
 func putClaims(c *Claims) {

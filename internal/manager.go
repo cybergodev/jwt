@@ -13,10 +13,11 @@ const DefaultBlacklistTTL = 7 * 24 * time.Hour
 // untrusted exp values from crafted tokens causing DoS.
 const MaxBlacklistTTL = 30 * 24 * time.Hour
 
-// storeOps defines the storage operations needed by Manager.
-// This is a subset of Store that excludes Cleanup(), since Manager
-// never triggers cleanup — the built-in memoryStore handles that internally.
-// The subset also matches the public jwt.BlacklistStore interface.
+// storeOps defines the storage operations Manager needs from a blacklist
+// store; it is the internal mirror of the public jwt.BlacklistStore
+// interface. Cleanup is deliberately absent: Manager never triggers it —
+// the built-in memoryStore schedules its own, and custom stores own their
+// lifecycle via Close.
 type storeOps interface {
 	Add(tokenID string, expiresAt time.Time) error
 	Contains(tokenID string) (bool, error)
@@ -56,23 +57,19 @@ func (m *Manager) IsBlacklisted(tokenID string) (bool, error) {
 // Callers MUST verify the token's signature before calling this; accepting an
 // unverified token ID would let forged tokens pollute the blacklist.
 func (m *Manager) BlacklistVerified(tokenID string, expiresAt time.Time) error {
-	if tokenID == "" {
-		return fmt.Errorf("token ID cannot be empty")
-	}
-
+	// The empty-token-ID guard lives in blacklistToken, the single choke point
+	// in front of the store.
+	//
 	// nowFunc may return a moving value (SystemClock); capture once so the
 	// default and max bounds are computed from the same instant.
 	now := m.nowFunc()
 	blacklistExpiry := now.Add(DefaultBlacklistTTL)
-	if !expiresAt.IsZero() {
-		tokenExp := expiresAt
-		if tokenExp.After(blacklistExpiry) {
-			maxExp := now.Add(MaxBlacklistTTL)
-			if tokenExp.After(maxExp) {
-				blacklistExpiry = maxExp
-			} else {
-				blacklistExpiry = tokenExp
-			}
+	if !expiresAt.IsZero() && expiresAt.After(blacklistExpiry) {
+		maxExp := now.Add(MaxBlacklistTTL)
+		if expiresAt.After(maxExp) {
+			blacklistExpiry = maxExp
+		} else {
+			blacklistExpiry = expiresAt
 		}
 	}
 

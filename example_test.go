@@ -27,7 +27,7 @@ func Example() {
 		fmt.Println(err)
 		return
 	}
-	defer p.Close()
+	defer func() { _ = p.Close() }() // best-effort cleanup
 
 	token, err := p.Create(&jwt.Claims{UserID: "user123", Username: "alice"})
 	if err != nil {
@@ -55,7 +55,7 @@ func ExampleNew() {
 		fmt.Println(err)
 		return
 	}
-	defer p.Close()
+	defer func() { _ = p.Close() }() // best-effort cleanup
 
 	fmt.Println("processor ready")
 	// Output: processor ready
@@ -89,7 +89,7 @@ func ExampleProcessor_Create() {
 		fmt.Println(err)
 		return
 	}
-	defer p.Close()
+	defer func() { _ = p.Close() }() // best-effort cleanup
 
 	token, err := p.Create(&jwt.Claims{UserID: "user123", Username: "alice"})
 	if err != nil {
@@ -118,7 +118,7 @@ func ExampleProcessor_CreateRefresh() {
 		fmt.Println(err)
 		return
 	}
-	defer p.Close()
+	defer func() { _ = p.Close() }() // best-effort cleanup
 
 	refreshToken, err := p.CreateRefresh(&jwt.Claims{UserID: "user123", Username: "alice"})
 	if err != nil {
@@ -153,7 +153,7 @@ func ExampleProcessor_ValidateInto() {
 		fmt.Println(err)
 		return
 	}
-	defer p.Close()
+	defer func() { _ = p.Close() }() // best-effort cleanup
 
 	token, err := p.Create(&exampleClaims{UserID: "user123", Role: "admin"})
 	if err != nil {
@@ -183,7 +183,7 @@ func ExampleProcessor_Revoke() {
 		fmt.Println(err)
 		return
 	}
-	defer p.Close()
+	defer func() { _ = p.Close() }() // best-effort cleanup
 
 	token, _ := p.Create(&jwt.Claims{UserID: "user123", Username: "alice"})
 
@@ -195,6 +195,34 @@ func ExampleProcessor_Revoke() {
 	_, valid, _ := p.Validate(token)
 	fmt.Println(valid)
 	// Output: false
+}
+
+// ExampleProcessor_Refresh demonstrates one-time-use refresh rotation: with
+// Config.RotateRefreshTokens the refresh token is revoked as part of the
+// refresh, so a replayed refresh token fails with ErrTokenRevoked.
+func ExampleProcessor_Refresh() {
+	cfg := jwt.DefaultConfig()
+	cfg.SecretKey = exampleSecret
+	cfg.RotateRefreshTokens = true
+
+	p, err := jwt.New(cfg)
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	defer func() { _ = p.Close() }() // best-effort cleanup
+
+	refresh, _ := p.CreateRefresh(&jwt.Claims{UserID: "user123", Username: "alice"})
+
+	if _, err := p.Refresh(refresh); err != nil {
+		fmt.Println(err)
+		return
+	}
+
+	// Replaying the same refresh token is rejected.
+	_, err = p.Refresh(refresh)
+	fmt.Println(errors.Is(err, jwt.ErrTokenRevoked))
+	// Output: true
 }
 
 // ExampleProcessor_asymmetricSigning signs and validates a token with RSA.
@@ -214,7 +242,7 @@ func ExampleProcessor_asymmetricSigning() {
 		fmt.Println(err)
 		return
 	}
-	defer p.Close()
+	defer func() { _ = p.Close() }() // best-effort cleanup
 
 	token, err := p.Create(&jwt.Claims{UserID: "user123", Username: "alice"})
 	if err != nil {
@@ -232,7 +260,66 @@ func ExampleProcessor_asymmetricSigning() {
 	// Output: alice
 }
 
-// exampleClaims is a custom claims type used by ExampleProcessor_ValidateInto.
+// ExampleProcessor_Parse verifies a token and extracts its claims. It is the
+// error-only replacement for the deprecated Validate.
+func ExampleProcessor_Parse() {
+	cfg := jwt.DefaultConfig()
+	cfg.SecretKey = exampleSecret
+
+	p, err := jwt.New(cfg)
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	defer func() { _ = p.Close() }() // best-effort cleanup
+
+	token, err := p.Create(&jwt.Claims{UserID: "user123", Username: "alice"})
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+
+	claims, err := p.Parse(token)
+	if err != nil {
+		fmt.Println("invalid token")
+		return
+	}
+
+	fmt.Println(claims.UserID)
+	// Output: user123
+}
+
+// ExampleProcessor_ParseInto parses a token into a custom claims type. It is
+// the error-only replacement for the deprecated ValidateInto.
+func ExampleProcessor_ParseInto() {
+	cfg := jwt.DefaultConfig()
+	cfg.SecretKey = exampleSecret
+
+	p, err := jwt.New(cfg)
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	defer func() { _ = p.Close() }() // best-effort cleanup
+
+	token, err := p.Create(&exampleClaims{UserID: "user123", Role: "admin"})
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+
+	result, err := p.ParseInto(token, &exampleClaims{})
+	if err != nil {
+		fmt.Println("invalid token")
+		return
+	}
+
+	parsed := result.(*exampleClaims)
+	fmt.Println(parsed.UserID, parsed.Role)
+	// Output: user123 admin
+}
+
+// exampleClaims is a custom claims type used by the custom-claims examples.
 type exampleClaims struct {
 	UserID string `json:"user_id"`
 	Role   string `json:"role"`

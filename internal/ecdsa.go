@@ -55,6 +55,10 @@ func (e *ecdsaSigningMethod) SignTo(dst []byte, signingString string, key any) (
 	if ecdsaKey == nil {
 		return 0, fmt.Errorf("ECDSA key cannot be nil")
 	}
+	if ecdsaKey.Curve == nil {
+		// A type-correct but empty key (nil curve) would panic in crypto/ecdsa.
+		return 0, fmt.Errorf("ECDSA key has nil curve")
+	}
 
 	if !e.HashFunc.Available() {
 		return 0, fmt.Errorf("hash function %v not available", e.HashFunc)
@@ -122,6 +126,12 @@ func (e *ecdsaSigningMethod) Verify(signingString string, signature string, key 
 
 	if ecdsaKey == nil {
 		return fmt.Errorf("ECDSA key cannot be nil")
+	}
+	if ecdsaKey.Curve == nil {
+		// Mirrors the SignTo guard: an empty key struct (nil curve) would
+		// panic in ecdsa.Verify once a correctly-sized signature passes the
+		// length check below.
+		return fmt.Errorf("ECDSA key has nil curve")
 	}
 
 	if !e.HashFunc.Available() {
