@@ -41,6 +41,8 @@ func TestSecurityWeakKeys(t *testing.T) {
 	}{
 		// Weak keys
 		{"common password", "password", true},
+		{"too short", "short", true},
+		{"empty", "", true},
 		{"all same char", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", true},
 		{"sequential numbers", "12345678901234567890123456789012", true},
 		{"all zeros", "00000000000000000000000000000000", true},
@@ -86,11 +88,18 @@ func TestSecurityMaliciousInput(t *testing.T) {
 	}{
 		// Injection patterns — should be rejected
 		{"XSS script tag", "<script>alert('xss')</script>", true},
+		{"XSS script tag uppercase", "<SCRIPT>alert('xss')</SCRIPT>", true},
+		{"XSS script tag mixed case", "<ScRiPt>alert(1)</sCrIpT>", true},
 		{"JavaScript URI", "javascript:alert(1)", true},
+		{"JavaScript URI uppercase", "JavaScript:alert(1)", true},
+		{"Event handler attribute", "onerror=alert(1)", true},
+		{"Event handler uppercase", "OnError=alert(1)", true},
 		{"Data URI script", "data:text/html,<script>alert(1)</script>", true},
 		{"eval call", "eval('alert(1)')", true},
 		{"Path traversal", "../../../etc/passwd", true},
+		{"SQL injection", "1=1 union select password", true},
 		{"File URI", "file:///etc/passwd", true},
+		{"File URI uppercase", "FILE:///etc/passwd", true},
 		{"VBScript", "vbscript:msgbox(1)", true},
 		{"Null byte", "test\x00null", true},
 		{"Too long field", strings.Repeat("a", 1000), true},
@@ -99,6 +108,13 @@ func TestSecurityMaliciousInput(t *testing.T) {
 		{"Email address", "user@example.com", false},
 		{"HTTPS URL", "https://example.com/profile", false},
 		{"Name with apostrophe", "John O'Brien", false},
+		// Boundary: "javascript" without the colon is a plain word; the
+		// pattern only matches with its full "javascript:" length, and a
+		// value shorter than that at the match position must pass.
+		{"javascript without colon", "javascript", false},
+		// Boundary: exactly maxStringLength (256) is allowed; 257 is not
+		// (covered by "Too long field" above at 1000).
+		{"exactly max length", strings.Repeat("a", 256), false},
 	}
 
 	for _, tt := range tests {

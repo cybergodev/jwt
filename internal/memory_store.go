@@ -2,16 +2,13 @@ package internal
 
 import (
 	"errors"
-	"sort"
+	"slices"
 	"sync"
 	"time"
 )
 
-var (
-	// ErrStoreClosed indicates that an operation was attempted on a closed store.
-	ErrStoreClosed = errors.New("blacklist store is closed")
-	errStoreFull   = errors.New("blacklist store is full")
-)
+// ErrStoreClosed indicates that an operation was attempted on a closed store.
+var ErrStoreClosed = errors.New("blacklist store is closed")
 
 // mapCapacity returns a small initial map capacity hint to reduce early rehashing
 // without wasting memory at processor creation time.
@@ -25,6 +22,8 @@ func mapCapacity(maxSize int) int {
 	return min(maxSize, 64)
 }
 
+// memoryStore is the built-in in-process blacklist store underlying
+// NewMemoryStore; see there for sizing and cleanup semantics.
 type memoryStore struct {
 	tokens        map[string]time.Time
 	mu            sync.RWMutex
@@ -36,10 +35,13 @@ type memoryStore struct {
 	nowFunc       func() time.Time
 }
 
-// NewMemoryStore constructs an in-process blacklist Store bounded to maxSize
-// entries. When enableAutoCleanup is true, a background goroutine evicts
-// expired entries every cleanupInterval. If nowFunc is nil, time.Now is used.
-func NewMemoryStore(maxSize int, cleanupInterval time.Duration, enableAutoCleanup bool, nowFunc func() time.Time) Store {
+// NewMemoryStore constructs the built-in in-process blacklist store, bounded
+// to maxSize entries. When enableAutoCleanup is true, a background goroutine
+// evicts expired entries every cleanupInterval. If nowFunc is nil, time.Now
+// is used. The concrete type is returned so callers (and tests) can also
+// reach Cleanup(); Manager consumes it through the narrower storeOps, the
+// internal mirror of the public jwt.BlacklistStore.
+func NewMemoryStore(maxSize int, cleanupInterval time.Duration, enableAutoCleanup bool, nowFunc func() time.Time) *memoryStore {
 	// Ensure maxSize is positive to prevent nil map creation
 	if maxSize <= 0 {
 		maxSize = 10000 // Default to reasonable size
@@ -77,11 +79,9 @@ func (m *memoryStore) Add(tokenID string, expiresAt time.Time) error {
 			// Evict at least one entry so a small maxSize still makes room.
 			// Matches the RateLimiter's eviction strategy (max(count, 1));
 			// without the floor, maxSize < 10 would evict zero and reject forever.
+			// count >= 1 over a non-empty map, so eviction always frees space —
+			// there is no "store full" rejection path after this point.
 			m.evictOldestUnsafe(max(m.maxSize/10, 1))
-		}
-		// Final check: if still full after cleanup and eviction, reject
-		if len(m.tokens) >= m.maxSize {
-			return errStoreFull
 		}
 	}
 
@@ -183,9 +183,15 @@ func (m *memoryStore) evictOldestUnsafe(count int) {
 		entries = append(entries, tokenEntry{id, exp})
 	}
 
-	// Use sort.Slice for O(n log n) instead of O(n²) selection sort
-	sort.Slice(entries, func(i, j int) bool {
-		return entries[i].exp.Before(entries[j].exp)
+	// Use slices.SortFunc for O(n log n) instead of O(n²) selection sort
+	slices.SortFunc(entries, func(a, b tokenEntry) int {
+		switch {
+		case a.exp.Before(b.exp):
+			return -1
+		case b.exp.Before(a.exp):
+			return 1
+		}
+		return 0
 	})
 
 	for i := 0; i < count && i < len(entries); i++ {

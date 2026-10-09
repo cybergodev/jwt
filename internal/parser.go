@@ -17,16 +17,26 @@ const (
 )
 
 var (
-	errEmptyToken         = fmt.Errorf("empty token")
+	errEmptyToken         = errors.New("empty token")
 	errTokenTooLarge      = fmt.Errorf("token too large: maximum %d characters allowed", maxTokenLength)
-	errInvalidTokenFormat = fmt.Errorf("invalid token format: expected 3 parts separated by dots")
-	errEmptyHeader        = fmt.Errorf("empty header: JWT must have a valid header")
-	errEmptySignature     = fmt.Errorf("empty signature: JWT must have a valid signature")
+	errInvalidTokenFormat = errors.New("invalid token format: expected 3 parts separated by dots")
+	errEmptyHeader        = errors.New("empty header: JWT must have a valid header")
+	errEmptySignature     = errors.New("empty signature: JWT must have a valid signature")
 
 	// ErrAlgorithmMismatch indicates that the token's algorithm does not match
 	// the expected signing method.
 	ErrAlgorithmMismatch = errors.New("token algorithm does not match configured signing method")
 )
+
+// errFastPathFallback signals that the fast path's cheaply-scanned alg could
+// not be trusted (mismatch, unresolvable or insecure method, claims decode
+// error) and the caller should retry via the slow path's full header decode.
+// The DecodeHeaderAlg scan is not JSON-structure-aware: a legal header whose
+// nested object contains an "alg" key before the real one yields a bogus
+// fast alg, and only the slow path can adjudicate such headers. Genuine
+// mismatches are re-derived (and re-reported) by the slow path, so only
+// malformed-input paths pay the extra decode.
+var errFastPathFallback = errors.New("fast path inapplicable")
 
 // parseBufPool pools byte slices for parsing operations.
 var parseBufPool = sync.Pool{
@@ -67,6 +77,19 @@ func ReleaseCore(c *Core) {
 	corePool.Put(c)
 }
 
+// newPooledCore takes a Core from the pool and fills the fields shared by
+// every parse path. alg may be empty when the path derives it later from the
+// decoded header (the slow paths, via decodeHeaderAndClaims).
+func newPooledCore(tokenString, signature, alg string, claims any) *Core {
+	token := corePool.Get().(*Core)
+	token.Raw = tokenString
+	token.Signature = signature
+	token.Claims = claims
+	token.Valid = false
+	token.Alg = alg
+	return token
+}
+
 // fastSplit3 splits s on the first two occurrences of sep, returning the three
 // surrounding substrings. It uses strings.IndexByte, whose amd64/arm64
 // implementations are SIMD-vectorized and scan far faster than a byte-by-byte
@@ -87,30 +110,42 @@ func fastSplit3(s string, sep byte) (string, string, string, bool) {
 	return s[:first], s[first+1 : second], s[second+1:], true
 }
 
+// splitToken applies the entry-point guards shared by ParseWithClaims and
+// ParseWithClaimsHMAC: it rejects empty and oversized tokens, splits on the
+// first two dots, and rejects an empty signature segment. The returned parts
+// are reslices of tokenString, so no allocation is added on the hot path.
+func splitToken(tokenString string) (string, string, string, error) {
+	if len(tokenString) == 0 {
+		return "", "", "", errEmptyToken
+	}
+	if len(tokenString) > maxTokenLength {
+		return "", "", "", errTokenTooLarge
+	}
+	part1, part2, part3, ok := fastSplit3(tokenString, '.')
+	if !ok {
+		return "", "", "", errInvalidTokenFormat
+	}
+	if part3 == "" {
+		return "", "", "", errEmptySignature
+	}
+	return part1, part2, part3, nil
+}
+
 // ParseWithClaims splits, decodes, and signature-verifies tokenString, writing
 // the decoded payload into claims. keyFunc resolves the verification key for the
 // token's algorithm (and may reject it); expectedAlg is the single accepted alg.
 // The returned Core is pooled and must be released with ReleaseCore.
 func ParseWithClaims(tokenString string, claims any, keyFunc func(*Core) (any, error), expectedAlg string) (*Core, error) {
-	if len(tokenString) == 0 {
-		return nil, errEmptyToken
-	}
-	if len(tokenString) > maxTokenLength {
-		return nil, errTokenTooLarge
-	}
-
-	part1, part2, part3, ok := fastSplit3(tokenString, '.')
-	if !ok {
-		return nil, errInvalidTokenFormat
-	}
-
-	if part3 == "" {
-		return nil, errEmptySignature
+	part1, part2, part3, err := splitToken(tokenString)
+	if err != nil {
+		return nil, err
 	}
 
 	alg := DecodeHeaderAlg(part1)
 	if alg != "" {
-		return parseFastPath(part1, part2, part3, tokenString, alg, claims, keyFunc, expectedAlg)
+		if core, err := parseFastPath(part1, part2, part3, tokenString, alg, claims, keyFunc, expectedAlg); err != errFastPathFallback {
+			return core, err
+		}
 	}
 
 	return parseSlowPath(part1, part2, part3, tokenString, claims, keyFunc, expectedAlg)
@@ -120,42 +155,30 @@ func ParseWithClaims(tokenString string, claims any, keyFunc func(*Core) (any, e
 // It accepts the HMAC key as []byte directly, avoiding interface boxing overhead
 // that causes the key to escape to heap on every call.
 func ParseWithClaimsHMAC(tokenString string, claims any, hmacKey []byte, expectedAlg string) (*Core, error) {
-	if len(tokenString) == 0 {
-		return nil, errEmptyToken
-	}
-	if len(tokenString) > maxTokenLength {
-		return nil, errTokenTooLarge
-	}
-
-	part1, part2, part3, ok := fastSplit3(tokenString, '.')
-	if !ok {
-		return nil, errInvalidTokenFormat
-	}
-
-	if part3 == "" {
-		return nil, errEmptySignature
+	part1, part2, part3, err := splitToken(tokenString)
+	if err != nil {
+		return nil, err
 	}
 
 	alg := DecodeHeaderAlg(part1)
-	if alg == "" {
-		return parseSlowPathHMAC(part1, part2, part3, tokenString, claims, hmacKey, expectedAlg)
+	if alg != "" {
+		if core, err := parseFastPathHMAC(part1, part2, part3, tokenString, alg, claims, hmacKey, expectedAlg); err != errFastPathFallback {
+			return core, err
+		}
 	}
 
-	return parseFastPathHMAC(part1, part2, part3, tokenString, alg, claims, hmacKey, expectedAlg)
+	return parseSlowPathHMAC(part1, part2, part3, tokenString, claims, hmacKey, expectedAlg)
 }
 
 func parseFastPath(part1, part2, part3, tokenString, alg string, claims any, keyFunc func(*Core) (any, error), expectedAlg string) (*Core, error) {
 	method, err := resolveFastClaims(alg, expectedAlg, expectedAlg != "", part2, claims)
 	if err != nil {
-		return nil, err
+		// The fast alg scan may have misread a structurally-legal header;
+		// defer to the slow path (see errFastPathFallback).
+		return nil, errFastPathFallback
 	}
 
-	token := corePool.Get().(*Core)
-	token.Raw = tokenString
-	token.Signature = part3
-	token.Claims = claims
-	token.Valid = false
-	token.Alg = alg
+	token := newPooledCore(tokenString, part3, alg, claims)
 
 	key, err := keyFunc(token)
 	if err != nil {
@@ -171,15 +194,11 @@ func parseFastPathHMAC(part1, part2, part3, tokenString, alg string, claims any,
 	// always passes the configured method), so enforceAlg is hard-coded true.
 	method, err := resolveFastClaims(alg, expectedAlg, true, part2, claims)
 	if err != nil {
-		return nil, err
+		// See errFastPathFallback: let the slow path re-derive the alg.
+		return nil, errFastPathFallback
 	}
 
-	token := corePool.Get().(*Core)
-	token.Raw = tokenString
-	token.Signature = part3
-	token.Claims = claims
-	token.Valid = false
-	token.Alg = alg
+	token := newPooledCore(tokenString, part3, alg, claims)
 
 	return verifyAndReturnHMAC(token, part1, part2, part3, method, hmacKey)
 }
@@ -210,11 +229,7 @@ func resolveFastClaims(alg, expectedAlg string, enforceAlg bool, part2 string, c
 }
 
 func parseSlowPath(part1, part2, part3, tokenString string, claims any, keyFunc func(*Core) (any, error), expectedAlg string) (*Core, error) {
-	token := corePool.Get().(*Core)
-	token.Raw = tokenString
-	token.Signature = part3
-	token.Claims = claims
-	token.Valid = false
+	token := newPooledCore(tokenString, part3, "", claims)
 
 	method, err := decodeHeaderAndClaims(token, part1, part2, expectedAlg, expectedAlg != "")
 	if err != nil {
@@ -232,11 +247,7 @@ func parseSlowPath(part1, part2, part3, tokenString string, claims any, keyFunc 
 }
 
 func parseSlowPathHMAC(part1, part2, part3, tokenString string, claims any, hmacKey []byte, expectedAlg string) (*Core, error) {
-	token := corePool.Get().(*Core)
-	token.Raw = tokenString
-	token.Signature = part3
-	token.Claims = claims
-	token.Valid = false
+	token := newPooledCore(tokenString, part3, "", claims)
 
 	// HMAC always enforces alg-match (see resolveFastClaims), so enforceAlg is
 	// hard-coded true.
@@ -308,6 +319,9 @@ func verifyAndReturn(token *Core, part1, part2, part3 string, method Method, key
 func verifyAndReturnHMAC(token *Core, part1, part2, part3 string, method Method, hmacKey []byte) (*Core, error) {
 	hm, ok := method.(*hmacSigningMethod)
 	if !ok {
+		// Unreachable via the public paths (the method was resolved by alg);
+		// still return the pooled Core rather than dropping it.
+		ReleaseCore(token)
 		return nil, fmt.Errorf("internal error: HMAC parse path used with non-HMAC method %T", method)
 	}
 

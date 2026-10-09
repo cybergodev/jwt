@@ -1,5 +1,10 @@
-//go:build example
-
+// Package main demonstrates operational features: rate limiting, token
+// blacklisting, and production configuration.
+//
+// Error taxonomy, token-type confusion, and rotation patterns live in
+// examples/security instead.
+//
+// Run with: go run ./examples/advanced
 package main
 
 import (
@@ -11,8 +16,6 @@ import (
 	"github.com/cybergodev/jwt"
 )
 
-// Advanced features demonstration.
-// Covers: rate limiting, blacklist, error handling, production patterns.
 func main() {
 	fmt.Println("JWT Library - Advanced Features")
 	fmt.Println("===============================")
@@ -29,18 +32,13 @@ func main() {
 
 	fmt.Println()
 
-	// Example 3: Error handling patterns
-	errorHandlingExample(secretKey)
-
-	fmt.Println()
-
-	// Example 4: Production configuration
+	// Example 3: Production configuration
 	productionConfigExample(secretKey)
 
 	fmt.Println("\nAdvanced features example complete!")
 }
 
-// rateLimitingExample demonstrates rate limiting features.
+// rateLimitingExample demonstrates per-subject rate limiting on token creation.
 func rateLimitingExample(secretKey string) {
 	fmt.Println("Example 1: Rate Limiting")
 	fmt.Println("------------------------")
@@ -49,13 +47,13 @@ func rateLimitingExample(secretKey string) {
 	cfg.SecretKey = secretKey
 	cfg.EnableRateLimit = true
 	cfg.RateLimitRate = 5             // 5 operations per window
-	cfg.RateLimitWindow = time.Minute // Per minute
+	cfg.RateLimitWindow = time.Minute // per minute, keyed on Subject (or UserID)
 
 	processor, err := jwt.New(cfg)
 	if err != nil {
 		log.Fatalf("Failed to create processor: %v", err)
 	}
-	defer processor.Close()
+	defer func() { _ = processor.Close() }() // best-effort cleanup
 
 	claims := jwt.Claims{
 		UserID:   "user123",
@@ -65,7 +63,7 @@ func rateLimitingExample(secretKey string) {
 
 	// Attempt to create tokens until rate limit is hit
 	successCount := 0
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		_, err := processor.Create(&claims)
 		if err != nil {
 			if errors.Is(err, jwt.ErrRateLimitExceeded) {
@@ -82,7 +80,7 @@ func rateLimitingExample(secretKey string) {
 	fmt.Printf("Created %d tokens within rate limit\n", successCount)
 }
 
-// blacklistExample demonstrates token revocation and blacklist.
+// blacklistExample demonstrates token revocation and the blacklist.
 func blacklistExample(secretKey string) {
 	fmt.Println("Example 2: Token Blacklist")
 	fmt.Println("--------------------------")
@@ -90,16 +88,17 @@ func blacklistExample(secretKey string) {
 	cfg := jwt.DefaultConfig()
 	cfg.SecretKey = secretKey
 	cfg.Blacklist = jwt.BlacklistConfig{
-		MaxSize:           10000,
-		CleanupInterval:   5 * time.Minute,
-		EnableAutoCleanup: true,
+		MaxSize:         10000,
+		CleanupInterval: 5 * time.Minute,
+		// EnableAutoCleanup is unnecessary here: the built-in store always
+		// cleans up expired entries automatically.
 	}
 
 	processor, err := jwt.New(cfg)
 	if err != nil {
 		log.Fatalf("Failed to create processor: %v", err)
 	}
-	defer processor.Close()
+	defer func() { _ = processor.Close() }() // best-effort cleanup
 
 	claims := jwt.Claims{
 		UserID:   "user456",
@@ -107,16 +106,15 @@ func blacklistExample(secretKey string) {
 		Role:     "user",
 	}
 
-	// Create and validate token
+	// Create token
 	token, err := processor.Create(&claims)
 	if err != nil {
 		log.Fatalf("Failed to create token: %v", err)
 	}
 
-	// Just-created token: Validate cannot fail here, so only the validity
-	// flag is needed for the demonstration.
-	_, valid, _ := processor.Validate(token)
-	fmt.Printf("Token valid: %v\n", valid)
+	// Just-created token: Parse cannot fail here, so only the error is needed
+	_, err = processor.Parse(token)
+	fmt.Printf("Token valid: %v\n", err == nil)
 
 	// Check revocation status (not revoked yet)
 	revoked, _ := processor.IsRevoked(token)
@@ -128,85 +126,13 @@ func blacklistExample(secretKey string) {
 	}
 
 	// Verify revoked token is rejected
-	_, valid, _ = processor.Validate(token)
-	fmt.Printf("Revoked after: %v (token rejected: %v)\n", true, !valid)
+	_, err = processor.Parse(token)
+	fmt.Printf("Revoked after: %v (rejected: %v)\n", true, errors.Is(err, jwt.ErrTokenRevoked))
 }
 
-// errorHandlingExample demonstrates proper error handling.
-func errorHandlingExample(secretKey string) {
-	fmt.Println("Example 3: Error Handling")
-	fmt.Println("-------------------------")
-
-	cfg := jwt.Config{SecretKey: secretKey}
-	processor, err := jwt.New(cfg)
-	if err != nil {
-		log.Fatalf("Failed to create processor: %v", err)
-	}
-	defer processor.Close()
-
-	// Invalid secret key (too short)
-	_, err = jwt.New(jwt.Config{SecretKey: "too-short"})
-	if errors.Is(err, jwt.ErrInvalidSecretKey) {
-		fmt.Println("Caught: invalid secret key")
-	}
-
-	// Invalid token format
-	_, _, err = processor.Validate("invalid.token.format")
-	if errors.Is(err, jwt.ErrInvalidToken) {
-		fmt.Println("Caught: invalid token format")
-	}
-
-	// Empty claims validation
-	_, err = processor.Create(&jwt.Claims{})
-	if errors.Is(err, jwt.ErrInvalidClaims) {
-		fmt.Println("Caught: empty claims")
-	}
-
-	// Token revoked error: create, revoke, then validate
-	token, err := processor.Create(&jwt.Claims{UserID: "test"})
-	if err != nil {
-		log.Fatalf("unexpected create error: %v", err)
-	}
-	if err := processor.Revoke(token); err != nil {
-		log.Fatalf("unexpected revoke error: %v", err)
-	}
-	_, valid, err := processor.Validate(token)
-	if !valid && errors.Is(err, jwt.ErrTokenRevoked) {
-		fmt.Println("Caught: token revoked")
-	}
-
-	// Issuer mismatch: two processors share the same key but enforce different
-	// iss values, so a token from issuer-A is rejected by the issuer-B processor.
-	mismatchCfg := jwt.Config{SecretKey: secretKey, Issuer: "issuer-A"}
-	mismatchProc, err := jwt.New(mismatchCfg)
-	if err != nil {
-		log.Fatalf("Failed to create issuer-A processor: %v", err)
-	}
-	defer mismatchProc.Close()
-
-	mismatchToken, err := mismatchProc.Create(&jwt.Claims{UserID: "test"})
-	if err != nil {
-		log.Fatalf("Failed to create mismatch token: %v", err)
-	}
-
-	checkCfg := jwt.Config{SecretKey: secretKey, Issuer: "issuer-B"}
-	checkProc, err := jwt.New(checkCfg)
-	if err != nil {
-		log.Fatalf("Failed to create issuer-B processor: %v", err)
-	}
-	defer checkProc.Close()
-
-	_, valid, err = checkProc.Validate(mismatchToken)
-	if !valid && errors.Is(err, jwt.ErrTokenInvalidIssuer) {
-		fmt.Println("Caught: issuer mismatch")
-	}
-
-	fmt.Println("Error handling tests passed")
-}
-
-// productionConfigExample demonstrates production-ready configuration.
+// productionConfigExample demonstrates a production-ready configuration.
 func productionConfigExample(secretKey string) {
-	fmt.Println("Example 4: Production Configuration")
+	fmt.Println("Example 3: Production Configuration")
 	fmt.Println("------------------------------------")
 
 	// Production configuration with all recommended settings
@@ -220,16 +146,15 @@ func productionConfigExample(secretKey string) {
 	cfg.RateLimitRate = 100
 	cfg.RateLimitWindow = time.Minute
 	cfg.Blacklist = jwt.BlacklistConfig{
-		MaxSize:           100000,
-		CleanupInterval:   5 * time.Minute,
-		EnableAutoCleanup: true,
+		MaxSize:         100000,
+		CleanupInterval: 5 * time.Minute,
 	}
 
 	processor, err := jwt.New(cfg)
 	if err != nil {
 		log.Fatalf("Failed to create production processor: %v", err)
 	}
-	defer processor.Close()
+	defer func() { _ = processor.Close() }() // best-effort cleanup
 
 	// Verify production configuration works
 	claims := jwt.Claims{
@@ -244,16 +169,16 @@ func productionConfigExample(secretKey string) {
 		log.Fatalf("Failed to create token: %v", err)
 	}
 
-	parsedClaims, valid, err := processor.Validate(token)
-	if err != nil || !valid {
+	parsed, err := processor.Parse(token)
+	if err != nil {
 		log.Fatalf("Failed to validate token: %v", err)
 	}
 
 	fmt.Printf("Production config verified - User: %s (method=%s, ttl=%v)\n",
-		parsedClaims.Username, cfg.SigningMethod, cfg.AccessTokenTTL)
+		parsed.Username, cfg.SigningMethod, cfg.AccessTokenTTL)
 	fmt.Println("\nProduction tips:")
 	fmt.Println("  - Load secret key from env: os.Getenv(\"JWT_SECRET_KEY\")")
 	fmt.Println("  - Use HTTPS for all token transmission")
-	fmt.Println("  - Implement token refresh workflow")
+	fmt.Println("  - Rotate refresh tokens (see examples/security)")
 	fmt.Println("  - Monitor rate limit violations")
 }

@@ -379,3 +379,48 @@ func TestECDSACurveMismatch(t *testing.T) {
 		})
 	}
 }
+
+// TestRSAWithLargeKeyRoundTrip guards the verify-side counterpart of the
+// signature-reserve fix: keys above 4096 bits (accepted by config validation,
+// which only enforces a 2048-bit minimum) produce signatures longer than the
+// old fixed 512-byte decode buffer, so Validate rejected every token Create
+// could sign. One 8192-bit key covers both RSA families (PKCS#1 v1.5 and
+// PSS), which duplicate the Verify decode logic.
+func TestRSAWithLargeKeyRoundTrip(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping RSA-8192 key generation in short mode")
+	}
+
+	privateKey, err := rsa.GenerateKey(rand.Reader, 8192)
+	if err != nil {
+		t.Fatalf("Failed to generate RSA key: %v", err)
+	}
+
+	for _, method := range []SigningMethod{SigningMethodRS256, SigningMethodPS256} {
+		t.Run(string(method), func(t *testing.T) {
+			cfg := DefaultConfig()
+			cfg.SigningKey = privateKey
+			cfg.SigningMethod = method
+
+			processor, err := New(cfg)
+			if err != nil {
+				t.Fatalf("Failed to create processor: %v", err)
+			}
+			defer func() { _ = processor.Close() }() // best-effort cleanup
+
+			claims := Claims{UserID: "large-key-user", Username: "alice"}
+			token, err := processor.Create(&claims)
+			if err != nil {
+				t.Fatalf("Failed to create token: %v", err)
+			}
+
+			parsed, valid, err := processor.Validate(token)
+			if err != nil || !valid {
+				t.Fatalf("Token signed by an 8192-bit key must validate: valid=%v err=%v", valid, err)
+			}
+			if parsed.UserID != claims.UserID {
+				t.Fatalf("UserID = %q, want %q", parsed.UserID, claims.UserID)
+			}
+		})
+	}
+}

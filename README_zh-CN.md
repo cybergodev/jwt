@@ -337,6 +337,7 @@ cfg.RefreshTokenTTL = 7 * 24 * time.Hour
 cfg.Issuer = "my-app"
 cfg.ExpectedAudience = "my-api"                              // 可选：拒绝不匹配 aud 的令牌
 cfg.RequireExpiration = true                                 // 可选：拒绝缺少 exp 的令牌（默认 false）
+cfg.RotateRefreshTokens = true                               // 可选：一次性刷新令牌；签发新令牌前撤销旧令牌（默认 false）
 cfg.ClockSkew = 30 * time.Second                             // 可选：exp/nbf 时钟漂移容忍（默认 0）
 
 // === 黑名单设置（嵌入在 Config 中）===
@@ -557,6 +558,7 @@ if err != nil {
 | `ErrTokenInvalidAudience` | 令牌受众不匹配 |
 | `ErrTokenMissingID` | 令牌缺少 jti 声明 |
 | `ErrTokenTypeMismatch` | 刷新操作收到错误类型的令牌 |
+| `ErrRefreshRotationFailed` | 启用旋转但撤销旧刷新令牌失败 |
 | `ErrExpirationRequired` | 设置 `RequireExpiration` 但令牌缺少 exp |
 | `ErrInvalidClaims` | 声明验证失败 |
 | `ErrRateLimitExceeded` | 超过速率限制 |
@@ -705,6 +707,7 @@ blCfg := jwt.DefaultBlacklistConfig()
 | [最佳实践](docs/BEST_PRACTICES.md) | 生产环境指南 | 部署 |
 | [故障排除](docs/TROUBLESHOOTING.md) | 常见问题解决方案 | 问题诊断 |
 | [并发指南](docs/CONCURRENCY.md) | 线程安全和模式 | 并发应用 |
+| [黑名单指南](docs/BLACKLIST.md) | 撤销后端与 Redis 参考实现 | 生产撤销 |
 
 ## 许可证
 

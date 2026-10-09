@@ -32,7 +32,7 @@ func newFuzzProcessor(tb testing.TB) *jwt.Processor {
 // fuzzer exercises pure decoding/header handling.
 func FuzzParseUnverified(f *testing.F) {
 	p := newFuzzProcessor(f)
-	defer p.Close()
+	defer func() { _ = p.Close() }() // best-effort cleanup
 
 	for _, s := range []string{"", "a.b.c", "eyJhbGciOiJIUzI1NiJ9.eyJ1c2VyX2lkIjoidTEifQ.sig"} {
 		f.Add(s)
@@ -48,7 +48,7 @@ func FuzzParseUnverified(f *testing.F) {
 // It must never panic.
 func FuzzValidate(f *testing.F) {
 	p := newFuzzProcessor(f)
-	defer p.Close()
+	defer func() { _ = p.Close() }() // best-effort cleanup
 
 	for _, s := range []string{"", "a.b.c", "not.a.token", "eyJhbGciOiJIUzI1NiJ9.eyJ1c2VyX2lkIjoidTEifQ.sig"} {
 		f.Add(s)
@@ -62,7 +62,7 @@ func FuzzValidate(f *testing.F) {
 // blacklist insert) never panics on arbitrary input.
 func FuzzRevoke(f *testing.F) {
 	p := newFuzzProcessor(f)
-	defer p.Close()
+	defer func() { _ = p.Close() }() // best-effort cleanup
 
 	for _, s := range []string{"", "a.b.c", "garbage"} {
 		f.Add(s)

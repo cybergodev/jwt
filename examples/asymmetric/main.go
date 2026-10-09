@@ -1,5 +1,12 @@
-//go:build example
-
+// Package main demonstrates asymmetric signing: RSA (PKCS#1 v1.5 and PSS)
+// and ECDSA algorithms, plus public/private key separation.
+//
+// Use asymmetric signing when you need:
+//   - Public/private key separation
+//   - Token verification by multiple services without sharing a secret
+//   - Enhanced security for distributed systems
+//
+// Run with: go run ./examples/asymmetric
 package main
 
 import (
@@ -13,16 +20,11 @@ import (
 	"github.com/cybergodev/jwt"
 )
 
-// Asymmetric signing example demonstrates RSA and ECDSA algorithms.
-// Use asymmetric signing when you need:
-// - Public/private key separation
-// - Token verification by multiple services without sharing secret
-// - Enhanced security for distributed systems
 func main() {
 	fmt.Println("JWT Library - Asymmetric Signing (RSA/ECDSA)")
 	fmt.Println("=============================================")
 
-	// Example 1: RSA signing
+	// Example 1: RSA signing (PKCS#1 v1.5)
 	rsaExample()
 
 	fmt.Println()
@@ -37,7 +39,7 @@ func main() {
 
 	fmt.Println()
 
-	// Example 4: Public/private key separation
+	// Example 4: VerificationKey separation
 	keySeparationExample()
 
 	fmt.Println("\nAsymmetric signing example complete!")
@@ -61,7 +63,7 @@ func rsaExample() {
 	if err != nil {
 		log.Fatalf("Failed to create processor: %v", err)
 	}
-	defer processor.Close()
+	defer func() { _ = processor.Close() }() // best-effort cleanup
 
 	claims := jwt.Claims{
 		UserID:   "rsa_user",
@@ -74,11 +76,11 @@ func rsaExample() {
 		log.Fatalf("Failed to create token: %v", err)
 	}
 
-	parsedClaims, valid, err := processor.Validate(token)
-	if err != nil || !valid {
+	parsed, err := processor.Parse(token)
+	if err != nil {
 		log.Fatalf("Token validation failed: %v", err)
 	}
-	fmt.Printf("RSA token validated - User: %s\n", parsedClaims.Username)
+	fmt.Printf("RSA token validated - User: %s\n", parsed.Username)
 }
 
 func psExample() {
@@ -102,7 +104,7 @@ func psExample() {
 	if err != nil {
 		log.Fatalf("Failed to create processor: %v", err)
 	}
-	defer processor.Close()
+	defer func() { _ = processor.Close() }() // best-effort cleanup
 
 	claims := jwt.Claims{
 		UserID:   "ps_user",
@@ -115,11 +117,11 @@ func psExample() {
 		log.Fatalf("Failed to create token: %v", err)
 	}
 
-	parsedClaims, valid, err := processor.Validate(token)
-	if err != nil || !valid {
+	parsed, err := processor.Parse(token)
+	if err != nil {
 		log.Fatalf("Token validation failed: %v", err)
 	}
-	fmt.Printf("RSA-PSS token validated - User: %s\n", parsedClaims.Username)
+	fmt.Printf("RSA-PSS token validated - User: %s\n", parsed.Username)
 }
 
 func ecdsaExample() {
@@ -140,7 +142,7 @@ func ecdsaExample() {
 	if err != nil {
 		log.Fatalf("Failed to create processor: %v", err)
 	}
-	defer processor.Close()
+	defer func() { _ = processor.Close() }() // best-effort cleanup
 
 	claims := jwt.Claims{
 		UserID:   "ecdsa_user",
@@ -153,11 +155,11 @@ func ecdsaExample() {
 		log.Fatalf("Failed to create token: %v", err)
 	}
 
-	parsedClaims, valid, err := processor.Validate(token)
-	if err != nil || !valid {
+	parsed, err := processor.Parse(token)
+	if err != nil {
 		log.Fatalf("Token validation failed: %v", err)
 	}
-	fmt.Printf("ECDSA token validated - User: %s\n", parsedClaims.Username)
+	fmt.Printf("ECDSA token validated - User: %s\n", parsed.Username)
 }
 
 func keySeparationExample() {
@@ -171,7 +173,7 @@ func keySeparationExample() {
 	}
 	publicKey := &privateKey.PublicKey
 
-	// Auth service: creates and signs tokens with private key
+	// Auth service: creates and signs tokens with the private key
 	authCfg := jwt.DefaultConfig()
 	authCfg.SigningKey = privateKey
 	authCfg.SigningMethod = jwt.SigningMethodRS256
@@ -181,7 +183,7 @@ func keySeparationExample() {
 	if err != nil {
 		log.Fatalf("Failed to create auth processor: %v", err)
 	}
-	defer authProcessor.Close()
+	defer func() { _ = authProcessor.Close() }() // best-effort cleanup
 
 	claims := jwt.Claims{
 		UserID:   "distributed_user",
@@ -209,13 +211,13 @@ func keySeparationExample() {
 	if err != nil {
 		log.Fatalf("Failed to create API processor: %v", err)
 	}
-	defer apiProcessor.Close()
+	defer func() { _ = apiProcessor.Close() }() // best-effort cleanup
 
-	parsedClaims, valid, err := apiProcessor.Validate(token)
-	if err != nil || !valid {
+	parsed, err := apiProcessor.Parse(token)
+	if err != nil {
 		log.Fatalf("Token validation failed: %v", err)
 	}
-	fmt.Printf("API service verified token (VerificationKey) - User: %s\n", parsedClaims.Username)
+	fmt.Printf("API service verified token (VerificationKey) - User: %s\n", parsed.Username)
 
 	fmt.Println("\nAlgorithm comparison:")
 	fmt.Println("  HMAC:    Simple, fast, single-service (HS256/384/512)")

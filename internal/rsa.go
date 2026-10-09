@@ -10,40 +10,147 @@ import (
 	"sync"
 )
 
-type rsaSigningMethod struct {
+// rsaMethodBase holds the fields and hashing plumbing shared by the RSA
+// (PKCS#1 v1.5) and RSA-PSS method implementations. Keeping the shared logic
+// in one place ensures the two families cannot drift — the pre-dedup code
+// carried the same signature-decode bug in both copies.
+type rsaMethodBase struct {
 	Name     string
 	HashFunc crypto.Hash
 	hashPool sync.Pool
 }
 
-func (r *rsaSigningMethod) Alg() string {
+func (r *rsaMethodBase) Alg() string {
 	return r.Name
 }
 
-func (r *rsaSigningMethod) Hash() crypto.Hash {
+func (r *rsaMethodBase) Hash() crypto.Hash {
 	return r.HashFunc
 }
 
-func (r *rsaSigningMethod) SignTo(dst []byte, signingString string, key any) (int, error) {
+// beginHash borrows a pooled hasher, feeds it signingString, and returns the
+// hasher together with the digest. The digest aliases the pooled sum buffer,
+// so the caller MUST keep the hasher out of the pool (typically via
+// `defer r.hashPool.Put(hb)`) until it is done reading the digest — returning
+// it earlier would let another goroutine mutate the aliased bytes.
+func (r *rsaMethodBase) beginHash(signingString string) (*hasherBuf, []byte) {
+	hb := r.hashPool.Get().(*hasherBuf)
+	hb.Reset()
+	hb.Write(stringToBytes(signingString))
+	// hb.sum is heap-resident (pooled entry), so Sum does not escape a stack buffer.
+	return hb, hb.Sum(hb.sum[:0])
+}
+
+// resolveRSASignKey extracts the *rsa.PrivateKey required for signing.
+// family names the algorithm family in error messages ("RSA" / "RSA-PSS").
+// Nil pointers and nil moduli are rejected up front: an empty key struct
+// would otherwise panic in Size()/BitLen().
+func resolveRSASignKey(key any, family string) (*rsa.PrivateKey, error) {
 	rsaKey, ok := key.(*rsa.PrivateKey)
 	if !ok {
-		return 0, errors.New("invalid key type: RSA signing requires *rsa.PrivateKey")
+		return nil, fmt.Errorf("invalid key type: %s signing requires *rsa.PrivateKey", family)
 	}
 	if rsaKey == nil {
-		return 0, fmt.Errorf("RSA key cannot be nil")
+		return nil, fmt.Errorf("RSA key cannot be nil")
+	}
+	if rsaKey.N == nil {
+		return nil, fmt.Errorf("RSA key has nil modulus")
+	}
+	return rsaKey, nil
+}
+
+// resolveRSAVerifyKey extracts the *rsa.PublicKey used for verification,
+// accepting a private key (its embedded public part is used). family names
+// the algorithm family in error messages. Nil pointers and nil moduli are
+// rejected before any Size() call, which would otherwise panic.
+func resolveRSAVerifyKey(key any, family string) (*rsa.PublicKey, error) {
+	rsaKey, ok := key.(*rsa.PublicKey)
+	if !ok {
+		privKey, ok := key.(*rsa.PrivateKey)
+		if !ok {
+			return nil, fmt.Errorf("invalid key type: %s verification requires *rsa.PublicKey or *rsa.PrivateKey", family)
+		}
+		if privKey == nil {
+			return nil, fmt.Errorf("RSA key cannot be nil")
+		}
+		rsaKey = &privKey.PublicKey
+	}
+
+	if rsaKey == nil {
+		return nil, fmt.Errorf("RSA key cannot be nil")
+	}
+	if rsaKey.N == nil {
+		return nil, fmt.Errorf("RSA key has nil modulus")
+	}
+	return rsaKey, nil
+}
+
+// decodeRSASignature base64url-decodes signature and returns it only if its
+// length matches the modulus exactly. Keys up to RSA-4096 (512 bytes) used to
+// decode into a stack buffer; since the helper returns the slice (it must
+// outlive this frame), a stack buffer would escape and be heap-copied anyway,
+// so it allocates one exact-size buffer instead — a single allocation that is
+// noise next to the RSA math (tens of µs per verify). The +2 bound covers
+// base64 group rounding — EncodedLen(Size) decodes to at most Size+2 bytes —
+// so a valid signature never trips it, and anything longer is rejected
+// before any decoding.
+func decodeRSASignature(signature string, rsaKey *rsa.PublicKey) ([]byte, error) {
+	decodedLen := base64.RawURLEncoding.DecodedLen(len(signature))
+	if decodedLen > rsaKey.Size()+2 {
+		return nil, errors.New("signature verification failed")
+	}
+	sigBytes := make([]byte, decodedLen)
+	n, err := base64.RawURLEncoding.Decode(sigBytes, stringToBytes(signature))
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode signature: %w", err)
+	}
+	sigBytes = sigBytes[:n]
+	if len(sigBytes) != rsaKey.Size() {
+		return nil, errors.New("signature verification failed")
+	}
+	return sigBytes, nil
+}
+
+// rsaSignBuf sizes the base64 encode buffer from the actual key: the RSA
+// modulus length is unbounded above the enforced 2048-bit minimum, so a
+// fixed buffer sized for RSA-4096 would reject larger keys (an 8192-bit
+// key needs 1366 base64 chars). Non-RSA keys keep the RSA-4096 fallback.
+func rsaSignBuf(key any) []byte {
+	size := 512 // RSA-4096 signature size in bytes
+	if k, ok := key.(*rsa.PrivateKey); ok && k != nil && k.N != nil {
+		size = k.Size()
+	}
+	return make([]byte, base64.RawURLEncoding.EncodedLen(size))
+}
+
+type rsaSigningMethod struct {
+	rsaMethodBase
+}
+
+func newRSAMethod(name string, hash crypto.Hash) *rsaSigningMethod {
+	return &rsaSigningMethod{
+		rsaMethodBase: rsaMethodBase{
+			Name:     name,
+			HashFunc: hash,
+			hashPool: sync.Pool{
+				New: func() any { return &hasherBuf{Hash: hash.New()} },
+			},
+		},
+	}
+}
+
+func (r *rsaSigningMethod) SignTo(dst []byte, signingString string, key any) (int, error) {
+	rsaKey, err := resolveRSASignKey(key, "RSA")
+	if err != nil {
+		return 0, err
 	}
 
 	if !r.HashFunc.Available() {
 		return 0, fmt.Errorf("hash function %v not available", r.HashFunc)
 	}
 
-	hb := r.hashPool.Get().(*hasherBuf)
+	hb, hashed := r.beginHash(signingString)
 	defer r.hashPool.Put(hb)
-	hb.Reset()
-	hb.Write(stringToBytes(signingString))
-
-	// hb.sum is heap-resident (pooled entry), so Sum does not escape a stack buffer.
-	hashed := hb.Sum(hb.sum[:0])
 
 	signature, err := rsa.SignPKCS1v15(rand.Reader, rsaKey, r.HashFunc, hashed)
 	if err != nil {
@@ -59,8 +166,8 @@ func (r *rsaSigningMethod) SignTo(dst []byte, signingString string, key any) (in
 }
 
 func (r *rsaSigningMethod) Sign(signingString string, key any) (string, error) {
-	var buf [684]byte // max RSA-4096: 512 bytes → 683 base64 chars
-	n, err := r.SignTo(buf[:], signingString, key)
+	buf := rsaSignBuf(key)
+	n, err := r.SignTo(buf, signingString, key)
 	if err != nil {
 		return "", err
 	}
@@ -68,68 +175,28 @@ func (r *rsaSigningMethod) Sign(signingString string, key any) (string, error) {
 }
 
 func (r *rsaSigningMethod) Verify(signingString string, signature string, key any) error {
-	rsaKey, ok := key.(*rsa.PublicKey)
-	if !ok {
-		privKey, ok := key.(*rsa.PrivateKey)
-		if !ok {
-			return errors.New("invalid key type: RSA verification requires *rsa.PublicKey or *rsa.PrivateKey")
-		}
-		if privKey == nil {
-			return fmt.Errorf("RSA key cannot be nil")
-		}
-		rsaKey = &privKey.PublicKey
-	}
-
-	if rsaKey == nil {
-		return fmt.Errorf("RSA key cannot be nil")
+	rsaKey, err := resolveRSAVerifyKey(key, "RSA")
+	if err != nil {
+		return err
 	}
 
 	if !r.HashFunc.Available() {
 		return fmt.Errorf("hash function %v not available", r.HashFunc)
 	}
 
-	// Stack-allocated decode buffer for signature (max RSA sig: 512 bytes for RSA-4096)
-	var sigBuf [512]byte
-	decodedLen := base64.RawURLEncoding.DecodedLen(len(signature))
-	if decodedLen > len(sigBuf) {
-		return errors.New("signature verification failed")
-	}
-	sigBytes := sigBuf[:decodedLen]
-	n, err := base64.RawURLEncoding.Decode(sigBytes, stringToBytes(signature))
+	sigBytes, err := decodeRSASignature(signature, rsaKey)
 	if err != nil {
-		return fmt.Errorf("failed to decode signature: %w", err)
-	}
-	sigBytes = sigBytes[:n]
-
-	expectedSigLen := rsaKey.Size()
-	if len(sigBytes) != expectedSigLen {
-		return errors.New("signature verification failed")
+		return err
 	}
 
-	hb := r.hashPool.Get().(*hasherBuf)
+	hb, hashed := r.beginHash(signingString)
 	defer r.hashPool.Put(hb)
-	hb.Reset()
-	hb.Write(stringToBytes(signingString))
 
-	// hb.sum is heap-resident (pooled entry), so Sum does not escape a stack buffer.
-	hashed := hb.Sum(hb.sum[:0])
-
-	err = rsa.VerifyPKCS1v15(rsaKey, r.HashFunc, hashed, sigBytes)
-	if err != nil {
+	if rsa.VerifyPKCS1v15(rsaKey, r.HashFunc, hashed, sigBytes) != nil {
 		return errors.New("signature verification failed")
 	}
 
 	return nil
-}
-
-func newRSAMethod(name string, hash crypto.Hash) *rsaSigningMethod {
-	return &rsaSigningMethod{
-		Name:     name,
-		HashFunc: hash,
-		hashPool: sync.Pool{
-			New: func() any { return &hasherBuf{Hash: hash.New()} },
-		},
-	}
 }
 
 var (
@@ -139,40 +206,22 @@ var (
 )
 
 type rsaPSSSigningMethod struct {
-	Name     string
-	HashFunc crypto.Hash
-	opts     rsa.PSSOptions
-	hashPool sync.Pool
-}
-
-func (r *rsaPSSSigningMethod) Alg() string {
-	return r.Name
-}
-
-func (r *rsaPSSSigningMethod) Hash() crypto.Hash {
-	return r.HashFunc
+	rsaMethodBase
+	opts rsa.PSSOptions
 }
 
 func (r *rsaPSSSigningMethod) SignTo(dst []byte, signingString string, key any) (int, error) {
-	rsaKey, ok := key.(*rsa.PrivateKey)
-	if !ok {
-		return 0, errors.New("invalid key type: RSA-PSS signing requires *rsa.PrivateKey")
-	}
-	if rsaKey == nil {
-		return 0, fmt.Errorf("RSA key cannot be nil")
+	rsaKey, err := resolveRSASignKey(key, "RSA-PSS")
+	if err != nil {
+		return 0, err
 	}
 
 	if !r.HashFunc.Available() {
 		return 0, fmt.Errorf("hash function %v not available", r.HashFunc)
 	}
 
-	hb := r.hashPool.Get().(*hasherBuf)
+	hb, hashed := r.beginHash(signingString)
 	defer r.hashPool.Put(hb)
-	hb.Reset()
-	hb.Write(stringToBytes(signingString))
-
-	// hb.sum is heap-resident (pooled entry), so Sum does not escape a stack buffer.
-	hashed := hb.Sum(hb.sum[:0])
 
 	signature, err := rsa.SignPSS(rand.Reader, rsaKey, r.HashFunc, hashed, &r.opts)
 	if err != nil {
@@ -188,8 +237,8 @@ func (r *rsaPSSSigningMethod) SignTo(dst []byte, signingString string, key any) 
 }
 
 func (r *rsaPSSSigningMethod) Sign(signingString string, key any) (string, error) {
-	var buf [684]byte // max RSA-4096: 512 bytes → 683 base64 chars
-	n, err := r.SignTo(buf[:], signingString, key)
+	buf := rsaSignBuf(key)
+	n, err := r.SignTo(buf, signingString, key)
 	if err != nil {
 		return "", err
 	}
@@ -197,54 +246,24 @@ func (r *rsaPSSSigningMethod) Sign(signingString string, key any) (string, error
 }
 
 func (r *rsaPSSSigningMethod) Verify(signingString string, signature string, key any) error {
-	rsaKey, ok := key.(*rsa.PublicKey)
-	if !ok {
-		privKey, ok := key.(*rsa.PrivateKey)
-		if !ok {
-			return errors.New("invalid key type: RSA-PSS verification requires *rsa.PublicKey or *rsa.PrivateKey")
-		}
-		if privKey == nil {
-			return fmt.Errorf("RSA key cannot be nil")
-		}
-		rsaKey = &privKey.PublicKey
-	}
-
-	if rsaKey == nil {
-		return fmt.Errorf("RSA key cannot be nil")
+	rsaKey, err := resolveRSAVerifyKey(key, "RSA-PSS")
+	if err != nil {
+		return err
 	}
 
 	if !r.HashFunc.Available() {
 		return fmt.Errorf("hash function %v not available", r.HashFunc)
 	}
 
-	// Stack-allocated decode buffer for signature (max RSA sig: 512 bytes for RSA-4096)
-	var sigBuf [512]byte
-	decodedLen := base64.RawURLEncoding.DecodedLen(len(signature))
-	if decodedLen > len(sigBuf) {
-		return errors.New("signature verification failed")
-	}
-	sigBytes := sigBuf[:decodedLen]
-	n, err := base64.RawURLEncoding.Decode(sigBytes, stringToBytes(signature))
+	sigBytes, err := decodeRSASignature(signature, rsaKey)
 	if err != nil {
-		return fmt.Errorf("failed to decode signature: %w", err)
-	}
-	sigBytes = sigBytes[:n]
-
-	expectedSigLen := rsaKey.Size()
-	if len(sigBytes) != expectedSigLen {
-		return errors.New("signature verification failed")
+		return err
 	}
 
-	hb := r.hashPool.Get().(*hasherBuf)
+	hb, hashed := r.beginHash(signingString)
 	defer r.hashPool.Put(hb)
-	hb.Reset()
-	hb.Write(stringToBytes(signingString))
 
-	// hb.sum is heap-resident (pooled entry), so Sum does not escape a stack buffer.
-	hashed := hb.Sum(hb.sum[:0])
-
-	err = rsa.VerifyPSS(rsaKey, r.HashFunc, hashed, sigBytes, &r.opts)
-	if err != nil {
+	if rsa.VerifyPSS(rsaKey, r.HashFunc, hashed, sigBytes, &r.opts) != nil {
 		return errors.New("signature verification failed")
 	}
 
@@ -253,12 +272,14 @@ func (r *rsaPSSSigningMethod) Verify(signingString string, signature string, key
 
 func newRSSMethod(name string, hash crypto.Hash) *rsaPSSSigningMethod {
 	return &rsaPSSSigningMethod{
-		Name:     name,
-		HashFunc: hash,
-		opts:     rsa.PSSOptions{SaltLength: rsa.PSSSaltLengthEqualsHash},
-		hashPool: sync.Pool{
-			New: func() any { return &hasherBuf{Hash: hash.New()} },
+		rsaMethodBase: rsaMethodBase{
+			Name:     name,
+			HashFunc: hash,
+			hashPool: sync.Pool{
+				New: func() any { return &hasherBuf{Hash: hash.New()} },
+			},
 		},
+		opts: rsa.PSSOptions{SaltLength: rsa.PSSSaltLengthEqualsHash},
 	}
 }
 

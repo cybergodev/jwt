@@ -1,5 +1,10 @@
-//go:build example
-
+// Package main implements a production-ready web server with JWT
+// authentication.
+//
+// Demonstrates: authentication flow, middleware, RBAC, graceful shutdown.
+//
+// Run with: go run ./examples/web-server
+// (set JWT_PORT and JWT_SECRET_KEY to override the defaults)
 package main
 
 import (
@@ -16,9 +21,6 @@ import (
 
 	"github.com/cybergodev/jwt"
 )
-
-// Production-ready web server with JWT authentication.
-// Demonstrates: authentication flow, middleware, RBAC, graceful shutdown.
 
 // processor is the package-level JWT processor, initialized in main.
 // expiresInSeconds is derived from the access-token TTL and returned to
@@ -160,9 +162,8 @@ func newJWTProcessor() (*jwt.Processor, int, error) {
 	cfg.RateLimitRate = 100
 	cfg.RateLimitWindow = time.Minute
 	cfg.Blacklist = jwt.BlacklistConfig{
-		MaxSize:           10000,
-		CleanupInterval:   5 * time.Minute,
-		EnableAutoCleanup: true,
+		MaxSize:         10000,
+		CleanupInterval: 5 * time.Minute,
 	}
 
 	p, err := jwt.New(cfg)
@@ -183,7 +184,7 @@ func envDefault(key, def string) string {
 // homeHandler serves the home page.
 func homeHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{
+	_ = json.NewEncoder(w).Encode(map[string]string{
 		"message": "JWT Web Server Example",
 		"version": "1.0.0",
 	})
@@ -247,7 +248,7 @@ func loginHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
+	_ = json.NewEncoder(w).Encode(response)
 	log.Printf("User logged in: %s", user.Username)
 }
 
@@ -267,7 +268,7 @@ func profileHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(user)
+	_ = json.NewEncoder(w).Encode(user)
 }
 
 // adminHandler handles admin-only requests.
@@ -282,7 +283,7 @@ func adminHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
+	_ = json.NewEncoder(w).Encode(response)
 }
 
 // refreshHandler refreshes the access token.
@@ -306,7 +307,9 @@ func refreshHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Refresh token
+	// Exchange the refresh token for a new access token. For one-time-use
+	// refresh tokens, also revoke it after a successful Refresh (see
+	// examples/security for the rotation pattern).
 	newAccessToken, err := processor.Refresh(req.RefreshToken)
 	if err != nil {
 		sendError(w, http.StatusUnauthorized, "invalid_token", "Invalid or expired refresh token")
@@ -314,7 +317,7 @@ func refreshHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{
+	_ = json.NewEncoder(w).Encode(map[string]any{
 		"access_token": newAccessToken,
 		"token_type":   "Bearer",
 		"expires_in":   expiresInSeconds,
@@ -342,7 +345,7 @@ func logoutHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{
+	_ = json.NewEncoder(w).Encode(map[string]string{
 		"message": "Successfully logged out",
 	})
 	log.Println("User logged out")
@@ -357,8 +360,10 @@ func authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 
-		claims, valid, err := processor.Validate(token)
-		if err != nil || !valid {
+		// Parse verifies the signature and registered claims; a nil error
+		// means the token is valid.
+		claims, err := processor.Parse(token)
+		if err != nil {
 			sendError(w, http.StatusUnauthorized, "invalid_token", "Invalid or expired token")
 			return
 		}
@@ -403,7 +408,7 @@ func extractToken(r *http.Request) string {
 func sendError(w http.ResponseWriter, status int, errorCode, message string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(ErrorResponse{
+	_ = json.NewEncoder(w).Encode(ErrorResponse{
 		Error:   errorCode,
 		Message: message,
 	})

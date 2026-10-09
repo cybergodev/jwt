@@ -59,41 +59,73 @@ type RateLimitKeyer interface {
 	RateLimitKey() string
 }
 
+// requireNonNilClaims rejects a nil claims value — either a nil interface or
+// a typed-nil *Claims, which boxes as a non-nil CustomClaims yet would
+// nil-panic on the first pointer-receiver method call. Shared by the create
+// paths (via validateCustomClaims) and the *Into parse paths so every
+// entry point reports the same ErrInvalidClaims for the same misuse.
+// Typed-nil values of other custom types are not detectable here without
+// reflection; for them the parse pipeline's json.Unmarshal rejects a nil
+// destination with *InvalidUnmarshalError, and FastUnmarshaler implementations
+// are contractually required to return an error rather than panic on a nil
+// receiver (see the interface documentation in internal/encoding.go).
+func requireNonNilClaims(claims CustomClaims) error {
+	if claims == nil {
+		return fmt.Errorf("%w: claims must not be nil", ErrInvalidClaims)
+	}
+	if c, ok := claims.(*Claims); ok && c == nil {
+		return fmt.Errorf("%w: claims must not be nil", ErrInvalidClaims)
+	}
+	return nil
+}
+
 // validateCustomClaims validates custom claims before token operations.
 // Uses deep validation for built-in Claims, standard Validate() plus
 // registered claims string sanitization for other types.
 func validateCustomClaims(claims CustomClaims) error {
-	// Nil guard: a nil claims value (nil interface or typed-nil *Claims) would
-	// panic on the Validate/GetRegisteredClaims calls below. Return an error so
-	// the public Create/CreateRefresh API never panics on misuse. ValidateInto
-	// and RefreshInto are already protected separately — json.Unmarshal rejects a
-	// nil destination with *InvalidUnmarshalError before any method is invoked.
-	if claims == nil {
-		return fmt.Errorf("%w: claims must not be nil", ErrInvalidClaims)
+	if err := requireNonNilClaims(claims); err != nil {
+		return err
 	}
 	if c, ok := claims.(*Claims); ok {
-		if c == nil {
-			return fmt.Errorf("%w: claims must not be nil", ErrInvalidClaims)
-		}
 		// validateClaims covers all fields including registered claims strings
 		if err := validateClaims(c); err != nil {
-			return fmt.Errorf("%w: %v", ErrInvalidClaims, err)
+			return fmt.Errorf("%w: %w", ErrInvalidClaims, err)
 		}
 		return nil
 	}
 	if err := claims.Validate(); err != nil {
-		return fmt.Errorf("%w: %v", ErrInvalidClaims, err)
+		return fmt.Errorf("%w: %w", ErrInvalidClaims, err)
 	}
-	if err := validateRegisteredClaimsStrings(claims.GetRegisteredClaims()); err != nil {
-		return fmt.Errorf("%w: %v", ErrInvalidClaims, err)
+	rc, err := requireRegisteredClaims(claims)
+	if err != nil {
+		return err
+	}
+	if err := validateRegisteredClaimsStrings(rc); err != nil {
+		return fmt.Errorf("%w: %w", ErrInvalidClaims, err)
 	}
 	return nil
+}
+
+// requireRegisteredClaims returns the RegisteredClaims pointer from a custom
+// claims implementation. A nil return — which would otherwise nil-panic at the
+// next field access inside the Processor — is converted to a returned error,
+// so a broken CustomClaims implementation surfaces as ErrInvalidClaims instead
+// of a panic (SEC-003).
+func requireRegisteredClaims(claims CustomClaims) (*RegisteredClaims, error) {
+	rc := claims.GetRegisteredClaims()
+	if rc == nil {
+		return nil, fmt.Errorf("%w: GetRegisteredClaims returned nil", ErrInvalidClaims)
+	}
+	return rc, nil
 }
 
 // createTokenWithCustomClaims creates a signed token from custom claims.
 // Caller must validate claims before calling this function.
 func createTokenWithCustomClaims(p *Processor, claims CustomClaims, ttl time.Duration, tokenType string) (string, error) {
-	rc := claims.GetRegisteredClaims()
+	rc, err := requireRegisteredClaims(claims)
+	if err != nil {
+		return "", err
+	}
 
 	// Rate limit check with fallback: Subject → *Claims.UserID → RateLimitKeyer
 	rateLimitKey := rc.Subject
@@ -140,7 +172,9 @@ func createTokenWithCustomClaims(p *Processor, claims CustomClaims, ttl time.Dur
 func validateTokenIntoCustomClaims(p *Processor, tokenString string, claims CustomClaims) error {
 	token, err := p.parseToken(tokenString, claims)
 	if err != nil {
-		return fmt.Errorf("%w: %v", ErrInvalidToken, err)
+		// %w twice: keep the underlying sentinel (e.g. ErrAlgorithmMismatch)
+		// reachable via errors.Is, as on the Validate paths.
+		return fmt.Errorf("%w: %w", ErrInvalidToken, err)
 	}
 
 	defer internal.ReleaseCore(token)
@@ -149,7 +183,11 @@ func validateTokenIntoCustomClaims(p *Processor, tokenString string, claims Cust
 		return ErrInvalidToken
 	}
 
-	return p.validateRegistered(claims.GetRegisteredClaims())
+	rc, err := requireRegisteredClaims(claims)
+	if err != nil {
+		return err
+	}
+	return p.validateRegistered(rc)
 }
 
 // Ensure Claims implements CustomClaims interface.

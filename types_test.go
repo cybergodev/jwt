@@ -41,12 +41,18 @@ func TestNumericDateUnmarshalJSON(t *testing.T) {
 		wantError bool
 	}{
 		{"valid timestamp", "1609459200", 1609459200, false, false},
+		{"zero is valid", "0", 0, false, false},
+		{"max valid timestamp", "253402300799", 253402300799, false, false},
+		{"one past max valid timestamp", "253402300800", 0, false, true},
 		{"null value", "null", 0, true, false},
 		{"empty string", `""`, 0, true, false},
 		{"quoted timestamp", `"1609459200"`, 1609459200, false, false},
 		{"quoted null", `"null"`, 0, true, false},
+		{"quoted padded timestamp", `" 1609459200 "`, 0, false, true},
+		{"trailing garbage", `"1609459200x"`, 0, false, true},
 		{"invalid format", `"not-a-number"`, 0, false, true},
 		{"negative timestamp", "-1", 0, false, true},
+		{"negative zero", "-0", 0, false, true},
 		{"exceeds max timestamp", "999999999999", 0, false, true},
 		{"int64 overflow", "9223372036854775808", 0, false, true},
 		{"int64 overflow with trailing digits", "99999999999999999999", 0, false, true},
@@ -113,6 +119,11 @@ func TestStringOrSliceUnmarshalJSON(t *testing.T) {
 	}{
 		{"single string", `"api-v1"`, []string{"api-v1"}, false},
 		{"string array", `["api-v1","api-v2"]`, []string{"api-v1", "api-v2"}, false},
+		{"escaped string falls back to stdlib", `"a\"b"`, []string{`a"b`}, false},
+		{"escaped unicode string", "\"a\\u0041b\"", []string{"aAb"}, false},
+		{"non-ASCII string", `"日本語"`, []string{"日本語"}, false},
+		{"array with escaped element", `["a\"b","c"]`, []string{`a"b`, "c"}, false},
+		{"array with non-ASCII element", `["日","en"]`, []string{"日", "en"}, false},
 		{"null value", `null`, nil, true},
 		{"empty array", `[]`, []string{}, false},
 		{"empty string", `""`, []string{""}, false},
@@ -162,6 +173,19 @@ func TestStringOrSliceUnmarshalErrors(t *testing.T) {
 				t.Error("Expected error")
 			}
 		})
+	}
+}
+
+// TestStringOrSliceUnmarshalEmptyBytes pins the len(b)==0 branch, which
+// encoding/json can never trigger (it validates non-empty input first) — only
+// a direct call reaches it.
+func TestStringOrSliceUnmarshalEmptyBytes(t *testing.T) {
+	sos := StringOrSlice{"pre"}
+	if err := sos.UnmarshalJSON(nil); err != nil {
+		t.Fatalf("UnmarshalJSON(nil) err = %v, want nil", err)
+	}
+	if sos != nil {
+		t.Errorf("UnmarshalJSON(nil) = %v, want nil", sos)
 	}
 }
 

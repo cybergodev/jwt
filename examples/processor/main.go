@@ -1,8 +1,13 @@
-//go:build example
-
+// Package main demonstrates the Processor pattern: full control over JWT
+// configuration via the Config struct.
+//
+// Recommended for production use where you need custom settings.
+//
+// Run with: go run ./examples/processor
 package main
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"time"
@@ -10,8 +15,6 @@ import (
 	"github.com/cybergodev/jwt"
 )
 
-// Processor pattern demonstrates full control over JWT configuration.
-// Recommended for production use where you need custom settings.
 func main() {
 	fmt.Println("JWT Library - Processor Pattern")
 	fmt.Println("===============================")
@@ -20,18 +23,21 @@ func main() {
 
 	// Example 1: Default configuration
 	fmt.Println("\nExample 1: Default Configuration")
-	fmt.Println("---------------------------------")
+	fmt.Println("--------------------------------")
 	defaultProcessorExample(secretKey)
 
-	// Example 2: Custom configuration
+	// Example 2: Custom configuration with the full access/refresh lifecycle
 	fmt.Println("\nExample 2: Custom Configuration")
-	fmt.Println("---------------------------------")
+	fmt.Println("--------------------------------")
 	customProcessorExample(secretKey)
 
 	fmt.Println("\nProcessor pattern examples complete!")
 }
 
 func defaultProcessorExample(secretKey string) {
+	// DefaultConfig fills AccessTokenTTL (15m), RefreshTokenTTL (7d), issuer,
+	// signing method (HS256), and blacklist/rate-limit defaults. Only the
+	// SecretKey is missing.
 	cfg := jwt.DefaultConfig()
 	cfg.SecretKey = secretKey
 
@@ -39,7 +45,7 @@ func defaultProcessorExample(secretKey string) {
 	if err != nil {
 		log.Fatalf("Failed to create processor: %v", err)
 	}
-	defer processor.Close()
+	defer func() { _ = processor.Close() }() // best-effort cleanup
 
 	claims := jwt.Claims{
 		UserID:   "user_default",
@@ -52,13 +58,13 @@ func defaultProcessorExample(secretKey string) {
 		log.Fatalf("Failed to create token: %v", err)
 	}
 
-	parsedClaims, valid, err := processor.Validate(token)
-	if err != nil || !valid {
+	parsed, err := processor.Parse(token)
+	if err != nil {
 		log.Fatalf("Token validation failed: %v", err)
 	}
 
 	fmt.Printf("Token validated - User: %s (TTL: %v)\n",
-		parsedClaims.Username, cfg.AccessTokenTTL)
+		parsed.Username, cfg.AccessTokenTTL)
 }
 
 func customProcessorExample(secretKey string) {
@@ -69,9 +75,8 @@ func customProcessorExample(secretKey string) {
 		Issuer:          "my-application-v1",
 		SigningMethod:   jwt.SigningMethodHS512,
 		Blacklist: jwt.BlacklistConfig{
-			MaxSize:           50000,
-			CleanupInterval:   10 * time.Minute,
-			EnableAutoCleanup: true,
+			MaxSize:         50000,
+			CleanupInterval: 10 * time.Minute,
 		},
 		EnableRateLimit: true,
 		RateLimitRate:   50,
@@ -82,7 +87,7 @@ func customProcessorExample(secretKey string) {
 	if err != nil {
 		log.Fatalf("Failed to create processor: %v", err)
 	}
-	defer processor.Close()
+	defer func() { _ = processor.Close() }() // best-effort cleanup
 
 	claims := jwt.Claims{
 		UserID:    "user_custom",
@@ -102,22 +107,22 @@ func customProcessorExample(secretKey string) {
 		log.Fatalf("Failed to create refresh token: %v", err)
 	}
 
-	// Validate access token
-	parsedClaims, valid, err := processor.Validate(accessToken)
-	if err != nil || !valid {
+	// Parse the access token
+	parsed, err := processor.Parse(accessToken)
+	if err != nil {
 		log.Fatalf("Token validation failed: %v", err)
 	}
 	fmt.Printf("Access token validated - User: %s, Session: %s\n",
-		parsedClaims.Username, parsedClaims.SessionID)
+		parsed.Username, parsed.SessionID)
 
-	// Refresh access token
+	// Exchange the refresh token for a new access token
 	newAccessToken, err := processor.Refresh(refreshToken)
 	if err != nil {
 		log.Fatalf("Failed to refresh token: %v", err)
 	}
 	fmt.Println("Access token refreshed")
 
-	// Revoke original access token
+	// Revoke the original access token
 	if err := processor.Revoke(accessToken); err != nil {
 		log.Fatalf("Failed to revoke token: %v", err)
 	}
@@ -128,11 +133,11 @@ func customProcessorExample(secretKey string) {
 	}
 	fmt.Printf("Token revoked: %v\n", isRevoked)
 
-	// Verify revoked token is rejected
-	_, valid, _ = processor.Validate(accessToken)
-	fmt.Printf("Revoked token rejected: %v\n", !valid)
+	// Verify the revoked token is rejected...
+	_, err = processor.Parse(accessToken)
+	fmt.Printf("Revoked token rejected: %v\n", errors.Is(err, jwt.ErrTokenRevoked))
 
-	// New access token still works
-	_, valid, _ = processor.Validate(newAccessToken)
-	fmt.Printf("New access token valid: %v\n", valid)
+	// ...while the refreshed access token still works
+	_, err = processor.Parse(newAccessToken)
+	fmt.Printf("New access token valid: %v\n", err == nil)
 }

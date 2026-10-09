@@ -36,7 +36,7 @@ func BenchmarkTokenCreation(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		_, err := processor.Create(&claims)
 		if err != nil {
 			b.Fatalf("Failed to create token: %v", err)
@@ -67,7 +67,7 @@ func BenchmarkTokenValidation(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		_, _, err := processor.Validate(token)
 		if err != nil {
 			b.Fatalf("Failed to validate token: %v", err)
@@ -93,7 +93,7 @@ func BenchmarkTokenCreationAndValidation(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		token, err := processor.Create(&claims)
 		if err != nil {
 			b.Fatalf("Failed to create token: %v", err)
@@ -185,7 +185,7 @@ func BenchmarkBlacklistValidation(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		_, _, err := processor.Validate(validToken)
 		if err != nil {
 			b.Fatalf("Failed to validate token: %v", err)
@@ -394,7 +394,7 @@ func BenchmarkLargeClaimsToken(b *testing.B) {
 		b.Fatalf("Test token is not valid")
 	}
 
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		token, err := processor.Create(&claims)
 		if err != nil {
 			b.Fatalf("Failed to create token: %v", err)
@@ -411,7 +411,7 @@ func BenchmarkProcessorCreation(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		processor, err := newTestProcessor(testSecretKey)
 		if err != nil {
 			b.Fatalf("Failed to create processor: %v", err)

@@ -14,7 +14,7 @@ The JWT library implements multiple security layers including input validation, 
 | **Timing Attacks**      | Constant-time comparison (`hmac.Equal`) |
 | **Injection Attacks**   | Input validation and sanitization    |
 | **DoS Attacks**         | Rate limiting and resource limits    |
-| **Replay Attacks**      | Token blacklist with unique IDs      |
+| **Replay Attacks**      | Token blacklist with unique IDs; optional one-time-use refresh rotation |
 | **Brute Force**         | Rate limiting on authentication      |
 
 ### Security Testing

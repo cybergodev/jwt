@@ -48,6 +48,10 @@ var weakPatterns = map[string]struct{}{
 // IsWeakKey reports whether key is too short, too low in entropy, or matches a
 // known weak/common pattern. It guards HMAC secrets against trivially guessable
 // values; an empty key is always weak.
+//
+// Note: pattern matching is substring-based, so a high-entropy key that
+// happens to contain a weak substring (e.g. "demo") is rejected. Regenerate
+// the key rather than weakening this check.
 func IsWeakKey(key []byte) bool {
 	keyLen := len(key)
 	if keyLen == 0 {

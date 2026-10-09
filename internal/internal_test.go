@@ -1,11 +1,13 @@
 package internal
 
 import (
+	"crypto"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/base64"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -14,6 +16,13 @@ import (
 // =============================================================================
 // HMAC Signing Method Tests
 // =============================================================================
+
+// methodHash extracts Hash() from a Method for tests. Hash is not part of the
+// Method contract (no pipeline path reads it), so it is reached through a
+// narrowing assertion.
+func methodHash(m Method) crypto.Hash {
+	return m.(interface{ Hash() crypto.Hash }).Hash()
+}
 
 func TestHMACSignAndVerify(t *testing.T) {
 	key := []byte("test-secret-key-with-sufficient-length")
@@ -37,8 +46,8 @@ func TestHMACSignAndVerify(t *testing.T) {
 				t.Fatalf("GetInternalSigningMethod(%q) returned nil", tt.alg)
 			}
 
-			if !method.Hash().Available() {
-				t.Skipf("Hash function %v not available on this platform", method.Hash())
+			if hash := methodHash(method); !hash.Available() {
+				t.Skipf("Hash function %v not available on this platform", hash)
 			}
 
 			// Sign
@@ -153,6 +162,9 @@ func TestGetInternalSigningMethod(t *testing.T) {
 // Core Token Tests
 // =============================================================================
 
+// TestSignTokenRoundTrip signs via SignToken and parses the result back with
+// ParseWithClaimsHMAC, verifying the payload survives the pooled-buffer
+// encode/sign/decode round trip (not just the three-part shape).
 func TestSignTokenRoundTrip(t *testing.T) {
 	method, err := GetInternalSigningMethod("HS256")
 	if err != nil {
@@ -174,6 +186,102 @@ func TestSignTokenRoundTrip(t *testing.T) {
 	parts := strings.Split(tokenString, ".")
 	if len(parts) != 3 {
 		t.Errorf("Expected 3 parts, got %d", len(parts))
+	}
+
+	// Round trip: the signed token must parse, verify, and carry the payload.
+	var decoded map[string]any
+	core, err := ParseWithClaimsHMAC(tokenString, &decoded, key, "HS256")
+	if err != nil {
+		t.Fatalf("ParseWithClaimsHMAC failed: %v", err)
+	}
+	defer ReleaseCore(core)
+	if !core.Valid {
+		t.Error("Parsed token should be valid")
+	}
+	if decoded["sub"] != "user123" {
+		t.Errorf("sub = %v, want user123", decoded["sub"])
+	}
+	if n, ok := decoded["exp"].(float64); !ok || int64(n) != 1234567890 {
+		t.Errorf("exp = %v, want 1234567890", decoded["exp"])
+	}
+}
+
+// TestSignTokenHMACRoundTrip covers the type-specialized HMAC entry point
+// SignTokenHMAC, which the SignToken tests never reach: it must produce a
+// token that parses and verifies, and must reject a non-HMAC method.
+func TestSignTokenHMACRoundTrip(t *testing.T) {
+	hm, err := GetInternalSigningMethod("HS256")
+	if err != nil {
+		t.Fatalf("GetInternalSigningMethod failed: %v", err)
+	}
+	claims := map[string]any{"sub": "hmac-user", "exp": 1234567890}
+	key := []byte("test-secret-key-with-sufficient-length-32bytes")
+
+	tokenString, err := SignTokenHMAC("HS256", claims, hm, key)
+	if err != nil {
+		t.Fatalf("SignTokenHMAC failed: %v", err)
+	}
+
+	var decoded map[string]any
+	core, err := ParseWithClaimsHMAC(tokenString, &decoded, key, "HS256")
+	if err != nil {
+		t.Fatalf("ParseWithClaimsHMAC failed: %v", err)
+	}
+	defer ReleaseCore(core)
+	if !core.Valid {
+		t.Error("SignTokenHMAC output should verify")
+	}
+	if decoded["sub"] != "hmac-user" {
+		t.Errorf("sub = %v, want hmac-user", decoded["sub"])
+	}
+
+	// The non-HMAC-method guard: passing an RSA method must error, not panic
+	// or mis-sign.
+	rsaMethod, err := GetInternalSigningMethod("RS256")
+	if err != nil {
+		t.Fatalf("GetInternalSigningMethod(RS256) failed: %v", err)
+	}
+	if _, err := SignTokenHMAC("HS256", claims, rsaMethod, key); err == nil {
+		t.Error("SignTokenHMAC with non-HMAC method should fail")
+	}
+}
+
+// brokenAppender implements JSONAppender with an always-failing AppendJSON,
+// driving beginSigning's fast-path marshal-error branch.
+type brokenAppender struct{}
+
+func (brokenAppender) AppendJSON([]byte) ([]byte, error) {
+	return nil, errors.New("appender failure")
+}
+
+// TestSignTokenErrors covers the error branches of beginSigning shared by
+// SignToken and SignTokenHMAC: unknown algorithm, unencodable claims (slow
+// Encode path), and a failing JSONAppender (fast path).
+func TestSignTokenErrors(t *testing.T) {
+	method, err := GetInternalSigningMethod("HS256")
+	if err != nil {
+		t.Fatalf("GetInternalSigningMethod failed: %v", err)
+	}
+	key := []byte("test-secret-key-with-sufficient-length-32bytes")
+
+	tests := []struct {
+		name   string
+		alg    string
+		claims any
+	}{
+		{"unknown algorithm", "XYZ999", map[string]any{"sub": "u"}},
+		{"unencodable claims (channel)", "HS256", map[string]any{"bad": make(chan int)}},
+		{"failing JSONAppender", "HS256", brokenAppender{}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := SignToken(tt.alg, tt.claims, method, key); err == nil {
+				t.Error("SignToken should fail")
+			}
+			if _, err := SignTokenHMAC(tt.alg, tt.claims, method, key); err == nil {
+				t.Error("SignTokenHMAC should fail")
+			}
+		})
 	}
 }
 
@@ -703,7 +811,7 @@ func TestMemoryStoreMaxSize(t *testing.T) {
 	}
 
 	// Store should handle overflow gracefully
-	ms := store.(*memoryStore)
+	ms := store // already *memoryStore since NewMemoryStore returns the concrete type
 	ms.mu.RLock()
 	size := len(ms.tokens)
 	ms.mu.RUnlock()
@@ -726,7 +834,7 @@ func TestMemoryStoreAutoCleanup(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	// Token should be cleaned up
-	ms := store.(*memoryStore)
+	ms := store // already *memoryStore since NewMemoryStore returns the concrete type
 	ms.mu.RLock()
 	_, exists := ms.tokens[tokenID]
 	ms.mu.RUnlock()
@@ -867,22 +975,9 @@ func TestManagerIsBlacklisted(t *testing.T) {
 	}
 }
 
-func TestManagerClose(t *testing.T) {
-	store := NewMemoryStore(1000, 5*time.Minute, false, nil)
-	manager := NewManagerWithClock(store, nil)
-
-	// Add some tokens
-	err := manager.blacklistToken("tok_test1", time.Now().Add(time.Hour))
-	if err != nil {
-		t.Fatalf("Failed to blacklist token: %v", err)
-	}
-
-	// Close manager
-	err = manager.Close()
-	if err != nil {
-		t.Errorf("Failed to close manager: %v", err)
-	}
-}
+// TestManagerClose's trivial nil assertion was removed: close semantics are
+// covered by TestMemoryStoreClose (post-close errors, double close) and
+// TestManagerCloseNilStore below.
 
 // =============================================================================
 // Helper Types
@@ -900,6 +995,8 @@ func (e *testError) Error() string {
 // RSA Signing Method Tests
 // =============================================================================
 
+// TestRSASignAndVerify covers both RSA families (PKCS#1 v1.5 and PSS) in one
+// table: the former TestPSSSignAndVerify duplicated this body verbatim.
 func TestRSASignAndVerify(t *testing.T) {
 	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
@@ -914,6 +1011,9 @@ func TestRSASignAndVerify(t *testing.T) {
 		{"RS256"},
 		{"RS384"},
 		{"RS512"},
+		{"PS256"},
+		{"PS384"},
+		{"PS512"},
 	}
 
 	for _, tt := range tests {
@@ -1105,6 +1205,20 @@ func TestECDSAInvalidKeyType(t *testing.T) {
 	if err == nil {
 		t.Error("Expected error for invalid base64 signature, got nil")
 	}
+
+	// Degenerate keys must be rejected, not panic: an empty key struct has a
+	// nil curve that would otherwise dereference nil inside crypto/ecdsa —
+	// immediately when signing, and during Verify once a correctly-sized,
+	// non-zero signature passes the length check ("_"×86 is raw-base64 for
+	// 64×0xFF bytes).
+	_, err = method.Sign(signingString, &ecdsa.PrivateKey{})
+	if err == nil {
+		t.Error("Expected error for empty ECDSA signing key, got nil")
+	}
+	err = method.Verify(signingString, strings.Repeat("_", 86), &ecdsa.PublicKey{})
+	if err == nil {
+		t.Error("Expected error for empty ECDSA public key, got nil")
+	}
 }
 
 func TestECDSASignatureLength(t *testing.T) {
@@ -1140,61 +1254,29 @@ func TestECDSASignatureLength(t *testing.T) {
 // =============================================================================
 
 func TestSigningMethodHash(t *testing.T) {
-	tests := []struct {
-		alg string
+	// Hash() is no longer part of the Method interface — no pipeline path
+	// reads it — but every concrete implementation still exposes it.
+	// Enumerate them directly to keep the coverage.
+	methods := []interface {
+		Alg() string
+		Hash() crypto.Hash
 	}{
-		{"HS256"}, {"HS384"}, {"HS512"},
-		{"RS256"}, {"RS384"}, {"RS512"},
-		{"ES256"}, {"ES384"}, {"ES512"},
+		hmacHS256, hmacHS384, hmacHS512,
+		rsaRS256, rsaRS384, rsaRS512,
+		rsaPS256, rsaPS384, rsaPS512,
+		ecdsaES256, ecdsaES384, ecdsaES512,
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.alg, func(t *testing.T) {
-			method, err := GetInternalSigningMethod(tt.alg)
-			if err != nil {
-				t.Fatalf("GetInternalSigningMethod(%q) failed: %v", tt.alg, err)
-			}
-			// Call Hash() to cover the method
-			hash := method.Hash()
-			if !hash.Available() {
-				t.Errorf("Hash() for %s should be available", tt.alg)
-			}
-		})
+	for _, m := range methods {
+		if !m.Hash().Available() {
+			t.Errorf("Hash() for %s should be available", m.Alg())
+		}
 	}
 }
 
-// =============================================================================
-// NewManagerWithClock Tests
-// =============================================================================
-
-func TestNewManagerWithClock(t *testing.T) {
-	store := NewMemoryStore(100, time.Minute, false, nil)
-	defer func() { _ = store.Close() }() // best-effort cleanup
-
-	// With custom clock
-	fixedTime := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
-	manager := NewManagerWithClock(store, func() time.Time { return fixedTime })
-	if manager == nil {
-		t.Fatal("NewManagerWithClock returned nil")
-	}
-
-	// Verify the clock is used by checking BlacklistToken uses correct time
-	tokenID := "tok_clock_test"
-	expiresAt := fixedTime.Add(-time.Hour) // Already expired relative to fixed clock
-	err := manager.blacklistToken(tokenID, expiresAt)
-	if err != nil {
-		t.Fatalf("BlacklistToken failed: %v", err)
-	}
-
-	// With nil clock (should use time.Now)
-	store2 := NewMemoryStore(100, time.Minute, false, nil)
-	defer func() { _ = store2.Close() }() // best-effort cleanup
-	manager2 := NewManagerWithClock(store2, nil)
-	if manager2 == nil {
-		t.Fatal("NewManagerWithClock with nil clock returned nil")
-	}
-	_ = manager2.Close() // test cleanup
-}
+// TestNewManagerWithClock was removed: it only asserted non-nil returns, and
+// the custom-clock path it gestured at is genuinely verified by
+// TestBlacklistVerifiedTTLBounding (fixed clock drives the TTL bounds).
 
 // =============================================================================
 // Manager Close Edge Cases
@@ -1280,67 +1362,8 @@ func TestKeyAnalysisEdgeCases(t *testing.T) {
 // RSA-PSS Signing Method Tests
 // =============================================================================
 
-func TestPSSSignAndVerify(t *testing.T) {
-	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		t.Fatalf("Failed to generate RSA key: %v", err)
-	}
-
-	signingString := "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ0ZXN0In0"
-
-	tests := []struct {
-		alg string
-	}{
-		{"PS256"},
-		{"PS384"},
-		{"PS512"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.alg, func(t *testing.T) {
-			method, err := GetInternalSigningMethod(tt.alg)
-			if err != nil {
-				t.Fatalf("GetInternalSigningMethod(%q) failed: %v", tt.alg, err)
-			}
-			if method == nil {
-				t.Fatalf("GetInternalSigningMethod(%q) returned nil", tt.alg)
-			}
-
-			if method.Alg() != tt.alg {
-				t.Errorf("Alg() = %q, want %q", method.Alg(), tt.alg)
-			}
-
-			signature, err := method.Sign(signingString, privateKey)
-			if err != nil {
-				t.Fatalf("Sign failed: %v", err)
-			}
-			if signature == "" {
-				t.Error("Sign returned empty signature")
-			}
-
-			err = method.Verify(signingString, signature, privateKey)
-			if err != nil {
-				t.Errorf("Verify with private key failed: %v", err)
-			}
-
-			err = method.Verify(signingString, signature, &privateKey.PublicKey)
-			if err != nil {
-				t.Errorf("Verify with public key failed: %v", err)
-			}
-
-			wrongKey, _ := rsa.GenerateKey(rand.Reader, 2048)
-			err = method.Verify(signingString, signature, wrongKey)
-			if err == nil {
-				t.Error("Expected error for wrong key, got nil")
-			}
-
-			err = method.Verify(signingString, "invalid-signature", privateKey)
-			if err == nil {
-				t.Error("Expected error for invalid signature, got nil")
-			}
-		})
-	}
-}
+// TestPSSSignAndVerify was merged into TestRSASignAndVerify: identical
+// body, same key shape, only the algorithm family differed.
 
 func TestPSSSignTo(t *testing.T) {
 	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
@@ -1421,22 +1444,9 @@ func TestPSSInvalidKeyType(t *testing.T) {
 	}
 }
 
-func TestPSSRegistryLookup(t *testing.T) {
-	for _, alg := range []string{"PS256", "PS384", "PS512"} {
-		t.Run(alg, func(t *testing.T) {
-			method, err := GetInternalSigningMethod(alg)
-			if err != nil {
-				t.Fatalf("GetInternalSigningMethod(%q) failed: %v", alg, err)
-			}
-			if method.Alg() != alg {
-				t.Errorf("Alg() = %q, want %q", method.Alg(), alg)
-			}
-			if !method.Hash().Available() {
-				t.Errorf("Hash() for %s should be available", alg)
-			}
-		})
-	}
-}
+// TestPSSRegistryLookup was removed: a pure subset of
+// TestGetInternalSigningMethod (registry lookup) and TestSigningMethodHash
+// (Hash() availability), both of which already enumerate PS256/384/512.
 
 // =============================================================================
 // ECDSA SignTo Tests

@@ -22,13 +22,20 @@ var (
 	// ErrEmptyToken indicates that an empty token string was provided.
 	ErrEmptyToken = errors.New("empty token")
 	// ErrAlgorithmMismatch indicates that the token's algorithm header does not match the configured signing method.
-	ErrAlgorithmMismatch = errors.New("token algorithm does not match configured signing method")
+	// Aliased to the internal sentinel (same message) so errors.Is matches
+	// across the parse layer and the public API, mirroring ErrStoreClosed.
+	ErrAlgorithmMismatch = internal.ErrAlgorithmMismatch
 	// ErrTokenRevoked indicates that the token has been revoked via the blacklist.
 	ErrTokenRevoked = errors.New("token revoked")
 	// ErrTokenMissingID indicates that the token does not contain a jti (JWT ID) claim required for blacklist operations.
 	ErrTokenMissingID = errors.New("token missing ID")
 	// ErrTokenTypeMismatch indicates that a refresh operation received a token of the wrong type.
 	ErrTokenTypeMismatch = errors.New("token type mismatch")
+	// ErrRefreshRotationFailed indicates that Config.RotateRefreshTokens is
+	// enabled and revoking the supplied refresh token failed before a new
+	// token could be minted; no new token was issued. Wraps the underlying
+	// blacklist store error.
+	ErrRefreshRotationFailed = errors.New("refresh rotation failed")
 	// ErrTokenExpired indicates that the token's exp (expiration) claim has passed.
 	ErrTokenExpired = errors.New("token expired")
 	// ErrTokenNotValidYet indicates that the token's nbf (not-before) claim is in the future.
@@ -50,7 +57,9 @@ var (
 	// ErrBlacklistNotConfigured indicates that a blacklist operation was attempted without configuring the blacklist.
 	ErrBlacklistNotConfigured = errors.New("blacklist not configured")
 
-	// ErrProcessorClosed indicates that an operation was attempted on a closed Processor.
+	// ErrProcessorClosed indicates that an operation was attempted on a closed
+	// or nil Processor. All Processor methods are nil-receiver safe and report
+	// this sentinel instead of panicking.
 	ErrProcessorClosed = errors.New("processor closed")
 	// ErrStoreClosed indicates that an operation was attempted on a closed store.
 	ErrStoreClosed = internal.ErrStoreClosed
